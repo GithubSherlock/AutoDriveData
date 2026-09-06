@@ -39,7 +39,7 @@ NPC_MODELS = [
     "vehicle.audi.a2",
     "vehicle.ford.mustang",
     "vehicle.toyota.prius",
-    "vehicle.mercedes-benz.coupe",
+    "vehicle.chevrolet.impala",
 ]
 
 
@@ -77,7 +77,7 @@ def spawn_traffic(
         ctrl.start()
         ctrl.set_max_speed(float(rng.uniform(1.2, 1.8)))  # m/s
         dest_v = w.get_location() + w.get_transform().get_forward_vector() * 30
-        ctrl.walk_to_location(carla.Location(x=dest_v.x, y=dest_v.y, z=dest_v.z))
+        ctrl.go_to_location(carla.Location(x=dest_v.x, y=dest_v.y, z=dest_v.z))
     print(f"[traffic] {n_vehicles} vehicles + {n_walkers} walkers via TM/AI")
 
 
