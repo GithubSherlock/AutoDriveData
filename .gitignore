@@ -16,3 +16,4 @@ dist/
 
 # 环境
 .env
+.ipynb_checkpoints/
