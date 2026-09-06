@@ -21,6 +21,7 @@ from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.semantic import semantic_to_velodyne_bin
 
 from carla_common import (
     CAM_ATTRS,
@@ -89,6 +90,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
+    ap.add_argument(
+        "--semantic-lidar",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="语义 LiDAR + KITTI 式强度合成(M2-3 实测:几何强度恒定致 Car 检出全漏)",
+    )
     args = ap.parse_args()
 
     client = carla.Client(args.host, args.port)
@@ -110,7 +117,7 @@ def main() -> None:
     cam_bp = bp_lib.find("sensor.camera.rgb")
     for k, v in CAM_ATTRS.items():
         cam_bp.set_attribute(k, v)
-    lid_bp = bp_lib.find("sensor.lidar.ray_cast")
+    lid_bp = bp_lib.find("sensor.lidar.ray_cast" if not args.semantic_lidar else "sensor.lidar.ray_cast_semantic")
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
     camera = cast(carla.Sensor, world.spawn_actor(cam_bp, SENSOR_OFFSET, attach_to=ego))
@@ -168,9 +175,11 @@ def main() -> None:
             png = tmp.read_bytes()
             tmp.unlink()
 
-            velo = g.carla_lidar_to_velodyne(
-                np.frombuffer(pts.raw_data, dtype=np.float32).reshape(-1, 4)
-            )
+            raw = np.frombuffer(pts.raw_data, dtype=np.float32)
+            if args.semantic_lidar:
+                velo = semantic_to_velodyne_bin(raw.reshape(-1, 6), seed=args.frames * 100 + i)
+            else:
+                velo = g.carla_lidar_to_velodyne(raw.reshape(-1, 4))
             write_frame(out, str(i), image_png=png, velodyne=velo, calib=calib_out, labels=labels)
             if (i + 1) % 20 == 0 or i == args.frames - 1:
                 print(f"[frame {i + 1}/{args.frames}] ego @ {tuple(round(v, 1) for v in loc(ego.get_transform()))} | {len(labels)} GT")
