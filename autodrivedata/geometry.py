@@ -140,3 +140,46 @@ def carla_lidar_to_velodyne(points: np.ndarray) -> np.ndarray:
     out = pts.copy()
     out[:, 1] = -out[:, 1]
     return out
+
+
+# ── nuScenes 约定(M1b;全局系语义照 auto3dlabel/照 nuScenes 官方)──────────────
+#
+# nuScenes 全局系:x 前 / y 左 / z 上(右手系)——与 CARLA 全局系(y 右)差一个 y 符号。
+# 入表前经 CARLA_TO_NUS 翻转,入表后一切照 devkit/auto3dlabel 原生语义,零特判。
+
+CARLA_TO_NUS = np.diag([1.0, -1.0, 1.0]).astype(np.float64)
+
+
+def carla_to_nus_global(points: np.ndarray) -> np.ndarray:
+    """CARLA 全局系点 (N,3) → nuScenes 全局系(x 前/y 左/z 上):仅 y 符号翻转。"""
+    pts = np.asarray(points, dtype=np.float64)[:, :3]
+    return pts @ CARLA_TO_NUS.T
+
+
+def carla_yaw_to_nus_yaw(yaw_carla: float) -> float:
+    """CARLA yaw(绕 z,左转正)→ nuScenes 全局 yaw:wrap_pi(−yaw_c)。
+
+    推导:CARLA 车头 (cos ψ, sin ψ) → nuScenes 车头 (cos ψ, −sin ψ)
+    ⇒ ψ_nus = atan2(−sin ψ, cos ψ) = −ψ。
+    """
+    return wrap_pi(-yaw_carla)
+
+
+def yaw_to_quat(yaw: float) -> tuple[float, float, float, float]:
+    """nuScenes 全局系 yaw(绕 z 轴,x 前 y 左)→ 四元数 (w,x,y,z)。
+
+    照抄 auto3dlabel tools/geometry.yaw_to_quat:车头 (cos yaw, sin yaw, 0)
+    ⇒ quat = (cos(yaw/2), 0, 0, sin(yaw/2))。
+    """
+    half = yaw / 2
+    return (float(np.cos(half)), 0.0, 0.0, float(np.sin(half)))
+
+
+def quat_to_yaw(quat: tuple[float, float, float, float]) -> float:
+    """四元数 (w,x,y,z) → 绕 z 轴 yaw(忽略 x/y 分量;照抄 auto3dlabel)。"""
+    return wrap_pi(2 * float(np.arctan2(quat[3], quat[0])))
+
+
+def carla_yaw_to_nus_quat(yaw_carla: float) -> tuple[float, float, float, float]:
+    """CARLA actor yaw → nuScenes 全局四元数(组合 carla_yaw_to_nus_yaw + yaw_to_quat)。"""
+    return yaw_to_quat(carla_yaw_to_nus_yaw(yaw_carla))
