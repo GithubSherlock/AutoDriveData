@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import queue
 from pathlib import Path
+from typing import cast
 
 import carla
 import numpy as np
@@ -21,60 +22,7 @@ from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
 
-# 相机对齐 KITTI 口径(1242×375);LiDAR 64 线(与 KITTI velodyne 一致)
-CAM_ATTRS = {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}
-LIDAR_ATTRS = {
-    "channels": "64",
-    "range": "70",
-    # 1.3M pps = 真实 HDL-64E 量级(实测每帧 63k 点、360° 全覆盖);
-    # 200k pps 时车只有 13~117 点,PointPillars 体素特征不足(M1a-7 实测教训)
-    "points_per_second": "1300000",
-    "rotation_frequency": "10",
-    "upper_fov": "10.0",
-    "lower_fov": "-30.0",
-}
-SENSOR_OFFSET = carla.Transform(carla.Location(1.2, 0.0, 1.65))  # 相对 ego 的车顶前装
-
-
-def _rad(rot: carla.Rotation) -> tuple[float, float, float]:
-    """carla.Rotation(度)→ (pitch, yaw, roll) 弧度。"""
-    return tuple(np.radians(a) for a in (rot.pitch, rot.yaw, rot.roll))
-
-
-def _loc(t: carla.Transform) -> tuple[float, float, float]:
-    return (t.location.x, t.location.y, t.location.z)
-
-
-def spawn_npcs(world: carla.World, ego_t: carla.Transform) -> None:
-    """ego 前方摆 NPC:同向车 ×2、对向车 ×1、行人 ×2、骑行者 ×1(碰撞失败仅告警)。"""
-    fwd = ego_t.get_forward_vector()
-    right = ego_t.get_right_vector()
-    ego_yaw = ego_t.rotation.yaw
-
-    def place(d: float, off: float, yaw: float, z_off: float = 0.0) -> carla.Transform:
-        loc = ego_t.location + fwd * d + right * off
-        loc.z += z_off
-        return carla.Transform(loc, carla.Rotation(yaw=yaw, pitch=0.0, roll=0.0))
-
-    specs = [
-        ("vehicle.tesla.model3", place(12.0, 0.0, ego_yaw)),          # 同车道前车
-        ("vehicle.audi.a2", place(22.0, 2.2, ego_yaw)),               # 右邻车道
-        ("vehicle.ford.mustang", place(30.0, -3.2, ego_yaw + 180)),   # 对向车
-        ("walker.pedestrian.0001", place(8.0, 3.2, ego_yaw)),         # 右侧行人
-        ("walker.pedestrian.0002", place(14.0, -3.2, ego_yaw + 90)),  # 左侧行人(面向车道)
-        ("vehicle.gazelle.omafiets", place(18.0, 3.6, ego_yaw)),      # 右侧骑行者
-    ]
-    bp_lib = world.get_blueprint_library()
-    for type_id, tf in specs:
-        bp = bp_lib.find(type_id)
-        actor = world.try_spawn_actor(bp, tf)
-        if actor is None:
-            print(f"  [warn] NPC spawn 失败(碰撞): {type_id}")
-            continue
-        if type_id.startswith("walker"):
-            ctrl = world.spawn_actor(bp_lib.find("controller.ai.walker"), carla.Transform(), actor)
-            ctrl.start()  # 站立不动;M2 再给行走指令
-        print(f"  [npc] {type_id} @ {_loc(tf)}")
+from carla_common import CAM_ATTRS, LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, spawn_npcs, sync_mode
 
 
 def main() -> None:
@@ -88,37 +36,25 @@ def main() -> None:
     client = carla.Client(args.host, args.port)
     client.set_timeout(30.0)
     world = client.get_world()
+    sync_mode(world)
 
-    settings = world.get_settings()
-    settings.synchronous_mode = True
-    settings.fixed_delta_seconds = 0.1
-    world.apply_settings(settings)
+    ego = spawn_ego(world)
+    ego_t = ego.get_transform()
+    print(f"[ego] vehicle.audi.a2 @ {loc(ego_t)}")
 
     bp_lib = world.get_blueprint_library()
-    ego_bp = bp_lib.find("vehicle.audi.a2")
-    # 出生点逐个尝试(碰撞则换下一个),取第一个成功者
-    ego: carla.Vehicle | None = None
-    for pt in world.get_map().get_spawn_points():
-        ego = world.try_spawn_actor(ego_bp, pt)
-        if ego is not None:
-            break
-    if ego is None:
-        raise RuntimeError("所有出生点均 spawn 失败(碰撞)")
-    # 同步模式红线:spawn 后必须 tick,actor 位姿才同步到客户端
-    # (实测:不 tick 则 get_transform 返回恒等变换 (0,0,0)——NPC 全摆到原点)
-    world.tick()
-    ego_t = ego.get_transform()
-    print(f"[ego] vehicle.audi.a2 @ {_loc(ego_t)}")
-
     cam_bp = bp_lib.find("sensor.camera.rgb")
     for k, v in CAM_ATTRS.items():
         cam_bp.set_attribute(k, v)
     lid_bp = bp_lib.find("sensor.lidar.ray_cast")
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
-    camera = world.spawn_actor(cam_bp, SENSOR_OFFSET, attach_to=ego)
-    lidar = world.spawn_actor(lid_bp, SENSOR_OFFSET, attach_to=ego)
-    print(f"[sensor] camera {CAM_ATTRS['image_size_x']}x{CAM_ATTRS['image_size_y']} fov={CAM_ATTRS['fov']} + lidar {LIDAR_ATTRS['channels']}ch")
+    camera = cast(carla.Sensor, world.spawn_actor(cam_bp, SENSOR_OFFSET, attach_to=ego))
+    lidar = cast(carla.Sensor, world.spawn_actor(lid_bp, SENSOR_OFFSET, attach_to=ego))
+    print(
+        f"[sensor] camera {CAM_ATTRS['image_size_x']}x{CAM_ATTRS['image_size_y']} "
+        f"fov={CAM_ATTRS['fov']} + lidar {LIDAR_ATTRS['channels']}ch {LIDAR_ATTRS['points_per_second']}pps"
+    )
 
     spawn_npcs(world, ego_t)
 
@@ -133,7 +69,11 @@ def main() -> None:
         img_q.get(timeout=10)
         lid_q.get(timeout=10)
 
-    k = CameraIntrinsics(width=int(CAM_ATTRS["image_size_x"]), height=int(CAM_ATTRS["image_size_y"]), fov_h_deg=float(CAM_ATTRS["fov"]))
+    k = CameraIntrinsics(
+        width=int(CAM_ATTRS["image_size_x"]),
+        height=int(CAM_ATTRS["image_size_y"]),
+        fov_h_deg=float(CAM_ATTRS["fov"]),
+    )
     out = Path(args.out)
 
     try:
@@ -146,7 +86,7 @@ def main() -> None:
             calib_out = KittiCalibOut(
                 p2=k.p2(),
                 tr_velo_to_cam=tr_velo_to_cam(
-                    _loc(lid_t), _rad(lid_t.rotation), _loc(cam_t), _rad(cam_t.rotation)
+                    loc(lid_t), rad(lid_t.rotation), loc(cam_t), rad(cam_t.rotation)
                 ),
             )
             labels: list[str] = []
@@ -158,11 +98,11 @@ def main() -> None:
                     type_id=a.type_id,
                     extent=(bb.extent.x, bb.extent.y, bb.extent.z),
                     location=(bb.location.x, bb.location.y, bb.location.z),
-                    rotation=_rad(bb.rotation),
-                    actor_location=_loc(a.get_transform()),
-                    actor_rotation=_rad(a.get_transform().rotation),
+                    rotation=rad(bb.rotation),
+                    actor_location=loc(a.get_transform()),
+                    actor_rotation=rad(a.get_transform().rotation),
                 )
-                line = box_to_gt_line(box, _loc(cam_t), _rad(cam_t.rotation), k)
+                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k)
                 if line:
                     labels.append(line)
 

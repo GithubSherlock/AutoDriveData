@@ -68,6 +68,28 @@ def classify_kitti(type_id: str) -> str:
     return "Car"
 
 
+def classify_nus(type_id: str) -> str | None:
+    """CARLA actor type_id → nuScenes 检测类名(None = 官方忽略类,不参与评测)。
+
+    对齐 auto3dlabel NUSCENES_CATEGORY_MAP 的 10 类口径(emergency/debris 等忽略)。
+    """
+    if type_id.startswith("walker"):
+        return "pedestrian"
+    if not type_id.startswith("vehicle"):
+        return None
+    if type_id in _TRUCK_TYPES or "truck" in type_id:
+        return "truck"
+    if type_id in _VAN_TYPES:
+        return None  # ambulance 属官方忽略类(vehicle.emergency)
+    if type_id in _MOTORCYCLE_TYPES or "motorcycle" in type_id:
+        return "motorcycle"
+    if type_id in _BICYCLE_TYPES or "bicycle" in type_id:
+        return "bicycle"
+    if "tram" in type_id or "train" in type_id:
+        return None
+    return "car"
+
+
 @dataclass(frozen=True)
 class ActorBox:
     """CARLA actor 的 bounding_box + 位姿(纯值)。角度一律 (pitch, yaw, roll) 弧度。"""

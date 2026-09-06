@@ -183,3 +183,16 @@ def quat_to_yaw(quat: tuple[float, float, float, float]) -> float:
 def carla_yaw_to_nus_quat(yaw_carla: float) -> tuple[float, float, float, float]:
     """CARLA actor yaw → nuScenes 全局四元数(组合 carla_yaw_to_nus_yaw + yaw_to_quat)。"""
     return yaw_to_quat(carla_yaw_to_nus_yaw(yaw_carla))
+
+
+def quat_to_matrix(quat: tuple[float, float, float, float]) -> np.ndarray:
+    """四元数 (w,x,y,z) → 3×3 旋转阵(Hamilton 约定,同 auto3dlabel rot_matrix)。"""
+    w, x, y, z = (float(v) for v in quat)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
