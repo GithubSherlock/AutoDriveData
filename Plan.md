@@ -104,8 +104,8 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 |---|---|---|
 | **M0 环境** ✅ | 安装 + headless 适配 + smoke | 单帧 raw 落盘 + 可视化 |
 | **M1a KITTI 闭环** ✅ | 步骤 1–7(见 §5.1) | 数据层零改动读入 + pointpillars 出伪标签 |
-| **M1b nuScenes 语义** | 步骤 8–10(见 §5.2) | nuscenes-queue 分派通 |
-| **M2 闭环验证** | autopilot 短途采集(数百帧)→ 比对层 → 复核队列 | 分歧率实测 <10%;AP/复核率报表 |
+| **M1b nuScenes 语义** ✅ | 步骤 8–10(见 §5.2) | nuscenes-queue 分派通 |
+| **M2 闭环验证** ✅(带已知缺口) | autopilot 短途采集(数百帧)→ 比对层 → 复核队列 | 报表出;分歧率 <10% **未达**(见 §5.3) |
 | **M3 场景参数化** | Traffic Manager 车流/天气/光照;长尾指令集 | 场景矩阵脚本 + 采集量可配 |
 | **M4 定制街道** | RoadRunner trial 小型路网 | 定制地图跑通端到端 |
 
@@ -144,6 +144,13 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - **点云不做重投影**——LiDAR 挂装位姿即 KITTI velodyne 位姿,点云保持传感器系原样落盘,`Tr_velo_to_cam` = LiDAR→相机外参(投影链 `x_cam = R0_rect @ Tr @ x_velo` 天然成立)
 - GT 只含动态 actor(静态目标 GT 延后 M2+);遮挡字段 M1a 填 0,truncation 按 8 角点投影计算
 
+### 5.1b M1b 执行记录(2026-09-07 ✅ 验收通过)
+
+- geometry 补 nuScenes 约定:CARLA_TO_NUS(y 翻号)、yaw↔quat(照抄 auto3dlabel 语义)、quat_to_matrix
+- export/nuscenes.py:14 表 + map png(devkit 构造契约),多场景支持(scenes dict)
+- **关键坑**:mini_val = {scene-0103, scene-0916}——generate_review_queue 遍历 val 名单,缺场景直接 KeyError → 生成器强制两场景
+- oracle 3/3:devkit 构造、GT 读取、NusBox 往返一致;验收:nuscenes-queue → 3 复核队列(采纳 0/复核 5,域差距同 KITTI 侧)
+
 ### 5.2 M1b — nuScenes 语义(步骤 8–10)
 
 | # | 步骤 | 产出/验收 |
@@ -152,7 +159,32 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 | 9 | `export/nuscenes.py`:nusbox + scene/sample token 落盘 | 用 auto3dlabel `data/nuscenes.py` 双向转换做**往返 oracle 校验** |
 | 10 | 验收:`auto3dlabel nuscenes-queue` 分派通 | 复核队列生成 |
 
-### 5.3 测试环境策略(已定)
+### 5.3 M2 执行记录(2026-09-07 ✅ 工具链闭环,验收缺口如实记录)
+
+**工具链交付**(全部落盘 + 单测):
+- `collect_drive.py`:ego autopilot + TM 车流 + AI 行走行人,同步模式采 150 帧(验收用)
+- `compare.py`:Sutherland-Hodgman 多边形 IoU + 贪心匹配 + 11 点 AP + 分歧帧/复核率报表(纯 numpy)
+- `eval_kitti.py`:GT vs 伪标签 CLI(含 review JSON 置信度自配对);`semantic.py`:语义强度合成
+
+**域差距修复实验(6 变体 × 5 帧,PointPillars KITTI)**:
+
+| 变体 | Car TP/15 | 结论 |
+|---|---|---|
+| 几何强度基线/噪声/丢点/2.6M/5.2M pps | 全部 0 | 密度/噪声不是主因(实测 pps 线性无上限:5.2M→253k 点) |
+| **语义 LiDAR + 反照率×入射角强度合成** | **11/15,AP 0.529** | ✅ **决定性修复**:车亮(0.85)/路暗(0.08)/标牌高反(0.9) |
+
+**M2-4 全链路实测(150 帧动态)**:
+- 采集:ego 行驶穿越街区,GT 233 Car(行人 0——随机 spawn 未入相机视野)
+- 检测:采纳 76 / 复核 340;比对:Car **AP 0.294(TP 118/233)**,复核率 100%
+- **验收缺口**:分歧率 <10% **未达**——根因 ① 伪标签 FP 高(车 154 FP/行人 144 FP,合成场景立面/杆件误报)② 动态场景更难(AP 0.53→0.29)③ 行人/骑行者 GT 缺失无法评估
+- **通往 <10% 的路径(归 M3)**:AutoLabel `train3d` 在合成 KITTI 数据上微调 PointPillars(域内训练,预期 FP 大幅下降);行人用固定路径布置(勿随机 spawn);复核率与 AP 随微调重测
+
+**已知限制(如实记录)**:
+- CARLA headless 稳定性:客户端销毁传感器后服务器反复 segfault(exit 139)——重启可恢复,采集脚本 try/finally 清理已就位;待 M3 排查(疑似 Vulkan/离屏渲染 GC 路径)
+- 语义 LiDAR 将行人/骑行者标为 Unlabeled(tag=0);walker 身体点稀疏(8m 处 ~25 点)
+- dropoff_general_rate>0 时点数反常上升(105k vs 64k),机制未查明,已弃用
+
+### 5.4 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
 - **oracle 对比脚本**:autolabel env 跑,直接 import auto3dlabel 的 geometry/data 模块当单一事实源(双向转换往返断言)
@@ -181,6 +213,8 @@ AutoDriveData/
 - [x] `resolve_frame`/frame_id 规则与 `KITTI_OBJECT_ROOT` 覆盖(§3.1)
 - [x] 磁盘扩容(190G,余 76G)
 - [x] git init + 骨架 + 决策(§5 三决策)
-- [ ] M1a 步骤 2–7(geometry/calib/gt/export/collect/集成验收)
-- [ ] M1b 步骤 8–10
+- [x] M1a 步骤 1–7(geometry/calib/gt/export/collect/集成验收)✅
+- [x] M1b 步骤 8–10(geometry P2 约定/nuscenes 生成器/oracle/nuscenes-queue 验收)✅
+- [x] M2(collect_drive/compare/eval_kitti/域差距修复实验/150 帧闭环验收)✅——分歧率 <10% 未达,微调路径归 M3
+- [ ] M3:train3d 微调 PointPillars(合成域内)+ 行人固定路径布置 + 复核率/AP 重测;headless segfault 排查
 - [ ] 静态目标 GT(semantic LiDAR 提取)技术选型——M2 之后启动
