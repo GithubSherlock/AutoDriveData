@@ -26,7 +26,9 @@ CAM_ATTRS = {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}
 LIDAR_ATTRS = {
     "channels": "64",
     "range": "70",
-    "points_per_second": "200000",
+    # 1.3M pps = 真实 HDL-64E 量级(实测每帧 63k 点、360° 全覆盖);
+    # 200k pps 时车只有 13~117 点,PointPillars 体素特征不足(M1a-7 实测教训)
+    "points_per_second": "1300000",
     "rotation_frequency": "10",
     "upper_fov": "10.0",
     "lower_fov": "-30.0",
