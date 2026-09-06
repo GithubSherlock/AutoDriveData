@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autodrivedata"
+version = "0.1.0"
+description = "CARLA 仿真数据生成 Pipeline(raw+GT 双输出,供 AutoLabel 消费)"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+# 仅 base(3.10)采集脚本用;autolabel env 禁止安装(防污染 mmdet3d CUDA13 环境)
+carla = ["carla==0.9.16"]
+dev = ["pytest", "matplotlib"]
+
+[tool.setuptools.packages.find]
+include = ["autodrivedata*"]
