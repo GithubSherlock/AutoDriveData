@@ -83,7 +83,7 @@ def _sample(i: int) -> ne.NusSample:
 
 class TestMiniDataset:
     def test_tables_written(self, tmp_path):
-        ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", [_sample(0), _sample(1)])
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         table_dir = tmp_path / "v1.0-mini"
         names = {
             "category", "attribute", "visibility", "instance", "sensor",
@@ -94,14 +94,14 @@ class TestMiniDataset:
         assert (tmp_path / "maps" / "ad_map.png").is_file()
 
     def test_tokens_unique_per_table(self, tmp_path):
-        ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", [_sample(0), _sample(1)])
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         for p in (tmp_path / "v1.0-mini").glob("*.json"):
             rows = json.loads(p.read_text())
             tokens = [r["token"] for r in rows]
             assert len(tokens) == len(set(tokens)), p.name
 
     def test_sample_chain_and_scene(self, tmp_path):
-        ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", [_sample(0), _sample(1)])
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         samples = json.loads((tmp_path / "v1.0-mini" / "sample.json").read_text())
         assert samples[0]["next"] == samples[1]["token"]
         assert samples[1]["prev"] == samples[0]["token"]
@@ -110,7 +110,7 @@ class TestMiniDataset:
         assert scene["first_sample_token"] == samples[0]["token"]
 
     def test_annotation_links(self, tmp_path):
-        ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", [_sample(0), _sample(1)])
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         anns = json.loads((tmp_path / "v1.0-mini" / "sample_annotation.json").read_text())
         assert len(anns) == 2
         assert anns[0]["instance_token"] == "adinst1"
@@ -120,9 +120,23 @@ class TestMiniDataset:
         assert cat_name == "vehicle.car"
 
     def test_sample_data_keyframes(self, tmp_path):
-        ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", [_sample(0), _sample(1)])
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         sd = json.loads((tmp_path / "v1.0-mini" / "sample_data.json").read_text())
         assert len(sd) == 14  # 2 samples × (1 lidar + 6 cams)
         assert all(r["is_key_frame"] for r in sd)
         lidar_rec = next(r for r in sd if r["channel"] == "LIDAR_TOP")
         assert lidar_rec["filename"].endswith("000000.bin")
+
+    def test_two_scenes_chain_not_crossing(self, tmp_path):
+        ne.write_mini_dataset(
+            tmp_path,
+            "v1.0-mini",
+            {"scene-0103": [_sample(0), _sample(1)], "scene-0916": [_sample(2)]},
+        )
+        samples = json.loads((tmp_path / "v1.0-mini" / "sample.json").read_text())
+        scenes = {s["token"]: s["name"] for s in json.loads((tmp_path / "v1.0-mini" / "scene.json").read_text())}
+        assert len(samples) == 3
+        # 场景内成链、场景边界断开
+        assert samples[0]["next"] == samples[1]["token"] and samples[1]["prev"] == samples[0]["token"]
+        assert samples[1]["next"] == "" and samples[2]["prev"] == ""
+        assert scenes[samples[2]["scene_token"]] == "scene-0916"

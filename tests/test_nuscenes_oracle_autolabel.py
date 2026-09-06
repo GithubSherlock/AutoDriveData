@@ -50,7 +50,7 @@ def _build_dataroot(tmp_path) -> None:
                     "translation": (8.0, 3.0, 0.0),
                     "size": (0.6, 0.6, 1.8),
                     "yaw_nus": 0.5,
-                    "num_lidar_pts": 0,
+                    "num_lidar_pts": 1,
                     "instance_token": "adinst2",
                 },
             ],
@@ -58,7 +58,7 @@ def _build_dataroot(tmp_path) -> None:
         )
         for i in range(2)
     ]
-    ne.write_mini_dataset(tmp_path, "v1.0-mini", "scene-0103", samples)
+    ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": samples})
     for i in range(2):
         (tmp_path / f"samples/LIDAR_TOP/{i:06d}.bin").parent.mkdir(
             parents=True, exist_ok=True

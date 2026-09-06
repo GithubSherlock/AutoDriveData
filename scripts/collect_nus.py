@@ -186,8 +186,13 @@ def main() -> None:
             if a.type_id.startswith("vehicle") or a.type_id.startswith("walker") or a.type_id.startswith("controller"):
                 a.destroy()
 
-    write_mini_dataset(out, "v1.0-mini", "scene-0103", samples)
-    print(f"[done] nuScenes dataroot: {out.resolve()} (scene-0103, {len(samples)} samples)")
+    # mini_val = {scene-0103, scene-0916}——两个场景都要有,否则 nuscenes-queue 遍历 KeyError
+    write_mini_dataset(
+        out,
+        "v1.0-mini",
+        {"scene-0103": samples, "scene-0916": [samples[0]]},
+    )
+    print(f"[done] nuScenes dataroot: {out.resolve()} (2 scenes, {len(samples)}+1 samples)")
 
 
 if __name__ == "__main__":

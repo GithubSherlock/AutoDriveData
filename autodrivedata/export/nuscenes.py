@@ -93,9 +93,9 @@ def count_points_in_box_nus(
     return int(inside.sum())
 
 
-def _tok(kind: str, i: int) -> str:
+def _tok(kind: str, *idx: int) -> str:
     """确定性 token(devkit 只要求表内唯一,不要求格式)。"""
-    return f"ad{kind}{i:06x}"
+    return "ad" + kind + "".join(f"{v:x}" for v in idx)
 
 
 def _quat(yaw_nus: float) -> list[float]:
@@ -110,27 +110,39 @@ def _intrinsics_1600x900_fov90() -> list[list[float]]:
 def write_mini_dataset(
     dataroot: str | Path,
     version: str,
-    scene_name: str,
-    samples: list[NusSample],
+    scenes: dict[str, list[NusSample]],
     log_name: str = "ad_log",
 ) -> Path:
-    """全量落盘:14 张表 + map PNG;返回 dataroot。"""
+    """全量落盘:14 张表 + map PNG;返回 dataroot。
+
+    scenes = {场景名: samples}——场景名必须覆盖 devkit val 名单(如 mini_val 的
+    scene-0103/scene-0916),否则 auto3dlabel generate_review_queue 遍历会 KeyError。
+    """
     root = Path(dataroot)
     table_dir = root / version
     table_dir.mkdir(parents=True, exist_ok=True)
-    n = len(samples)
+    all_samples = [s for ss in scenes.values() for s in ss]
+    n = len(all_samples)
 
-    # 固定 token 布局:scene/log/sensor/calib 各一;sample/ego_pose 每 sample;instance 每 actor
-    scene_token = _tok("scene", 0)
+    # 固定 token 布局:log/visibility/map 各一;scene 每场景;sample/ego_pose 每 sample
     log_token = _tok("log", 0)
     vis_token = _tok("vis", 0)
     map_token = _tok("map", 0)
-    sample_tokens = [_tok("sample", i) for i in range(n)]
-    ego_tokens = [_tok("ego", i) for i in range(n)]
-    # instance:按 annotations 的 instance_token 去重保序(跨 sample 稳定)
+    # sample/ego token:两级索引(场景 idx, 样本 idx);sample_scene 记录每 sample 归属场景
+    sample_tokens: list[str] = []
+    ego_tokens: list[str] = []
+    sample_scene: list[str] = []
+    scene_token_of: dict[str, str] = {}
+    for si, (name, ss) in enumerate(scenes.items()):
+        scene_token_of[name] = _tok("scene", si)
+        for i in range(len(ss)):
+            sample_tokens.append(_tok("sample", si, i))
+            ego_tokens.append(_tok("ego", si, i))
+            sample_scene.append(scene_token_of[name])
+    # instance:按 annotations 的 instance_token 去重保序(跨 sample/场景稳定)
     inst_tokens: list[str] = []
     inst_category: dict[str, str] = {}
-    for s in samples:
+    for s in all_samples:
         for a in s.annotations:
             it = a["instance_token"]
             if it not in inst_category:
@@ -183,7 +195,7 @@ def write_mini_dataset(
             "token": it,
             "category_token": cat_token[NUS_NAME_TO_CATEGORY[inst_category[it]]],
             "nbr_annotations": sum(
-                1 for s in samples for a in s.annotations if a["instance_token"] == it
+                1 for s in all_samples for a in s.annotations if a["instance_token"] == it
             ),
             "first_annotation_token": "",
             "last_annotation_token": "",
@@ -204,16 +216,16 @@ def write_mini_dataset(
         {
             "token": _tok("calib", 0),
             "sensor_token": _tok("sens", 0),
-            "translation": list(samples[0].calib_lidar[0]),
-            "rotation": _quat(samples[0].calib_lidar[1]),
+            "translation": list(all_samples[0].calib_lidar[0]),
+            "rotation": _quat(all_samples[0].calib_lidar[1]),
             "camera_intrinsic": [[0.0] * 3] * 3,
         }
     ] + [
         {
             "token": _tok("calib", i + 1),
             "sensor_token": _tok("sens", i + 1),
-            "translation": list(samples[0].calib_cameras[cam][0]),
-            "rotation": _quat(samples[0].calib_cameras[cam][1]),
+            "translation": list(all_samples[0].calib_cameras[cam][0]),
+            "rotation": _quat(all_samples[0].calib_cameras[cam][1]),
             "camera_intrinsic": _intrinsics_1600x900_fov90(),
         }
         for i, cam in enumerate(NUS_CAMERAS)
@@ -223,9 +235,9 @@ def write_mini_dataset(
     ego_table = [
         {
             "token": ego_tokens[i],
-            "translation": list(samples[i].ego_translation),
-            "rotation": _quat(samples[i].ego_yaw_nus),
-            "timestamp": samples[i].timestamp,
+            "translation": list(all_samples[i].ego_translation),
+            "rotation": _quat(all_samples[i].ego_yaw_nus),
+            "timestamp": all_samples[i].timestamp,
         }
         for i in range(n)
     ]
@@ -244,31 +256,32 @@ def write_mini_dataset(
     # 9) scene
     scene_table = [
         {
-            "token": scene_token,
-            "name": scene_name,
+            "token": scene_token_of[name],
+            "name": name,
             "description": "AutoDriveData 合成迷你场景",
             "log_token": log_token,
-            "nbr_samples": n,
-            "first_sample_token": sample_tokens[0],
-            "last_sample_token": sample_tokens[-1],
+            "nbr_samples": len(ss),
+            "first_sample_token": _tok("sample", si, 0),
+            "last_sample_token": _tok("sample", si, len(ss) - 1),
         }
+        for si, (name, ss) in enumerate(scenes.items())
     ]
 
-    # 10) sample(devkit 反查回填 data/anns,此处空)
+    # 10) sample(devkit 反查回填 data/anns,此处空);prev/next 链不跨场景
     sample_table = [
         {
             "token": sample_tokens[i],
-            "timestamp": samples[i].timestamp,
-            "prev": sample_tokens[i - 1] if i > 0 else "",
-            "next": sample_tokens[i + 1] if i < n - 1 else "",
-            "scene_token": scene_token,
+            "timestamp": all_samples[i].timestamp,
+            "prev": sample_tokens[i - 1] if i > 0 and sample_scene[i - 1] == sample_scene[i] else "",
+            "next": sample_tokens[i + 1] if i < n - 1 and sample_scene[i + 1] == sample_scene[i] else "",
+            "scene_token": sample_scene[i],
         }
         for i in range(n)
     ]
 
     # 11) sample_data:每 sample 7 条 keyframe(LIDAR_TOP + 6 相机)
     sample_data_table: list[dict] = []
-    for i, s in enumerate(samples):
+    for i, s in enumerate(all_samples):
         sample_data_table.append(
             {
                 "token": _tok("sd", i * 7),
@@ -311,7 +324,7 @@ def write_mini_dataset(
 
     # 12) sample_annotation(category 经 instance→category_token 链,devkit 装饰 category_name)
     ann_table: list[dict] = []
-    for i, s in enumerate(samples):
+    for i, s in enumerate(all_samples):
         for a in s.annotations:
             ann_table.append(
                 {
