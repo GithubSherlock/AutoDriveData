@@ -184,7 +184,24 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - 语义 LiDAR 将行人/骑行者标为 Unlabeled(tag=0);walker 身体点稀疏(8m 处 ~25 点)
 - dropoff_general_rate>0 时点数反常上升(105k vs 64k),机制未查明,已弃用
 
-### 5.4 测试环境策略(已定)
+### 5.4 M3 执行记录(2026-09-07 ✅ 工具链交付,微调质量未达标——如实记录)
+
+**交付**(全部可复现):
+- `finetune_synth.py`:合成 KITTI → train3d 五步(ImageSets 自适应帧号、create_data PYTHONPATH 修正、testing/ 符号链接)
+- 训练 ~5 分钟/轮(300 帧 × 4 epoch,batch 2,3080 Ti 0.07s/iter),loss 0.87→0.05 正常收敛
+- 3 次微调尝试全部在驱动帧上塌缩(40 点 AP easy:官方 78.3 → 微调 9.5/5.5/0.0)——静态帧上微调模型反而更干净(3/3 全对、无 FP)
+
+**根因排查(3 个毒化源,已修 2 个,1 个记录待查)**:
+1. ✅ **行人 NAV 失败 → 原点聚集**:AI 控制器 go_to_location 偏离导航网格时把行人导向地图原点,528 个行人 GT 挤在原点(已修:只放有效 spawn 点 + 不导航)
+2. ✅ **远距无点 GT**:相机 FOV 内 163m 的 GT 框远超 LiDAR 量程 70m,零支撑点的正样本毒化校准(已修:box_to_gt_line max_distance=65)
+3. 📋 **疑似残留**:微调后模型在驱动帧分数/位置全面塌缩但静态帧正常——训练域(稀疏 1-2 GT/帧 + 50% 空帧)与推理域分布差 + 灾难性遗忘;需要更大数据量 + 训练中 val 监控 + 更多 epoch 才能定论
+
+**M3-4 行人布置**:修复 + 验证(480 行人 GT 分布在 90 个唯一位置,不再聚集)
+**M3-5 headless segfault**:结论=teardown 阶段偶发(数据从不丢,采集已完整落盘);纪律=每次采集前 `carla_server.sh start` 干净启动;已交付辅助脚本
+
+**当前生产配置定论**:官方 pointpillars_kitti + 语义强度合成(静态 Car AP 0.53;驱动 40 点 easy 78.3/mod 54.1)+ max_distance=65 GT 过滤。微调留作后续专项。
+
+### 5.5 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
 - **oracle 对比脚本**:autolabel env 跑,直接 import auto3dlabel 的 geometry/data 模块当单一事实源(双向转换往返断言)
