@@ -103,7 +103,7 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **M0 环境** ✅ | 安装 + headless 适配 + smoke | 单帧 raw 落盘 + 可视化 |
-| **M1a KITTI 闭环** 📋 | 步骤 1–7(见 §5.1) | 数据层零改动读入 + pointpillars 出伪标签 |
+| **M1a KITTI 闭环** ✅ | 步骤 1–7(见 §5.1) | 数据层零改动读入 + pointpillars 出伪标签 |
 | **M1b nuScenes 语义** | 步骤 8–10(见 §5.2) | nuscenes-queue 分派通 |
 | **M2 闭环验证** | autopilot 短途采集(数百帧)→ 比对层 → 复核队列 | 分歧率实测 <10%;AP/复核率报表 |
 | **M3 场景参数化** | Traffic Manager 车流/天气/光照;长尾指令集 | 场景矩阵脚本 + 采集量可配 |
@@ -122,6 +122,22 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 | 5 | `export/kitti.py`:image_2/velodyne/calib/label_2 落盘(6 位零填充) | 目录结构单测 |
 | 6 | `scripts/collect_kitti.py`:ego 静止 + 摆 NPC,同步模式采 N 帧 | 输出一个 KITTI root |
 | 7 | **集成验收**:`KITTI_OBJECT_ROOT=... auto3dlabel run`(autolabel env) | 数据层读入全通 + pointpillars 伪标签落盘 |
+
+### 5.1a M1a 执行记录(2026-09-07 ✅ 验收通过,含域差距首测)
+
+**验收通过项**:
+- 单测 72 passed(base)+ oracle 5 passed(autolabel env:KittiCalib 解析/投影链逐点一致、GT 往返一致)
+- 数据层零改动读入:`KITTI_OBJECT_ROOT=outputs/kitti_scene` → `resolve_frame` + `load_calib/load_gt3d/load_velodyne` 全通
+- PointPillars 推理跑通:伪标签 + review 队列落盘(`采纳 0 / 复核 3`)
+- 几何链自检:点云投影全部落入 GT 2D 框(每目标 11~450 点)
+
+**关键坑(全部已解决,代码带回归注释)**:
+- ① tar 解压平铺 ② UE4 拒绝 root → 专用用户 carla ③ /root 700 → 711 ④ 传感器属性设 blueprint ⑤ **同步模式 spawn 后必须 tick**,否则 get_transform 返回恒等(实测)⑥ TaskStop 杀不死 UE4 子进程 → 端口占用崩新实例,须 pkill ⑦ auto3dlabel CLI 的 config 路径相对 cwd,须在 AutoLabel 根目录跑 ⑧ LiDAR 200k pps 车簇仅 13~117 点 → 1.3M pps(实测 63k 点/帧、360° 全覆盖)
+
+**域差距首测(M2 比对层的先导数据)**:
+- A/B 对照:同一检测器在真实 KITTI 000000 检出 GT 行人 IoU 0.60 ✅;在我们的合成帧上真车全漏、建筑立面误报(伪标签 3 框 IoU 全 0)
+- 疑似成因(按嫌疑排序):① 强度通道退化(std 0.055 vs 真实 velodyne 大幅变化)② CARLA 默认零噪声/零 dropout(真实传感器有 ~10% 丢失 + 测距噪声)③ 点密度仍低 7 倍(63k vs 真实 130k+/帧)④ 合成表面过于光滑
+- 后续动作归 M2:比对层建好后系统量化;候选数据侧修复(LiDAR noise_stddev/dropoff 属性、强度合成、更高 pps)在 M2 起验证
 
 **M1a 设计要点**(已定):
 - **静态场景不开车**——ego 停着 + 手动摆 NPC;autopilot 短途是 M2 内容,不提前
