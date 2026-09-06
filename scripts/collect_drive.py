@@ -57,28 +57,56 @@ def spawn_traffic(
         v = world.try_spawn_actor(bp, spawn_pts[int(i)])
         if v is not None:
             cast(carla.Vehicle, v).set_autopilot(True, tm.get_port())
-    # 行人:出生点旁 + AI 控制器行走
+    # 行人:出生点(路面上,不偏移——偏移易偏离导航网格)→ 站立不动(防 NAV 失败导原点)
     walker_bp = bp_lib.find("walker.pedestrian.0001")
     ctrl_bp = bp_lib.find("controller.ai.walker")
     for i in rng.choice(len(spawn_pts), size=min(n_walkers, len(spawn_pts)), replace=False):
         pt = spawn_pts[int(i)]
-        tf = carla.Transform(
-            carla.Location(
-                x=pt.location.x + float(rng.uniform(-2, 2)),
-                y=pt.location.y + float(rng.uniform(-2, 2)),
-                z=pt.location.z,
-            ),
-            carla.Rotation(yaw=float(rng.uniform(0, 360))),
-        )
+        tf = carla.Transform(pt.location, carla.Rotation(yaw=float(rng.uniform(0, 360))))
         w = world.try_spawn_actor(walker_bp, tf)
         if w is None:
             continue
         ctrl = cast(_WalkerCtrl, world.spawn_actor(ctrl_bp, carla.Transform(), w))
         ctrl.start()
-        ctrl.set_max_speed(float(rng.uniform(1.2, 1.8)))  # m/s
-        dest_v = w.get_location() + w.get_transform().get_forward_vector() * 30
-        ctrl.go_to_location(carla.Location(x=dest_v.x, y=dest_v.y, z=dest_v.z))
     print(f"[traffic] {n_vehicles} vehicles + {n_walkers} walkers via TM/AI")
+
+
+def spawn_route_walkers(
+    world: carla.World, ego_t: carla.Transform, n_walkers: int
+) -> None:
+    """行人布置在 ego 前方 10~60m 的**有效出生点**上、站立不动(M3-4)。
+
+    教训(2026-09-07 实测):手工横向偏移的行人落点常偏离导航网格 →
+    go_to_location NAV 失败 → AI 控制器把行人导向地图原点聚集(毒化训练数据:
+    528 个"行人 GT"挤在原点,微调模型整体崩坏)。故:位置只取 spawn 点(路面上),
+    且**不导航**——站立行人同样入相机视野,GT 稳定。
+    """
+    fwd = ego_t.get_forward_vector()
+    right = ego_t.get_right_vector()
+    # 按沿道路距离筛选 ego 前方 10~60m、横向 ±4m 内的出生点
+    cands: list[tuple[float, float, carla.Transform]] = []
+    for pt in world.get_map().get_spawn_points():
+        rel = pt.location - ego_t.location
+        along = rel.x * fwd.x + rel.y * fwd.y
+        lat = rel.x * right.x + rel.y * right.y
+        if 10.0 <= along <= 60.0 and abs(lat) <= 4.0:
+            cands.append((along, lat, pt))
+    cands.sort(key=lambda t: t[0])
+    picked = [cands[int(i * (len(cands) - 1) / max(n_walkers - 1, 1))] for i in range(n_walkers)] if cands else []
+    bp_lib = world.get_blueprint_library()
+    walker_bp = bp_lib.find("walker.pedestrian.0001")
+    ctrl_bp = bp_lib.find("controller.ai.walker")
+    spawned = 0
+    for cand in picked:
+        pt = cand[2]
+        tf = carla.Transform(pt.location, carla.Rotation(yaw=ego_t.rotation.yaw))
+        w = world.try_spawn_actor(walker_bp, tf)
+        if w is None:
+            continue
+        ctrl = cast(_WalkerCtrl, world.spawn_actor(ctrl_bp, carla.Transform(), w))
+        ctrl.start()  # 站立不动(idle 动画),不导航
+        spawned += 1
+    print(f"[route-walkers] {spawned}/{n_walkers} 立于 ego 前方出生点(不导航)")
 
 
 def main() -> None:
@@ -87,6 +115,8 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--npc-vehicles", type=int, default=15)
     ap.add_argument("--npc-walkers", type=int, default=6)
+    ap.add_argument("--route-walkers", type=int, default=6, help="沿 ego 初始朝向布置的行人数(入视野保证)")
+    ap.add_argument("--route-walker-seed", type=int, default=123)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
@@ -111,7 +141,9 @@ def main() -> None:
     tm.vehicle_percentage_speed_difference(ego, 30.0)  # 70% 速度,防冲撞
     print(f"[ego] autopilot on (TM 8000, 70% speed)")
 
+    ego_t = ego.get_transform()
     spawn_traffic(world, tm, args.npc_vehicles, args.npc_walkers, args.seed)
+    spawn_route_walkers(world, ego_t, args.route_walkers)
 
     bp_lib = world.get_blueprint_library()
     cam_bp = bp_lib.find("sensor.camera.rgb")
@@ -166,7 +198,7 @@ def main() -> None:
                     actor_location=loc(a.get_transform()),
                     actor_rotation=rad(a.get_transform().rotation),
                 )
-                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k)
+                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k, max_distance=65.0)
                 if line:
                     labels.append(line)
 

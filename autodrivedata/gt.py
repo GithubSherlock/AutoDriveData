@@ -121,9 +121,16 @@ def box_to_gt_line(
     cam_location: tuple[float, float, float],
     cam_rotation: tuple[float, float, float],
     intrinsics: CameraIntrinsics,
+    max_distance: float | None = None,
 ) -> str | None:
-    """ActorBox → label_2 15 字段行;相机后/全落图外返回 None(剔除)。"""
+    """ActorBox → label_2 15 字段行;相机后/全落图外/超距返回 None(剔除)。
+
+    max_distance:框中心到相机原点距离上限(m)——训练数据必须设(=LiDAR 量程余量),
+    否则远距无点框(实测 163m)会毒化检测器置信度校准(M3-3 教训)。
+    """
     center_k = g.world_to_cam(box_center_world(box)[None], cam_location, cam_rotation)[0]
+    if max_distance is not None and float(np.hypot(center_k[0], center_k[2])) > max_distance:
+        return None
     h, w, l = box.extent[2] * 2, box.extent[1] * 2, box.extent[0] * 2  # CARLA (x,y,z) 半尺寸 → KITTI h,w,l
     ry = g.heading_to_rotation_y(box_heading_world(box), cam_rotation)
     y_bottom = center_k[1] + h / 2  # 体积中心 → 底部中心(y 向下)

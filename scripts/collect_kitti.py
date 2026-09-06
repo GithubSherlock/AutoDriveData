@@ -116,7 +116,7 @@ def main() -> None:
                     actor_location=loc(a.get_transform()),
                     actor_rotation=rad(a.get_transform().rotation),
                 )
-                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k)
+                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k, max_distance=65.0)
                 if line:
                     labels.append(line)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-auto3dlabel = pytest.importorskip("auto3dlabel")
+auto3dlabel = pytest.importorskip("auto3dlabel.schema.calib")
 nuscenes_devkit = pytest.importorskip("nuscenes.nuscenes")
 
 from auto3dlabel.data.nuscenes import (  # noqa: E402

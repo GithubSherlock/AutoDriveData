@@ -101,6 +101,20 @@ class TestGtLine:
         # 中心 (10,0,1) → 相机系 (0, 0.65, 10);底心 y = 0.65+1 = 1.65;车头 +y_g → ry=0
         assert [parts[i] for i in (11, 12, 13, 14)] == ["0.00", "1.65", "10.00", "0.00"]
 
+    def test_max_distance_filter(self):
+        # 100m 外目标无 LiDAR 点(M3-3 教训):超距剔除
+        far = gt.ActorBox(
+            type_id="vehicle.audi.a2",
+            extent=(2.0, 1.0, 1.0),
+            location=(0.0, 0.0, 0.0),
+            rotation=(0.0, 0.0, 0.0),
+            actor_location=(100.0, 0.0, 0.0),
+            actor_rotation=(0.0, 0.0, 0.0),
+        )
+        assert gt.box_to_gt_line(far, CAM_LOC, CAM_ROT, K, max_distance=65.0) is None
+        # 不加限制时 100m 目标投影入图,会正常出框(训练数据毒化来源)
+        assert gt.box_to_gt_line(far, CAM_LOC, CAM_ROT, K) is not None
+
     def test_behind_camera_dropped(self):
         box = gt.ActorBox(
             type_id="vehicle.audi.a2",

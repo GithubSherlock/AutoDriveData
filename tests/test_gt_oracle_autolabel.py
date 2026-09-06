@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-auto3dlabel = pytest.importorskip("auto3dlabel")
+auto3dlabel = pytest.importorskip("auto3dlabel.schema.calib")
 
 from auto3dlabel.export.kitti_label import line_from_box3d  # noqa: E402
 from auto3dlabel.schema.box3d import Box3D  # noqa: E402
