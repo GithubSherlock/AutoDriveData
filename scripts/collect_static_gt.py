@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+from itertools import pairwise
 from pathlib import Path
 from typing import cast
 
@@ -173,7 +174,7 @@ def draw_overlay(
             if uv is not None:
                 pts_2d.append(uv)
         if len(pts_2d) >= 2:
-            for a, b2 in zip(pts_2d, pts_2d[1:]):
+            for a, b2 in pairwise(pts_2d):
                 d.line([a, b2], fill=col, width=3)
         for z in pts_2d:
             d.ellipse([z[0] - 2, z[1] - 2, z[0] + 2, z[1] + 2], fill=col)
@@ -203,6 +204,10 @@ def main() -> None:
     sync_mode(world)
 
     # 清场 + 锚定 pt0(视角固定 + 轨迹可复现,同 collect_ab_route)
+    # 2026-09-09 教训:yaw 硬编码 0 在 Town10HD_Opt 恰好成立(pts[0] 固有
+    # yaw=0.16°),Town13 pts[0] 固有 yaw=125.9° 时车道线采样沿 lane 方向
+    # 走到车后、overlay 全空 → 改用 spawn point 固有 rotation(地图作者设定
+    # 的沿车道朝向),各图通用
     for a in world.get_actors():
         if a.type_id.startswith(("vehicle", "walker", "controller")):
             a.destroy()
@@ -211,12 +216,13 @@ def main() -> None:
     ego = spawn_ego(world)
     ego.set_autopilot(False)
     pts = world.get_map().get_spawn_points()
-    ego.set_transform(carla.Transform(pts[0].location, carla.Rotation(yaw=0.0)))
+    ego.set_transform(carla.Transform(pts[0].location, pts[0].rotation))
     world.tick()
     here = ego.get_location()
     if here.distance(pts[0].location) > 1.0:
         raise RuntimeError(f"ego 未能锚定 pts[0]: 落在 {here}")
-    print(f"[ego] 锚定 pts[0] @ ({here.x:.1f}, {here.y:.1f}) 朝世界 +x")
+    yaw_deg = float(ego.get_transform().rotation.yaw)
+    print(f"[ego] 锚定 pts[0] @ ({here.x:.1f}, {here.y:.1f}) yaw={yaw_deg:.1f}°(沿车道)")
 
     bp_lib = world.get_blueprint_library()
     cam_bp = bp_lib.find("sensor.camera.rgb")
