@@ -245,6 +245,56 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - P2-2 静态 GT 格式设计:信号灯(actor 有状态 API)/限速标志/车道线(semantic tag,号值以实测为准)→ 扩展 gt.py 静态类 + KITTI/nuScenes 落盘取舍
 - 验收:一类静态目标 + 车道线样例输出,人工目检通过
 
+### 5.6a P2-1 选型裁决(2026-09-09,probe 实测定案)
+
+Town10HD_Opt 静态 GT 源三候选实测:
+1. **semantic LiDAR 后处理——出局**:信号灯/标志**不是 actor**(0.9.16_Opt 无
+   traffic.traffic_light 蓝图,世界 0 信号 actor),车道线非实体无 tag——LiDAR
+   打不到,无从后处理
+2. **RoadRunner 资产化——挂起降级**:可行但依赖 M4;且车道线/信号定义本就在
+   xodr,RR 只是换地图时的载体 → M4-1 定制街道时复用
+3. **地图查询 API(定案,0 外部依赖)**:landmark 65 个(58×Signal_3Light_Post01
+   红绿灯 + 6×Sign_Stop + 1×Sign_Yield,含世界位姿/类型/id);车道线 =
+   waypoint.lane_marking 实体(type SolidSolid/Broken × color Yellow/White ×
+   width 0.125,沿 lane 中心采样重建折线)。上帝视角、传感器解耦、与帧对齐
+   由 ego 位姿锚定。
+
+边界如实记录:Town10HD_Opt 无信号灯 actor → **无灯色状态周期**(状态属动态
+范畴;若需灯光状态须换非 Opt 地图或 actor 注入,排后续);本图无限速牌
+(landmark 面仅信号灯/停/让);车道线几何 = xodr 事实,若渲染 mesh 与 xodr
+不符需目检兜底(第 5.6b 验收含目检图)。
+
+### 5.6b P2-2 执行记录(2026-09-09 ✅ P2 验收)
+
+**格式**(autodrivedata/static_gt.py,纯值不 import carla,沿用 gt.py 纪律):
+- `training/static_gt/{fid}.json` = 一帧 StaticFrame:{}  signals(landmark
+  归一:traffic_light/stop/yield,世界系锚点 + yaw)+ lane_lines(车道线段:
+  side/type/color/width + 世界系点列);ego 位姿锚定,与帧对齐。
+- 车道线 : 沿 ego 车道向前 5m×13 采样,mark 点落在车道边缘(lane_width/2),
+  同侧同属性连续段合并(merge_lane_marks)。
+
+**collect_static_gt.py**(采集器):锚定 pt0 定速直行,每帧查询 landmark(65m
+视距,与 GT max_distance 一致)+ 车道线采样 → static_gt json + 原图 +
+overlay 目检图(红圈=信号锚点,彩线=车道线段投影)。
+
+**实测 bug 3 个(均已修 + 回归测试)**:
+1. 信号虚高 21→5:同一物理信号杆挂在多条 lane(landmark 按 lane 引用,
+   id 不同位置同)→ 按 (name,位置) 去重
+2. yaw 怪值 (-360/-540):OpenDRIVE 方位累积 → % 360
+3. 车道线全断成 1 点段:left/right 采样交替打断 merge → 分流各自合并(回归
+   test_merge_lane_marks_alternating_sides_still_joins)
+外加:无实体标线(type/color NONE 或 w=0 xodr 占位)过滤。
+
+**验收(人工目检通过,2026-09-09)**:demo 40 帧
+outputs/kitti_static_demo/——帧 10 画面可见 2 个红圈标注路口两侧信号杆
+锚点(**真实画面里对面即有 3 根黄灯杆**,锚点在其基座处);帧 39 黄(左
+Solid Yellow)白(右 Broken White)双线沿路缘延伸、透视收敛正确;信号集
+跨帧一致性验证(视距内集合相同,出视距自然裁掉)✓
+
+**边界如实记录**:静态 GT 为地图事实(xodr),与天气/光照/渲染**解耦**——
+这是特性(静止目标真 GT),但换地图即换真值(M4 RoadRunner 时复用本链路)。
+信号灯**灯色状态**不在本版本(Opt 无 actor),状态属动态 GT 范畴。
+
 **M4 — RoadRunner 定制街道**(外部依赖,末位)
 - M4-0 RoadRunner 可用性调研(trial 渠道/平台约束/0.9.16 USD-xodr 导入链路),P1 完成后启动
 - M4-1 小型路网 → 定制地图端到端(P1/P2 方法学直接复用)
@@ -283,5 +333,5 @@ AutoDriveData/
 - [x] M2(collect_drive/compare/eval_kitti/域差距修复实验/150 帧闭环验收)✅——分歧率 <10% 未达,微调路径归 M3
 - [x] M3 工具链(train3d 微调 3 败排查/行人布置/headless 纪律)✅——微调专项挂起,天气·长尾转 P1
 - [x] **P1** corner case 场景矩阵:参数档库 + 逆光 A/B 定量(§5.5a ✅ 2026-09-09)——相机 Δ-0.020 掉点成立、LiDAR Δ+0.003 兜底不受影响
-- [ ] **P2** 静态目标 + 道路特征 GT:选型 + 格式 + 样例(§5.5)
-- [ ] **M4-0** RoadRunner 可用性调研;M4-1 定制地图端到端(P1 后启动)
+- [x] **P2** 静态目标 + 道路特征 GT:选型(§5.6a 地图查询定案)+ 格式 + 样例(§5.6b ✅ 2026-09-09,目检通过)
+- [ ] **M4-0** RoadRunner 可用性调研;M4-1 定制地图端到端(P1/P2 后启动)
