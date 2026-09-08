@@ -105,14 +105,18 @@ def main() -> None:
     placed = []
     for d, lat, i in zip(STATIC_OFFSETS, STATIC_LATS, range(len(STATIC_OFFSETS))):
         p = start + fwd * d + right * lat
-        p.z = start.z
+        pos = carla.Location(x=p.x, y=p.y, z=start.z)
         bp = bp_lib.find(NPC_MODELS[i % len(NPC_MODELS)])
         v = world.try_spawn_actor(
-            bp, carla.Transform(p, carla.Rotation(yaw=ego.get_transform().rotation.yaw))
+            bp,
+            carla.Transform(pos, carla.Rotation(yaw=ego.get_transform().rotation.yaw)),
         )
         if v is not None:
-            v.apply_control(carla.VehicleControl(brake=1.0))  # 静置
-            placed.append(v)
+            veh = cast(
+                carla.Vehicle, v
+            )  # carla pyi 桩:try_spawn_actor 标返回 Actor(实为 Actor|None)
+            veh.apply_control(carla.VehicleControl(brake=1.0))  # 静置
+            placed.append(veh)
     world.tick()
     print(
         f"[statics] {len(placed)}/{len(STATIC_OFFSETS)} 路肩车 @ {[(round((s.get_location() - start).x), round((s.get_location() - start).y)) for s in placed]}"
