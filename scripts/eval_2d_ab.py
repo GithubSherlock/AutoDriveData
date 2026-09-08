@@ -181,9 +181,9 @@ def main() -> None:
     rb = report(Path(args.root_b), model, names, args.conf, args.iou, args.limit)
     delta = rb - ra
     verdict = (
-        "逆光侧更低 → 逆光掉点成立"
+        f"B 侧更低 → {Path(args.root_b).name} 掉点成立"
         if delta < -0.01
-        else ("逆光侧更高" if delta > 0.01 else "两测持平")
+        else ("B 侧更高" if delta > 0.01 else "两测持平")
     )
     print(f"\nΔ mAP (B−A) = {delta:+.3f} —— {verdict}")
 
