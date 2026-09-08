@@ -1,19 +1,62 @@
-# 数据产物与运行时
-outputs/
-*.bin
-*.png
-*.pkl
-
-# Python
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 build/
 dist/
+.eggs/
 
-# 环境
-.env
+# ===== 静态检查 / 测试缓存 =====
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+
+# ===== 模型权重与 KITTI infos 缓存（评估权重在 AutoLabel/weights，不入库）=====
+*.pt
+*.pth
+*.onnx
+*.safetensors
+auto3dlabel/weights/
+
+# ===== 采集 / 数据产物 =====
+outputs/
+*.bin
+*.pkl
+*.npy
+*.npz
+
+# ===== 图像 / 视频 =====
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.mp4
+*.avi
+*.mov
+
+# ===== 配置（含密钥，严禁入库；提交 .env.example 作为模板）=====
+.env
+.claude/settings.local.json
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.swp
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Claude Code 会话数据（个人会话，不入库）=====
+.claude/
+
+# ===== 其他 =====
+gitpush.sh
