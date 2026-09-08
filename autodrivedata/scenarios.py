@@ -78,11 +78,13 @@ SCENES: dict[str, Scene] = {
         group="lighting",
         weather={"sun_altitude_angle": 6.0, "cloudiness": 0.0, "fog_density": 5.0},
         fidelity=(
-            "逆光:太阳近地平线(6°)+ 正前方位(P1-3 采集时校准 azimuth 使日轮入相机 FOV)。"
-            "CARLA 无 flare/镜头光学,效果 = 天空过曝白斑 + 路面目标低对比剪影;"
-            "AE 开启下亮度会被部分拉回,保真度以实测目检为准"
+            "逆光实测(2026-09-08,数值诊断):日盘真实渲染但**AE 压至 ~205 不饱和**"
+            "(天空 p99 205 vs 背阳 170);天空均值与太阳方位弱相关(散射天光主导,"
+            "AE 全局曝光)。azimuth→世界方向(ego yaw=0/朝+x 时):日盘峰 az≈290±40。"
+            "CARLA 无 flare/镜头光学——'眼瞎'不可用天空曝光目检证明,必须 P1-3 "
+            "A/B 用模型 AP 量化(相机 AP 掉点 + LiDAR 兜底差值)"
         ),
-        sensor_note="相机:逆光高反差(预期检测 AP 掉点);LiDAR 不受光照影响(物理正确,融合兜底侧)",
+        sensor_note="相机:逆光高反差(待 A/B 定量);LiDAR 不受光照影响(物理正确,融合兜底侧)",
     ),
     "night_clear": Scene(
         name="night_clear",
@@ -125,7 +127,7 @@ SCENES: dict[str, Scene] = {
             "fog_falloff": 0.3,
             "cloudiness": 60.0,
         },
-        fidelity="浓雾:fog_distance=0.05km ≈ 50m 可见度(fog_density 0-100 拉满);效果以实测目检为准",
+        fidelity="浓雾:fog_distance=0.05km ≈ 50m 可见度(fog_density 0-100 拉满);实测(数值):中带高频梯度 -31%(day_clear 19.2→13.3),细节掩蔽生效",
         sensor_note="相机:远处目标被雾掩;LiDAR:雾模拟有限,不可做真物理衰减",
     ),
     "wet_road": Scene(

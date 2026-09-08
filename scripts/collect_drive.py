@@ -21,6 +21,7 @@ from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.scenarios import SCENES, list_scenes, merged_weather
 from autodrivedata.semantic import semantic_to_velodyne_bin
 
 from carla_common import (
@@ -111,7 +112,9 @@ def spawn_route_walkers(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="outputs/kitti_drive")
+    ap.add_argument("--out", default=None, help="输出 KITTI root(默认 outputs/kitti_drive 或带 --scene 时 outputs/kitti_<scene>)")
+    ap.add_argument("--scene", default=None, choices=sorted(SCENES), help=f"corner case 场景档(见 autodrivedata/scenarios.py;天气/traffic 覆写)")
+    ap.add_argument("--list-scenes", action="store_true", help="打印场景目录与天气覆写")
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--npc-vehicles", type=int, default=15)
     ap.add_argument("--npc-walkers", type=int, default=6)
@@ -128,10 +131,26 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    if args.list_scenes:
+        print(list_scenes())
+        return
+
+    # 场景档解析:weather 覆写 + traffic 覆写 CLI(未覆写沿用命令行)
+    scene = SCENES[args.scene] if args.scene else None
+    if scene is not None:
+        for key, n in scene.traffic.items():
+            setattr(args, key, n)  # npc_vehicles / npc_walkers / route_walkers
+    if args.out is None:
+        args.out = f"outputs/kitti_{scene.name}" if scene else "outputs/kitti_drive"
+
     client = carla.Client(args.host, args.port)
     client.set_timeout(30.0)
     world = client.get_world()
     sync_mode(world)
+
+    if scene is not None:
+        world.set_weather(carla.WeatherParameters(**merged_weather(scene)))
+        print(f"[scene] {scene.name} [{scene.group}] — 覆写 {sorted(scene.weather)} | {scene.fidelity[:60] or '无评注'}")
 
     tm = client.get_trafficmanager(8000)
     tm.set_synchronous_mode(True)  # 同步模式红线:TM 必须同步,否则车流冻结
