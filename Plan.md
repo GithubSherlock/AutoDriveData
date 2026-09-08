@@ -378,6 +378,32 @@ M4(定制街道)挂起,理由:M4-0 显示道路封闭 = 源码构建
 (P1-4 雨夜,P1-5+ 待定)——最终目标缺口中"场景矩阵"缺口直接壮大;
 定制街道留待日后(换盘/有需求)按 M4-0 沉淀路线重开。
 
+### 5.7d 地图池扩展 AdditionalMaps(2026-09-09 ✅)
+
+降级 M4 后选定零构建扩地图池:官方 AdditionalMaps_0.9.16(14.8G)下载
+(断点续传)+ 解压合并 → **Town11/12/13/15 入池**(13+4 = 17 图,磁盘余 45G)。
+`load_world` 验证 4 图全通过(15s/50s/123s/188s);默认图仍 Town10HD_Opt
+(DefaultGame.ini,重启即恢复)。
+
+**采集验证(probe 分层定位,两型新问题 + 1 个采集器 bug)**:
+1. **Town11/12 禁采集**:sync + ego + tick 均正常,spawn camera(attach_to=ego)
+   瞬间 segfault(Signal 11)——该二图渲染资源与 headless GPU shim 栈冲突
+   (机制未明);同链 Town10HD_Opt/Town13/15 全通(已记 testLog C20)
+2. **Town13 TM 车流过载**:15 车 + TM 8000 首次 tick 把服务器打满
+   (153% CPU,client 30s 无响应,非崩溃);降级 0 NPC(仅 ego autopilot)
+   12 帧采集通(TM 大图实用性边界,testLog C21)
+3. **锚定 yaw bug(已修)**:collect_static_gt 硬编码 yaw=0,Town10HD_Opt
+   pts[0] 固有 yaw=0.16° 时恰好成立;Town13 pts[0] yaw=125.9° → 车道线
+   采样沿 lane 方向走到车后、overlay 全空(投影深度全负,数值诊断发现)。
+   改锚定用 **spawn point 固有 rotation**(地图作者设定的沿车道朝向):
+   原图回归行为不变(yaw 0.2°),Town13 重采 overlay 恢复
+   (每帧 988-1108 标注像素;静态 GT 本体 1 yield + 2 段 22 点车道线,
+   地图查询链路新图自动生效)。collect_ab_route 的 yaw=0 锚定不动
+   (P1 已验证基线,Town10HD 专用)。
+
+**结论**:新图采集约束 = Town13/15 可用、Town13 TM 车流降级、Town11/12
+禁采集;P1-6 候选场景与后续长尾数据源可在地图池内选图。
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -415,3 +441,4 @@ AutoDriveData/
 - [x] **P2** 静态目标 + 道路特征 GT:选型(§5.6a 地图查询定案)+ 格式 + 样例(§5.6b ✅ 2026-09-09,目检通过)
 - [ ] **P1-4+** 第二 corner case 定量 A/B(雨夜;隧道/遮挡候选)——M4 降级后新主线
 - [~] **M4** 定制街道:M4-0 调研(§5.7 ✅)+ M4-1 用户裁决降级(§5.7a,源码构建成本过载,挂起重开条件:换盘/有需求)
+- [x] **地图池扩展**(§5.7d ✅ 2026-09-09):AdditionalMaps Town11/12/13/15 入池(17 图);约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、锚定 yaw bug 已修(spawn point 固有 rotation)
