@@ -36,7 +36,7 @@ case "$1" in
       echo "❌ 端口 2000 仍被占用,请手动排查" >&2
       exit 1
     fi
-    nohup su - carla -c "cd $CARLA_DIR && ./CarlaUE4.sh -RenderOffScreen -quality-level=Low" > "$LOG" 2>&1 &
+    nohup su - carla -c "cd $CARLA_DIR && LD_PRELOAD=/tmp/libmhookshim.so ./CarlaUE4.sh -RenderOffScreen -quality-level=Low" > "$LOG" 2>&1 &
     wait_ready
     ;;
   stop)
