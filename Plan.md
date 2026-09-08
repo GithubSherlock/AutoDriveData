@@ -1,7 +1,7 @@
-# AutoDriveData — CARLA 仿真数据生成 Pipeline(方案定案 v0.3)
+# AutoDriveData — CARLA 仿真数据生成 Pipeline(方案定案 v0.7)
 
-> 定案日期:2026-09-06(v0.1 架构)→ 09-06(v0.2 M0 调研 + KITTI 契约钉死)→ **09-07(v0.3 M1 编排定案)**。
-> 状态:**M0 ✅ 完成;M1a 进行中**。
+> 定案日期:2026-09-06(v0.1 架构)→ 09-06(v0.2 M0+KITTI 契约)→ 09-07(v0.3 M1 编排)→ 09-07/08(v0.4-0.6 M1a/M1b/M2/M3 执行记录)。
+> 状态:**M0-M3 ✅ 工具链闭环;微调专项挂起;最终目标剩余三缺口拆 P1→P2→M4 三工作包推进中(§5.5,2026-09-08 用户拍板)**。
 
 ## 1. 定位
 
@@ -106,8 +106,8 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 | **M1a KITTI 闭环** ✅ | 步骤 1–7(见 §5.1) | 数据层零改动读入 + pointpillars 出伪标签 |
 | **M1b nuScenes 语义** ✅ | 步骤 8–10(见 §5.2) | nuscenes-queue 分派通 |
 | **M2 闭环验证** ✅(带已知缺口) | autopilot 短途采集(数百帧)→ 比对层 → 复核队列 | 报表出;分歧率 <10% **未达**(见 §5.3) |
-| **M3 场景参数化** | Traffic Manager 车流/天气/光照;长尾指令集 | 场景矩阵脚本 + 采集量可配 |
-| **M4 定制街道** | RoadRunner trial 小型路网 | 定制地图跑通端到端 |
+| **M3 场景参数化** ✅(工具链;天气欠账→P1) | Traffic Manager/微调排查/数据卫生;天气·光照·长尾指令集未做(归 P1) | 场景矩阵脚本归 P1 |
+| **M4 定制街道** | 拆三包:P1 场景矩阵 → P2 静态 GT → M4 RoadRunner(§5.5) | 逐包验收 |
 
 **2026-09-07 决策**(用户拍板):M1 拆 M1a→M1b 分步交付;M1a 验收口径 = 数据层 + 跑一次 pointpillars;项目现在建本地 git 仓库(Conventional Commits + feature/ 分支,每步骤一 commit)。
 
@@ -201,7 +201,30 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 
 **当前生产配置定论**:官方 pointpillars_kitti + 语义强度合成(静态 Car AP 0.53;驱动 40 点 easy 78.3/mod 54.1)+ max_distance=65 GT 过滤。微调留作后续专项。
 
-### 5.5 测试环境策略(已定)
+### 5.5 M4 编排(2026-09-08 定案:三工作包 P1→P2→M4)
+
+用户拍板(2026-09-08 全选)齐推最终目标三缺口:**Corner Case 场景矩阵 + 静态目标/道路特征 GT + RoadRunner 定制街道**。按工程依赖排定:
+
+**P1 — Corner Case 场景矩阵**(Town10HD,零外部依赖 → 先行)
+- P1-1 corner case 目录 + **可模拟性矩阵**(对每个场景如实标注 CARLA 保真度,防做假)
+  - 光照:逆光(低角度正前阳光,可做)、黄昏、夜(负太阳高度角,可做)、隧道阴影(可做)
+  - 天气:雨/湿地面、雾(CARLA 原生参数,可做);雪/冰(0.9.16 无,不可)
+  - 车流:密集拥堵、鬼探头(walker 路径可控,可做);逆行/违章(需脚本驱动,部分)
+  - 传感器:lidar 丢点注入(已有 --lidar-noise/dropoff 开关);真实镜头光学(flare/动态范围 **CARLA 无,不可**——逆光"眼瞎"只量化相机 AP 掉点 + LiDAR 兜底差值,不做视觉真实感)
+- P1-2 场景参数档库(weather/光照 preset dict)+ 矩阵采集脚本(复用 collect_drive 同步/GT/semantic 基础设施)
+- P1-3 **逆光 A/B 定量实验**(首个 corner case):晴天 vs 低角度正前阳光,各 N 帧 → PointPillars AP 对比 → 相机"瞎多少"量化 + 融合差值
+- 验收:≥1 corner case 定量 A/B + 参数档可复用库
+
+**P2 — 静态目标 + 道路特征 GT**(Town10 验证方法学)
+- P2-1 技术选型裁决 §2 风险①:semantic LiDAR 后处理 vs RoadRunner 资产化
+- P2-2 静态 GT 格式设计:信号灯(actor 有状态 API)/限速标志/车道线(semantic tag,号值以实测为准)→ 扩展 gt.py 静态类 + KITTI/nuScenes 落盘取舍
+- 验收:一类静态目标 + 车道线样例输出,人工目检通过
+
+**M4 — RoadRunner 定制街道**(外部依赖,末位)
+- M4-0 RoadRunner 可用性调研(trial 渠道/平台约束/0.9.16 USD-xodr 导入链路),P1 完成后启动
+- M4-1 小型路网 → 定制地图端到端(P1/P2 方法学直接复用)
+
+### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
 - **oracle 对比脚本**:autolabel env 跑,直接 import auto3dlabel 的 geometry/data 模块当单一事实源(双向转换往返断言)
@@ -233,5 +256,7 @@ AutoDriveData/
 - [x] M1a 步骤 1–7(geometry/calib/gt/export/collect/集成验收)✅
 - [x] M1b 步骤 8–10(geometry P2 约定/nuscenes 生成器/oracle/nuscenes-queue 验收)✅
 - [x] M2(collect_drive/compare/eval_kitti/域差距修复实验/150 帧闭环验收)✅——分歧率 <10% 未达,微调路径归 M3
-- [ ] M3:train3d 微调 PointPillars(合成域内)+ 行人固定路径布置 + 复核率/AP 重测;headless segfault 排查
-- [ ] 静态目标 GT(semantic LiDAR 提取)技术选型——M2 之后启动
+- [x] M3 工具链(train3d 微调 3 败排查/行人布置/headless 纪律)✅——微调专项挂起,天气·长尾转 P1
+- [ ] **P1** corner case 场景矩阵:参数档库 + 逆光 A/B 定量(§5.5)
+- [ ] **P2** 静态目标 + 道路特征 GT:选型 + 格式 + 样例(§5.5)
+- [ ] **M4-0** RoadRunner 可用性调研;M4-1 定制地图端到端(P1 后启动)
