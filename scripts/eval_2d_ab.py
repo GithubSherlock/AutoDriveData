@@ -94,7 +94,13 @@ def detect(
 
 
 def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
-    """conf 降序贪心 IoU 匹配 → PR 梯形积分 AP。"""
+    """conf 降序贪心 IoU 匹配 → 11 点插值 AP(与 3D 侧 compare.ap11 同口径)。
+
+    AP 尾部纪律:recall 未达 1 的部分无预测 → precision=0(低 recall 不注水)。
+    2026-09-09 教训:旧实现尾行 `ap += (1-prev_r)*prev_p` 把未达 recall 段仍按
+    最后 precision 计入——最后一个是 TP 时低 recall 数据被严重吹高
+    (雨夜检出 0.48 却报 AP 0.976,触发修复)。
+    """
     preds = sorted(preds, key=lambda t: -t[0])
     matched = [False] * len(gt_boxes)
     tp: list[bool] = []
@@ -116,15 +122,13 @@ def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
         return 0.0, n_gt, n_pred
     tp = np.array(tp, dtype=float)
     cum_tp = np.cumsum(tp)
-    recall = cum_tp / n_gt
-    precision = cum_tp / np.arange(1, n_pred + 1)
-    # 梯形积分 + 尾部拉到终点(标准 AP:PR 全谱积分)
+    recalls = cum_tp / n_gt
+    precisions = cum_tp / np.arange(1, n_pred + 1)
     ap = 0.0
-    prev_r, prev_p = 0.0, precision[0]
-    for r, p in zip(recall, precision):
-        ap += (r - prev_r) * prev_p
-        prev_r, prev_p = r, p
-    ap += (1.0 - prev_r) * prev_p
+    for rq in np.linspace(0.0, 1.0, 11):
+        hit = recalls >= rq
+        p = float(precisions[hit].max()) if hit.any() else 0.0
+        ap += p / 11.0
     return ap, n_gt, n_pred
 
 

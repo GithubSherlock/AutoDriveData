@@ -229,13 +229,14 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 3. **起点锚定**:校准脚本残留 ego 阻塞 spawn point 0 → spawn_ego fallback 到反向点(朝 -x),轨迹失配;现清场 + 强制锚定 pts[0](yaw=0) + 起点校验,重采即复现
 4. **GT 边缘卡边**:第 4 台车原放 65.0m = GT max_distance 阈值,起步抖动致两侧 GT 216 vs 219 不可比;改 62m 留裕量 → 重采 GT **218 = 218 帧级完全配对**
 
-最终数(同帧配对,唯一变量 = 光照):
+最终数(同帧配对,唯一变量 = 光照;**2026-09-09 AP 口径修复后重算**,
+见 §5.7b 尾部 bug 说明):
 | 传感器 | 模型 | day_clear | sunset_glare | Δ |
 |---|---|---|---|---|
-| 相机 2D | YOLO11s kitti_finetune | Car AP 0.911 | **0.892** | **-0.020** |
+| 相机 2D | YOLO11s kitti_finetune | Car AP 0.606 | **0.592** | **-0.014** |
 | LiDAR 3D | pointpillars_kitti | 0.473 | 0.476 | +0.003(噪声内)|
 
-- 相机逆光**掉点成立但幅度小**(Δ-0.020);天空带亮度 136→94 确认光照确实变了
+- 相机逆光**掉点成立但幅度小**(Δ-0.014);天空带亮度 136→94 确认光照确实变了
 - LiDAR 兜底**不受光照影响**(+0.003)——融合兜底逻辑成立
 - 幅度小的根因如实记录(平台边界):CARLA 0.9.16 无镜头光学/高光饱和,AE 全局曝光自动补偿——"逆光眼瞎"在仿真里只能量出轻度掉点,真车镜头的大反差截断不可模拟(已在 scenarios.py fidelity 标注)
 - 3D 侧 AP 绝对值低(0.47)是 pointpillars 预训练权重 × CARLA 点云域差,与本实验归因无关(两侧同差)
@@ -299,6 +300,61 @@ Solid Yellow)白(右 Broken White)双线沿路缘延伸、透视收敛正确;信
 - M4-0 RoadRunner 可用性调研(trial 渠道/平台约束/0.9.16 USD-xodr 导入链路),P1 完成后启动
 - M4-1 小型路网 → 定制地图端到端(P1/P2 方法学直接复用)
 
+### 5.7 M4-0 调研结论(2026-09-09,Web 调研 + 本机核实)
+
+**RoadRunner 侧(易解决)**:
+- 商业授权:30 天 trial(MathWorks 账号,一次性)/校园·客户授权;Linux(Ubuntu 22.04)官方支持
+  (R2023a 起 Ubuntu 22.04 有变数,R2023b 实测可装,缺 libssl1.1 需补)
+- **RoadRunner 不是关键**:它只是 xodr 编辑器;xodr 可用免费替代
+  (手写 OpenDRIVE XML / Road2Sim / esmini 生态)生成
+
+**CARLA 消费侧(关键瓶颈,本机核实)**:
+- 本机 0.9.16 prebuilt 包(19G,`/root/autodl-tmp/CARLA_0.9.16`):
+  Binaries/Linux 仅 `CarlaUE4-Linux-Shipping`(**无 UnrealEditor 二进制**);
+  Import/ 目录为空,ImportAssets.sh 只解包 UE 导出产物;**PythonAPI 无运行时
+  xodr 入口**(仅 load_world/reload_world;get_traffic_light_from_opendrive_id 只做查询);
+  HDMaps/ 为 Town01-07 的 .pcd 参考点云,与定制无关
+- **结论:prebuilt 无法导入自定义地图**;官方导入链(make import /
+  RoadRunner Importer 插件)全部要求 **CARLA 源码构建**
+- 源码构建成本(官方文档):UE4.26 CARLA fork ~91G(CARLA 专用 fork,
+  **需 Epic GitHub 账号关联授权**)+ CARLA 源码 1.2G + 资产 31G +
+  编译输出 → **~170G 磁盘**(本机数据盘 190G 已用 121G/余 70G → **差 ~100G**,
+  需清盘或增盘)+ 编译数小时 + **GPU 驱动栈回归**(现行 shim/EGL 修复
+  glvnd 方案不一定覆盖源码版 UE)
+
+**裁决:M4 的真正成本在 CARLA 源码构建,不在 RoadRunner** → M4-1 路线
+待用户拍板(§5.7a)。
+
+### 5.7b P1-4 雨夜 A/B(2026-09-09 ✅)+ **AP 实现 bug 修复**
+
+**AP 口径 bug(2026-09-09 发现,重要)**:eval_2d_ab.py 旧 ap_for 尾行
+`ap += (1-prev_r)*prev_p` 把"未达 recall=1 的部分"仍按最后 precision 计入
+——最后一个预测是 TP 时,低 recall 数据被严重吹高(雨夜检出率 0.48 却报
+AP 0.976 触发怀疑)。修复为 11 点插值(与 3D compare.ap11 同口径,尾部=0)。
+**P1-3 数字随修复重算**(§5.5a):Δ-0.020→-0.014,方向不变。
+
+**P1-4 雨夜(dense 雨夜场景,唯一变量 = 天气):**
+| 传感器 | 模型 | day_clear | rain_night | Δ |
+|---|---|---|---|---|
+| 相机 2D | YOLO11s kitti_finetune | Car AP 0.606 | **0.453** | **-0.153 掉点成立** |
+| LiDAR 3D | pointpillars_kitti | 0.473 | 0.490 | +0.017(噪声级)|
+
+- 相机:强掉点(Δ-0.153)+ 检出/GT 0.72→0.48 —— **漏检型 corner case**
+  (暗+湿反光对比度下降);与逆光的"轻掉点"互补,两型都量化到了
+- LiDAR:点云物理不变(CARLA 雨丝只渲染、不断回波),3D AP 差=噪声级
+  —— 融合兜底两实验一致成立
+- 帧级配对:GT 219 vs 218,差 1 条(帧 28 rain 侧"贴相机掠影"GT:
+  trunc=0.75/z=0.05m/单像素,0.5m 轨迹差所致边缘情形,对 AP 影响 ≤0.5%,
+  如实记录)
+
+### 5.7a 用户裁决(2026-09-09):**降级 M4 → 扩展 P1**
+
+M4(定制街道)挂起,理由:M4-0 显示道路封闭 = 源码构建
+(~170G 磁盘/Epic 授权/天级编译/驱动回归)对"一条演示街道"收益过载。
+精力转入 P1 扩展:在现有平台再跑 corner case 定量 A/B
+(P1-4 雨夜,P1-5+ 待定)——最终目标缺口中"场景矩阵"缺口直接壮大;
+定制街道留待日后(换盘/有需求)按 M4-0 沉淀路线重开。
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -334,4 +390,5 @@ AutoDriveData/
 - [x] M3 工具链(train3d 微调 3 败排查/行人布置/headless 纪律)✅——微调专项挂起,天气·长尾转 P1
 - [x] **P1** corner case 场景矩阵:参数档库 + 逆光 A/B 定量(§5.5a ✅ 2026-09-09)——相机 Δ-0.020 掉点成立、LiDAR Δ+0.003 兜底不受影响
 - [x] **P2** 静态目标 + 道路特征 GT:选型(§5.6a 地图查询定案)+ 格式 + 样例(§5.6b ✅ 2026-09-09,目检通过)
-- [ ] **M4-0** RoadRunner 可用性调研;M4-1 定制地图端到端(P1/P2 后启动)
+- [ ] **P1-4+** 第二 corner case 定量 A/B(雨夜;隧道/遮挡候选)——M4 降级后新主线
+- [~] **M4** 定制街道:M4-0 调研(§5.7 ✅)+ M4-1 用户裁决降级(§5.7a,源码构建成本过载,挂起重开条件:换盘/有需求)
