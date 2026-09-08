@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
+from ultralytics.engine.results import Results
 
 GT_CLASSES = ("Car", "Pedestrian", "Cyclist")
 COCO_FALLBACK = {
@@ -83,8 +85,9 @@ def detect(
     for f in files:
         img = np.array(Image.open(f).convert("RGB"))
         sky_vs.append(img[: img.shape[0] // 4].mean())
-        res = model.predict(f, conf=conf, verbose=False, device=0)[0]
-        for b in res.boxes:
+        # predict 返回 union(Iterator | list),先 materialize 再取首帧
+        res = cast(Results, list(model.predict(f, conf=conf, verbose=False, device=0))[0])
+        for b in res.boxes or []:  # 无检测帧 boxes=None
             c = norm_cls(names[int(b.cls.item())])
             if not c:
                 continue
@@ -104,7 +107,7 @@ def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
     preds = sorted(preds, key=lambda t: -t[0])
     matched = [False] * len(gt_boxes)
     tp: list[bool] = []
-    for conf, box in preds:
+    for _, box in preds:
         best_i, best_v = -1, 0.0
         for j, g in enumerate(gt_boxes):
             if matched[j]:
@@ -120,8 +123,8 @@ def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
     n_gt, n_pred = len(gt_boxes), len(preds)
     if n_pred == 0 or n_gt == 0:
         return 0.0, n_gt, n_pred
-    tp = np.array(tp, dtype=float)
-    cum_tp = np.cumsum(tp)
+    tp_np = np.array(tp, dtype=float)
+    cum_tp = np.cumsum(tp_np)
     recalls = cum_tp / n_gt
     precisions = cum_tp / np.arange(1, n_pred + 1)
     ap = 0.0
