@@ -215,6 +215,31 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - P1-3 **逆光 A/B 定量实验**(首个 corner case):晴天 vs 低角度正前阳光,各 N 帧 → PointPillars AP 对比 → 相机"瞎多少"量化 + 融合差值
 - 验收:≥1 corner case 定量 A/B + 参数档可复用库
 
+### 5.5a P1 执行记录(2026-09-09 ✅ P1 验收)
+
+**P1-1**(7624b2b)场景目录 + 单测;可模拟性矩阵写在 scenarios.py 模块 docstring(无 flare/镜头光学、无雪、LiDAR 雨损不可模拟——防把简化渲染当真实)。
+
+**P1-2**(7c9b493)collect_drive --scene + 8 场景档实测确认(day_clear 为生产基底,其余覆写校验防打错字)。
+
+**P1-3 逆光 A/B**(collect_ab_route.py + eval_2d_ab.py,新增)——关键坑与最终数:
+
+方法学(三次修正,每步都是纪律教训):
+1. autopilot 路线不可控 → 弃;改固定 ego 定速直行 + 路肩 4 静置车(20/35/50/**62**m),只变 weather
+2. **方位校准**:az=300 误采是顺光(太阳在车后,对比 +0.054 假"逆光更强");azscan 修正 az=90(=东=+x=车头正前,判据:日盘在 FOV 时全图过曝最低——AE 压得最狠)
+3. **起点锚定**:校准脚本残留 ego 阻塞 spawn point 0 → spawn_ego fallback 到反向点(朝 -x),轨迹失配;现清场 + 强制锚定 pts[0](yaw=0) + 起点校验,重采即复现
+4. **GT 边缘卡边**:第 4 台车原放 65.0m = GT max_distance 阈值,起步抖动致两侧 GT 216 vs 219 不可比;改 62m 留裕量 → 重采 GT **218 = 218 帧级完全配对**
+
+最终数(同帧配对,唯一变量 = 光照):
+| 传感器 | 模型 | day_clear | sunset_glare | Δ |
+|---|---|---|---|---|
+| 相机 2D | YOLO11s kitti_finetune | Car AP 0.911 | **0.892** | **-0.020** |
+| LiDAR 3D | pointpillars_kitti | 0.473 | 0.476 | +0.003(噪声内)|
+
+- 相机逆光**掉点成立但幅度小**(Δ-0.020);天空带亮度 136→94 确认光照确实变了
+- LiDAR 兜底**不受光照影响**(+0.003)——融合兜底逻辑成立
+- 幅度小的根因如实记录(平台边界):CARLA 0.9.16 无镜头光学/高光饱和,AE 全局曝光自动补偿——"逆光眼瞎"在仿真里只能量出轻度掉点,真车镜头的大反差截断不可模拟(已在 scenarios.py fidelity 标注)
+- 3D 侧 AP 绝对值低(0.47)是 pointpillars 预训练权重 × CARLA 点云域差,与本实验归因无关(两侧同差)
+
 **P2 — 静态目标 + 道路特征 GT**(Town10 验证方法学)
 - P2-1 技术选型裁决 §2 风险①:semantic LiDAR 后处理 vs RoadRunner 资产化
 - P2-2 静态 GT 格式设计:信号灯(actor 有状态 API)/限速标志/车道线(semantic tag,号值以实测为准)→ 扩展 gt.py 静态类 + KITTI/nuScenes 落盘取舍
@@ -257,6 +282,6 @@ AutoDriveData/
 - [x] M1b 步骤 8–10(geometry P2 约定/nuscenes 生成器/oracle/nuscenes-queue 验收)✅
 - [x] M2(collect_drive/compare/eval_kitti/域差距修复实验/150 帧闭环验收)✅——分歧率 <10% 未达,微调路径归 M3
 - [x] M3 工具链(train3d 微调 3 败排查/行人布置/headless 纪律)✅——微调专项挂起,天气·长尾转 P1
-- [ ] **P1** corner case 场景矩阵:参数档库 + 逆光 A/B 定量(§5.5)
+- [x] **P1** corner case 场景矩阵:参数档库 + 逆光 A/B 定量(§5.5a ✅ 2026-09-09)——相机 Δ-0.020 掉点成立、LiDAR Δ+0.003 兜底不受影响
 - [ ] **P2** 静态目标 + 道路特征 GT:选型 + 格式 + 样例(§5.5)
 - [ ] **M4-0** RoadRunner 可用性调研;M4-1 定制地图端到端(P1 后启动)

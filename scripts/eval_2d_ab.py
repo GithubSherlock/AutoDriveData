@@ -1,0 +1,188 @@
+"""P1-3 逆光 A/B:冻结 YOLO11s(KITTI 微调)在 A/B 两 KITTI root 的 2D AP 对比。
+
+用法(base env):
+  python scripts/eval_2d_ab.py --root-a outputs/kitti_day_clear --root-b outputs/kitti_sunset_glare \
+      [--limit 150] [--conf 0.25] [--iou 0.5]
+
+评估口径:GT label_2 2D bbox(列 5-8) vs YOLO 预测(原图尺度),
+IoU 贪心匹配(conf 降序,每 GT 一次)→ 逐类 PR 梯形积分 AP;类名归一化
+(KITTI Car/Pedestrian/Cyclist ↔ COCO car/person/bicycle 等)。两场景同一模型
+权重(冻结)→ 相对差即天气/光照效应。另报画面照度上下文(天空带亮度)。
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+from ultralytics import YOLO
+
+GT_CLASSES = ("Car", "Pedestrian", "Cyclist")
+COCO_FALLBACK = {
+    "car": "Car",
+    "truck": "Car",
+    "bus": "Car",
+    "person": "Pedestrian",
+    "bicycle": "Cyclist",
+    "motorcycle": "Cyclist",
+}
+
+
+def norm_cls(name: str) -> str:
+    n = name.strip().lower()
+    if n in COCO_FALLBACK:
+        return COCO_FALLBACK[n]
+    for c in GT_CLASSES:
+        if n == c.lower():
+            return c
+    return ""
+
+
+def load_gt(
+    root: Path, limit: int | None = None
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    gt: dict[str, list] = {c: [] for c in GT_CLASSES}
+    files = sorted((root / "training/label_2").glob("*.txt"))
+    if limit:
+        files = files[:limit]
+    for f in files:
+        for line in f.read_text().splitlines():
+            p = line.split()
+            if len(p) < 15:
+                continue
+            c = norm_cls(p[0])
+            if c:
+                gt[c].append(tuple(float(v) for v in p[4:8]))
+    return gt
+
+
+def box_iou(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    uni = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / uni
+
+
+def detect(
+    root: Path, model: YOLO, names: dict[int, str], conf: float, limit: int | None
+):
+    """逐帧推理 → {cls: [(conf, box)]};另返画面天空亮度均值序列。"""
+    out: dict[str, list] = {c: [] for c in GT_CLASSES}
+    sky_vs: list[float] = []
+    files = sorted((root / "training/image_2").glob("*.png"))
+    if limit:
+        files = files[:limit]
+    for f in files:
+        img = np.array(Image.open(f).convert("RGB"))
+        sky_vs.append(img[: img.shape[0] // 4].mean())
+        res = model.predict(f, conf=conf, verbose=False, device=0)[0]
+        for b in res.boxes:
+            c = norm_cls(names[int(b.cls.item())])
+            if not c:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
+            out[c].append((float(b.conf.item()), (x1, y1, x2, y2)))
+    return out, sky_vs
+
+
+def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
+    """conf 降序贪心 IoU 匹配 → PR 梯形积分 AP。"""
+    preds = sorted(preds, key=lambda t: -t[0])
+    matched = [False] * len(gt_boxes)
+    tp: list[bool] = []
+    for conf, box in preds:
+        best_i, best_v = -1, 0.0
+        for j, g in enumerate(gt_boxes):
+            if matched[j]:
+                continue
+            v = box_iou(g, box)
+            if v > best_v:
+                best_i, best_v = j, v
+        if best_i >= 0 and best_v >= iou_thr:
+            tp.append(True)
+            matched[best_i] = True
+        else:
+            tp.append(False)
+    n_gt, n_pred = len(gt_boxes), len(preds)
+    if n_pred == 0 or n_gt == 0:
+        return 0.0, n_gt, n_pred
+    tp = np.array(tp, dtype=float)
+    cum_tp = np.cumsum(tp)
+    recall = cum_tp / n_gt
+    precision = cum_tp / np.arange(1, n_pred + 1)
+    # 梯形积分 + 尾部拉到终点(标准 AP:PR 全谱积分)
+    ap = 0.0
+    prev_r, prev_p = 0.0, precision[0]
+    for r, p in zip(recall, precision):
+        ap += (r - prev_r) * prev_p
+        prev_r, prev_p = r, p
+    ap += (1.0 - prev_r) * prev_p
+    return ap, n_gt, n_pred
+
+
+def report(
+    root: Path,
+    model: YOLO,
+    names: dict[int, str],
+    conf: float,
+    iou: float,
+    limit: int | None,
+):
+    det, sky = detect(root, model, names, conf, limit)
+    gt_all = load_gt(root, limit)
+    print(
+        f"\n=== {root.name} (conf={conf} IoU@{iou}) 天空带亮度均值 {np.mean(sky):.0f} ± {np.std(sky):.0f}"
+    )
+    aps: list[float] = []
+    for c in GT_CLASSES:
+        ap, n_gt, n_pred = ap_for(gt_all[c], det[c], iou)
+        if n_gt > 0:  # 无 GT 的类不稀释 mAP(本项目行人 GT 稀疏,见 collect_drive 局限)
+            aps.append(ap)
+        print(
+            f"  {c:11s} AP={ap:6.3f}  GT={n_gt:5d}  检出={n_pred:5d}  检出/GT={n_pred / max(n_gt, 1):.2f}"
+        )
+    m = float(np.mean(aps)) if aps else float("nan")
+    print(f"  mAP(有GT的 {len(aps)} 类)={m:.3f}")
+    return m
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root-a", default="outputs/kitti_day_clear")
+    ap.add_argument("--root-b", default="outputs/kitti_sunset_glare")
+    ap.add_argument(
+        "--weight",
+        default=(
+            "/root/autodl-tmp/Documents/Projects/AutoLabel/auto2dlabel/weights/"
+            "kitti_finetune/yolo11s_kitti/weights/best.pt"
+        ),
+    )
+    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--iou", type=float, default=0.5)
+    ap.add_argument("--limit", type=int, default=None)
+    args = ap.parse_args()
+
+    model = YOLO(args.weight)
+    names = model.names
+    print("YOLO names:", names)
+    ra = report(Path(args.root_a), model, names, args.conf, args.iou, args.limit)
+    rb = report(Path(args.root_b), model, names, args.conf, args.iou, args.limit)
+    delta = rb - ra
+    verdict = (
+        "逆光侧更低 → 逆光掉点成立"
+        if delta < -0.01
+        else ("逆光侧更高" if delta > 0.01 else "两测持平")
+    )
+    print(f"\nΔ mAP (B−A) = {delta:+.3f} —— {verdict}")
+
+
+if __name__ == "__main__":
+    main()

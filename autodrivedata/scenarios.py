@@ -50,7 +50,9 @@ _TRAFFIC_KEYS = ("npc_vehicles", "npc_walkers", "route_walkers")
 class Scene:
     name: str
     group: str  # lighting | weather | traffic | combo
-    weather: dict[str, float] = field(default_factory=dict)  # override,键 ⊂ WEATHER_KEYS
+    weather: dict[str, float] = field(
+        default_factory=dict
+    )  # override,键 ⊂ WEATHER_KEYS
     traffic: dict[str, int] = field(default_factory=dict)  # override,键 ⊂ _TRAFFIC_KEYS
     exposure: dict[str, str] = field(default_factory=dict)  # 相机蓝图属性覆写(曝光)
     fidelity: str = ""  # 保真度评注:能模拟什么、边界在哪
@@ -76,13 +78,20 @@ SCENES: dict[str, Scene] = {
     "sunset_glare": Scene(
         name="sunset_glare",
         group="lighting",
-        weather={"sun_altitude_angle": 6.0, "cloudiness": 0.0, "fog_density": 5.0},
+        weather={
+            "sun_altitude_angle": 6.0,
+            "cloudiness": 0.0,
+            "fog_density": 5.0,
+            "sun_azimuth_angle": 90.0,
+        },  # az=90=东=+x=车头正前(校准:az90 全图过曝最低=AE 压最狠=日盘在 FOV;az300 是顺光坑)
         fidelity=(
             "逆光实测(2026-09-08,数值诊断):日盘真实渲染但**AE 压至 ~205 不饱和**"
             "(天空 p99 205 vs 背阳 170);天空均值与太阳方位弱相关(散射天光主导,"
-            "AE 全局曝光)。azimuth→世界方向(ego yaw=0/朝+x 时):日盘峰 az≈290±40。"
-            "CARLA 无 flare/镜头光学——'眼瞎'不可用天空曝光目检证明,必须 P1-3 "
-            "A/B 用模型 AP 量化(相机 AP 掉点 + LiDAR 兜底差值)"
+            "AE 全局曝光)。CARLA 无 flare/镜头光学——'眼瞎'不可用天空曝光目检证明,"
+            "必须 P1-3 A/B 用模型 AP 量化(相机 AP 掉点 + LiDAR 兜底差值)。"
+            "方位校准(2026-09-08):az=0 起顺时针(90=东=+x=ego yaw0 车头正前);"
+            "日盘被 AE 压不饱和,车头正对日轮的判据=全图过曝最低(AE 压最狠);"
+            "az=300 是顺光陷阱(太阳在车后,早前误采已弃)"
         ),
         sensor_note="相机:逆光高反差(待 A/B 定量);LiDAR 不受光照影响(物理正确,融合兜底侧)",
     ),
@@ -163,5 +172,7 @@ def list_scenes() -> str:
     lines = []
     for s in SCENES.values():
         validate_scene(s)
-        lines.append(f"- {s.name} [{s.group}] 天气覆写 {sorted(s.weather)} 交通覆写 {s.traffic or '无'}")
+        lines.append(
+            f"- {s.name} [{s.group}] 天气覆写 {sorted(s.weather)} 交通覆写 {s.traffic or '无'}"
+        )
     return "\n".join(lines)
