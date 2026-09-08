@@ -66,9 +66,3 @@ python -m pytest tests/ -q   # base env,131 passed
 - [docs/milestone.md](docs/milestone.md) — 里程碑时间线与验收结论速览
 - [docs/testLog.md](docs/testLog.md) — 测试与踩坑日志(现象 → 修复 → 回归保护)
 - [CLAUDE.md](CLAUDE.md) — 项目会话说明(A/B 实验纪律与红线)
-
-## 平台边界(如实记录)
-
-- CARLA 0.9.16 无镜头光学(flare/动态范围)、无雪;雨/雾只影响渲染不影响合成 LiDAR → 传感器退化只能人工注入
-- 定制街道需 CARLA 源码构建(~170G 磁盘/Epic 授权),已降级挂起;零构建扩地图池替代
-- 新图采集约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、可用 Town13/15
