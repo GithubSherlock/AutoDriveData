@@ -545,6 +545,6 @@ AutoDriveData/
 - [x] **地图池扩展**(§5.7d ✅ 2026-09-09):AdditionalMaps Town11/12/13/15 入池(17 图);约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、锚定 yaw bug 已修(spawn point 固有 rotation)
 - [x] **可视化实时流**(§5.8 ✅ 2026-09-09):自建 MJPEG(view_stream.py,3 视角 + GT overlay + 灯色);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 calib.py 共用
 - [x] **灯色动态 GT**(§5.9 ✅ 2026-09-09):traffic_light.py 纯值层 + collect_tl_states.py(记录/受控切灯)+ 前向过滤(修掉 79% 身后灯)+ 渲染探针实证(镜片 30m 处仅 4px,不做视觉回归)
-- [ ] 工程规范:pyproject `[tool.ruff]` 定死规则集 + 存量 24 违规单提交(`style:` + `.git-blame-ignore-revs`)
+- [x] 工程规范(2026-09-09):`[tool.ruff]` 定死(110 列 / E,F,I,UP,B / ignore E501,E741)+ 存量 25 违规清零 + 全仓 `ruff format`(26 文件 419 行),单 `style:` 提交 b6d288a + `.git-blame-ignore-revs`;pre-commit 未装 → 不引入,纪律落到 CLAUDE.md 命令行
 - [ ] 参数扫描 + 失效归因(距离×速度网格 + 漏检的 TTC/距离分布)——P1 定量延伸
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)

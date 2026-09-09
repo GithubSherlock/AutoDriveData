@@ -67,7 +67,8 @@ cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti
   --det-model pointpillars_kitti --batch --no-viz --out-dir <abs out>
 python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对(base env)
 
-# 测试
+# 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
+ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest tests/ -q
 ```
 
@@ -83,4 +84,5 @@ python -m pytest tests/ -q
 - **灯态 GT 不做视觉回归**:镜片 0.2m,在 KITTI 口径相机(f=621)下 30m 处仅约 4px;12–30m 处按颜色采样命中的是**黄色灯箱外壳**(≈(255,237,0),与黄灯镜片同色相)。真值取自 actor API(逻辑层)。要拍镜片必须按灯头盒**薄轴**放相机(盒 yaw 方向拍的是背面,曾据此误判"渲染不随 set_state 变")
 - **同步模式首个 `get_actors()` 为空**(快照只在 tick 后刷新)→ 清场会静默漏清;已修在 `carla_common.sync_mode()`(apply_settings 后补 tick),勿绕过它自己 apply_settings
 - **灯态收集侧要前向过滤**:圆形 horizon 会把身后 120m 的灯全收进来(实测占 79%),`traffic_light_frame(forward_only=True)` 是默认口径
-- 提交:Conventional Commits;改动后 ruff + 相关单测;决策与执行记录同步进 Plan.md
+- 提交:Conventional Commits;改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 Plan.md
+- **格式口径已定死**:`[tool.ruff]` 在 pyproject(line-length 110 / select E,F,I,UP,B / ignore E501,E741),`ruff format` 是唯一 formatter;批量纯格式提交要追加到 `.git-blame-ignore-revs`
