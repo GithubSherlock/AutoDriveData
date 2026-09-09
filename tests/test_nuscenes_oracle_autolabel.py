@@ -25,9 +25,7 @@ from autodrivedata.export import nuscenes as ne  # noqa: E402
 
 
 def _build_dataroot(tmp_path) -> None:
-    pts = np.array(
-        [[5.0, 0.0, -1.0, 0.9, 0.0], [5.5, 0.5, -0.8, 0.8, 0.0]], dtype=np.float32
-    )
+    pts = np.array([[5.0, 0.0, -1.0, 0.9, 0.0], [5.5, 0.5, -0.8, 0.8, 0.0]], dtype=np.float32)
     samples = [
         ne.NusSample(
             ego_translation=(0.0, 0.0, 0.0),
@@ -60,9 +58,7 @@ def _build_dataroot(tmp_path) -> None:
     ]
     ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": samples})
     for i in range(2):
-        (tmp_path / f"samples/LIDAR_TOP/{i:06d}.bin").parent.mkdir(
-            parents=True, exist_ok=True
-        )
+        (tmp_path / f"samples/LIDAR_TOP/{i:06d}.bin").parent.mkdir(parents=True, exist_ok=True)
         pts.tofile(tmp_path / f"samples/LIDAR_TOP/{i:06d}.bin")
         for c in ne.NUS_CAMERAS:
             p = tmp_path / f"samples/{c}/{i:06d}.png"

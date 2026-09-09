@@ -42,9 +42,7 @@ def norm_cls(name: str) -> str:
     return ""
 
 
-def load_gt(
-    root: Path, limit: int | None = None
-) -> dict[str, list[tuple[float, float, float, float]]]:
+def load_gt(root: Path, limit: int | None = None) -> dict[str, list[tuple[float, float, float, float]]]:
     gt: dict[str, list] = {c: [] for c in GT_CLASSES}
     files = sorted((root / "training/label_2").glob("*.txt"))
     if limit:
@@ -73,9 +71,7 @@ def box_iou(a, b) -> float:
     return inter / uni
 
 
-def detect(
-    root: Path, model: YOLO, names: dict[int, str], conf: float, limit: int | None
-):
+def detect(root: Path, model: YOLO, names: dict[int, str], conf: float, limit: int | None):
     """逐帧推理 → {cls: [(conf, box)]};另返画面天空亮度均值序列。"""
     out: dict[str, list] = {c: [] for c in GT_CLASSES}
     sky_vs: list[float] = []
@@ -145,17 +141,13 @@ def report(
 ):
     det, sky = detect(root, model, names, conf, limit)
     gt_all = load_gt(root, limit)
-    print(
-        f"\n=== {root.name} (conf={conf} IoU@{iou}) 天空带亮度均值 {np.mean(sky):.0f} ± {np.std(sky):.0f}"
-    )
+    print(f"\n=== {root.name} (conf={conf} IoU@{iou}) 天空带亮度均值 {np.mean(sky):.0f} ± {np.std(sky):.0f}")
     aps: list[float] = []
     for c in GT_CLASSES:
         ap, n_gt, n_pred = ap_for(gt_all[c], det[c], iou)
         if n_gt > 0:  # 无 GT 的类不稀释 mAP(本项目行人 GT 稀疏,见 collect_drive 局限)
             aps.append(ap)
-        print(
-            f"  {c:11s} AP={ap:6.3f}  GT={n_gt:5d}  检出={n_pred:5d}  检出/GT={n_pred / max(n_gt, 1):.2f}"
-        )
+        print(f"  {c:11s} AP={ap:6.3f}  GT={n_gt:5d}  检出={n_pred:5d}  检出/GT={n_pred / max(n_gt, 1):.2f}")
     m = float(np.mean(aps)) if aps else float("nan")
     print(f"  mAP(有GT的 {len(aps)} 类)={m:.3f}")
     return m

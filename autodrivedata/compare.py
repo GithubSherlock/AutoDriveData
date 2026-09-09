@@ -126,8 +126,13 @@ def parse_gt_line(line: str) -> Box7:
     assert len(p) >= 15, f"GT 行字段不足: {line[:40]}"
     return Box7(
         label=p[0],
-        h=float(p[8]), w=float(p[9]), l=float(p[10]),
-        x=float(p[11]), y=float(p[12]), z=float(p[13]), ry=float(p[14]),
+        h=float(p[8]),
+        w=float(p[9]),
+        l=float(p[10]),
+        x=float(p[11]),
+        y=float(p[12]),
+        z=float(p[13]),
+        ry=float(p[14]),
     )
 
 
@@ -307,10 +312,7 @@ def report_text(rep: Report, iou_thresh: float = 0.5) -> str:
     lines = [f"3D IoU 阈值 {iou_thresh} | 帧数 {len(rep.frames)}"]
     lines.append(f"{'类':14s} {'AP':>6s} {'GT':>5s} {'Pred':>5s} {'TP':>5s} {'FP':>5s} {'FN':>5s}")
     for c, s in rep.per_class.items():
-        lines.append(
-            f"{c:14s} {s.ap:6.3f} {s.gt_count:5d} {s.pred_count:5d} "
-            f"{s.tp:5d} {s.fp:5d} {s.fn:5d}"
-        )
+        lines.append(f"{c:14s} {s.ap:6.3f} {s.gt_count:5d} {s.pred_count:5d} {s.tp:5d} {s.fp:5d} {s.fn:5d}")
     lines.append(
         f"合计 GT={rep.total_gt} 匹配={rep.total_matched} "
         f"分歧帧={sum(1 for f in rep.frames if f.divergent)}/{len(rep.frames)} "

@@ -26,9 +26,7 @@ class TestCarlaToNus:
         for psi in [-2.0, -1.0, 0.0, 0.5, 2.0]:
             heading_nus = g.CARLA_TO_NUS @ np.array([np.cos(psi), np.sin(psi), 0.0])
             psi_n = g.carla_yaw_to_nus_yaw(psi)
-            np.testing.assert_allclose(
-                heading_nus[:2], [np.cos(psi_n), np.sin(psi_n)], atol=1e-12
-            )
+            np.testing.assert_allclose(heading_nus[:2], [np.cos(psi_n), np.sin(psi_n)], atol=1e-12)
 
 
 class TestQuat:

@@ -20,16 +20,12 @@ import numpy as np
 
 # CARLA 系(x 前/y 右/z 上)→ KITTI 相机系(x 右/y 下/z 前)基变换。
 # 含手性翻转(det = −1),正交:CARLA_TO_CAMᵀ = CARLA_TO_CAM⁻¹。
-CARLA_TO_CAM = np.array(
-    [[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=np.float64
-)
+CARLA_TO_CAM = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=np.float64)
 
 # KITTI velodyne 系(x 前/y 左/z 上)→ KITTI 相机系。
 # 与 auto3dlabel 的 GLOBAL_TO_CAM_LIKE 同构(nuScenes 全局系同为 y 左);
 # 恒等位姿下 Tr_velo_to_cam 退化到本矩阵(手算锚点)。
-VELO_TO_CAM = np.array(
-    [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=np.float64
-)
+VELO_TO_CAM = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]], dtype=np.float64)
 
 # CARLA 传感器系 → KITTI velodyne 系:仅 y 基轴翻转(轴对齐基变换,非重投影)
 CARLA_SENSOR_TO_VELO = np.diag([1.0, -1.0, 1.0]).astype(np.float64)
@@ -80,9 +76,7 @@ def world_to_cam(
     return (np.asarray(points, dtype=np.float64)[:, :3] - t) @ r.T
 
 
-def heading_to_rotation_y(
-    heading_world: np.ndarray, cam_rotation: tuple[float, float, float]
-) -> float:
+def heading_to_rotation_y(heading_world: np.ndarray, cam_rotation: tuple[float, float, float]) -> float:
     """世界系车头单位向量 → KITTI rotation_y(唯一转换点:ry = wrap_pi(yaw_bev − π/2))。"""
     h = np.asarray(heading_world, dtype=np.float64)[:3]
     hk = camera_rotation_world_to_cam(cam_rotation) @ h
@@ -90,9 +84,7 @@ def heading_to_rotation_y(
     return yaw_bev_to_rotation_y(yaw_bev)
 
 
-def actor_yaw_to_rotation_y(
-    actor_yaw: float, cam_rotation: tuple[float, float, float]
-) -> float:
+def actor_yaw_to_rotation_y(actor_yaw: float, cam_rotation: tuple[float, float, float]) -> float:
     """CARLA actor yaw[弧度] → 相机系 rotation_y(actor 俯仰/滚转恒 0 场景)。
 
     CARLA 车头 = Rz(yaw) 第一列 = (cos yaw, sin yaw, 0)(实测锁定)。

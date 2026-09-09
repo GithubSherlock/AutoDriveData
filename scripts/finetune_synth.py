@@ -7,6 +7,7 @@
 与 AutoLabel train3d 的差异:ImageSets 按本数据集实际帧号写(0..n_train-1 / 训练余下为 val),
 而非官方 7481 帧的固定划分;其余步骤(create_data/subsample/config/train)原样复用。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,16 +69,14 @@ def main() -> None:
     sets_dir = root / "ImageSets"
     sets_dir.mkdir(parents=True, exist_ok=True)
     n_total = args.n_train + args.n_val
-    (sets_dir / "train.txt").write_text(
-        "".join(f"{i:06d}\n" for i in range(args.n_train)), encoding="utf-8"
-    )
+    (sets_dir / "train.txt").write_text("".join(f"{i:06d}\n" for i in range(args.n_train)), encoding="utf-8")
     (sets_dir / "val.txt").write_text(
         "".join(f"{i:06d}\n" for i in range(args.n_train, n_total)), encoding="utf-8"
     )
     (sets_dir / "test.txt").write_text(
         "".join(f"{i:06d}\n" for i in range(args.n_train, n_total)), encoding="utf-8"
     )
-    print(f"① ImageSets: train 000000-{args.n_train-1:06d} / val {args.n_train:06d}-{n_total-1:06d}")
+    print(f"① ImageSets: train 000000-{args.n_train - 1:06d} / val {args.n_train:06d}-{n_total - 1:06d}")
 
     # ② create_data(幂等;首跑几分钟)
     _run_create_data(root)

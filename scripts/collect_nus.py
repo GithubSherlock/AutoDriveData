@@ -111,9 +111,7 @@ def main() -> None:
         cam_bp = bp_lib.find("sensor.camera.rgb")
         for k, v in CAM_ATTRS.items():
             cam_bp.set_attribute(k, v)
-        tf = carla.Transform(
-            SENSOR_OFFSET.location, carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0)
-        )
+        tf = carla.Transform(SENSOR_OFFSET.location, carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0))
         cameras[cam] = cast(carla.Sensor, world.spawn_actor(cam_bp, tf, attach_to=ego))
     print(
         f"[sensor] lidar {LIDAR_ATTRS['channels']}ch + 6 cameras {CAM_ATTRS['image_size_x']}x{CAM_ATTRS['image_size_y']}"
@@ -140,21 +138,16 @@ def main() -> None:
         0.0,
     )
     calib_cameras = {
-        c: (calib_lidar[0], g.carla_yaw_to_nus_yaw(np.radians(CAM_YAW_OFFSET[c])))
-        for c in NUS_CAMERAS
+        c: (calib_lidar[0], g.carla_yaw_to_nus_yaw(np.radians(CAM_YAW_OFFSET[c]))) for c in NUS_CAMERAS
     }
 
     samples: list[NusSample] = []
     try:
         for i in range(args.frames):
             world.tick()
-            pts_raw = np.frombuffer(
-                lid_q.get(timeout=10).raw_data, dtype=np.float32
-            ).reshape(-1, 4)
+            pts_raw = np.frombuffer(lid_q.get(timeout=10).raw_data, dtype=np.float32).reshape(-1, 4)
             pts_nus = g.carla_lidar_to_velodyne(pts_raw)  # y 翻转 = nus 传感器约定
-            pts5 = np.hstack(
-                [pts_nus, np.zeros((len(pts_nus), 1), dtype=np.float32)]
-            )  # elongation=0
+            pts5 = np.hstack([pts_nus, np.zeros((len(pts_nus), 1), dtype=np.float32)])  # elongation=0
             lidar_rel = f"samples/LIDAR_TOP/{i:06d}.bin"
             (out / lidar_rel).parent.mkdir(parents=True, exist_ok=True)
             pts5.tofile(out / lidar_rel)
@@ -181,9 +174,7 @@ def main() -> None:
             )
             annotations: list[dict] = []
             for a in world.get_actors():
-                if not (
-                    a.type_id.startswith("vehicle") or a.type_id.startswith("walker")
-                ):
+                if not (a.type_id.startswith("vehicle") or a.type_id.startswith("walker")):
                     continue
                 ann = _actor_to_annotation(a, pts_global)
                 if ann is not None:
@@ -222,9 +213,7 @@ def main() -> None:
         "v1.0-mini",
         {"scene-0103": samples, "scene-0916": [samples[0]]},
     )
-    print(
-        f"[done] nuScenes dataroot: {out.resolve()} (2 scenes, {len(samples)}+1 samples)"
-    )
+    print(f"[done] nuScenes dataroot: {out.resolve()} (2 scenes, {len(samples)}+1 samples)")
 
 
 if __name__ == "__main__":

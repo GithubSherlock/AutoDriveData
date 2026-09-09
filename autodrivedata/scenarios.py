@@ -50,9 +50,7 @@ _TRAFFIC_KEYS = ("npc_vehicles", "npc_walkers", "route_walkers")
 class Scene:
     name: str
     group: str  # lighting | weather | traffic | combo
-    weather: dict[str, float] = field(
-        default_factory=dict
-    )  # override,键 ⊂ WEATHER_KEYS
+    weather: dict[str, float] = field(default_factory=dict)  # override,键 ⊂ WEATHER_KEYS
     traffic: dict[str, int] = field(default_factory=dict)  # override,键 ⊂ _TRAFFIC_KEYS
     exposure: dict[str, str] = field(default_factory=dict)  # 相机蓝图属性覆写(曝光)
     fidelity: str = ""  # 保真度评注:能模拟什么、边界在哪
@@ -172,7 +170,5 @@ def list_scenes() -> str:
     lines = []
     for s in SCENES.values():
         validate_scene(s)
-        lines.append(
-            f"- {s.name} [{s.group}] 天气覆写 {sorted(s.weather)} 交通覆写 {s.traffic or '无'}"
-        )
+        lines.append(f"- {s.name} [{s.group}] 天气覆写 {sorted(s.weather)} 交通覆写 {s.traffic or '无'}")
     return "\n".join(lines)

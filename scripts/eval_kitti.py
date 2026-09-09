@@ -10,6 +10,7 @@
 - 置信度:pred/reviews/{fid}_review.json 的 annotations(含 conf)按 3D IoU>0.9
   与 label 行自配对;配不上的行视为 accepted(conf=0.85,复核桶门槛之上)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,11 +19,11 @@ from pathlib import Path
 
 from autodrivedata.compare import (
     Box7,
+    box3d_iou,
     evaluate_frames,
     load_gt_labels,
     load_pred_labels,
     report_text,
-    box3d_iou,
 )
 
 
@@ -35,8 +36,12 @@ def load_scores(review_json: Path, pred: list[Box7]) -> dict[int, float]:
     for ann in d.get("annotations", []):
         b = Box7(
             label=str(ann.get("label", "")),
-            h=float(ann.get("h", 0)), w=float(ann.get("w", 0)), l=float(ann.get("l", 0)),
-            x=float(ann.get("cx", 0)), y=float(ann.get("cy", 0)), z=float(ann.get("cz", 0)),
+            h=float(ann.get("h", 0)),
+            w=float(ann.get("w", 0)),
+            l=float(ann.get("l", 0)),
+            x=float(ann.get("cx", 0)),
+            y=float(ann.get("cy", 0)),
+            z=float(ann.get("cz", 0)),
             ry=float(ann.get("rotation_y", 0)),
             conf=float(ann.get("confidence", 1.0)),
         )

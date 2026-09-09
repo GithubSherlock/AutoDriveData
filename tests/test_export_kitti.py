@@ -34,16 +34,15 @@ class TestFramePaths:
 class TestWriteFrame:
     def _calib(self) -> KittiCalibOut:
         k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
-        return KittiCalibOut(p2=k.p2(), tr_velo_to_cam=tr_velo_to_cam(
-            (0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0
-        ))
+        return KittiCalibOut(
+            p2=k.p2(), tr_velo_to_cam=tr_velo_to_cam((0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0)
+        )
 
     def test_round_trip_contents(self, tmp_path):
         png = b"\x89PNG fake"
         velo = np.array([[1.0, -2.0, 3.0, 0.5], [4.0, 5.0, 6.0, 0.7]], dtype=np.float32)
         labels = ["Car 0.00 0 0.00 1 2 3 4 1.5 1.6 3.9 0 1.7 10 -1.57"]
-        paths = write_frame(tmp_path, "42", image_png=png, velodyne=velo,
-                            calib=self._calib(), labels=labels)
+        paths = write_frame(tmp_path, "42", image_png=png, velodyne=velo, calib=self._calib(), labels=labels)
         assert paths.image.read_bytes() == png
         got = np.fromfile(paths.velodyne, dtype=np.float32).reshape(-1, 4)
         np.testing.assert_allclose(got, velo)
@@ -52,8 +51,14 @@ class TestWriteFrame:
 
     def test_empty_labels_writes_empty_file(self, tmp_path):
         # 空 label 文件存在但无行(auto3dlabel load_gt3d 读到 [] 语义)
-        paths = write_frame(tmp_path, "0", image_png=b"x", velodyne=np.zeros((1, 4), np.float32),
-                            calib=self._calib(), labels=[])
+        paths = write_frame(
+            tmp_path,
+            "0",
+            image_png=b"x",
+            velodyne=np.zeros((1, 4), np.float32),
+            calib=self._calib(),
+            labels=[],
+        )
         assert paths.label.read_text() == ""
 
     def test_frame_ids_increment(self, tmp_path):

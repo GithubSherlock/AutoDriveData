@@ -105,9 +105,7 @@ class ActorBox:
 def box_center_world(box: ActorBox) -> np.ndarray:
     """box 中心的世界坐标:actor 位姿作用在 box 偏移上。"""
     r = g.carla_rotation_matrix(box.actor_rotation)
-    return np.asarray(box.actor_location, dtype=np.float64) + r @ np.asarray(
-        box.location, dtype=np.float64
-    )
+    return np.asarray(box.actor_location, dtype=np.float64) + r @ np.asarray(box.location, dtype=np.float64)
 
 
 def box_heading_world(box: ActorBox) -> np.ndarray:

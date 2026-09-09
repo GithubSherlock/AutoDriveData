@@ -7,6 +7,7 @@
 与 collect_kitti 同格式(KITTI root);区别:场景动态(ego 自动驾驶、NPC 交通流)。
 GT 逐帧取 actor 真值(box_to_gt_line 视野过滤),行人由 AI 控制器驱动行走。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,14 +17,6 @@ from typing import cast
 
 import carla
 import numpy as np
-
-from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
-from autodrivedata.export.kitti import write_frame
-from autodrivedata.gt import ActorBox, box_to_gt_line
-from autodrivedata.scenarios import SCENES, list_scenes, merged_weather
-from autodrivedata.semantic import semantic_to_velodyne_bin
-
 from carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
@@ -34,6 +27,13 @@ from carla_common import (
     spawn_ego,
     sync_mode,
 )
+
+from autodrivedata import geometry as g
+from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
+from autodrivedata.export.kitti import write_frame
+from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.scenarios import SCENES, list_scenes, merged_weather
+from autodrivedata.semantic import semantic_to_velodyne_bin
 
 NPC_MODELS = [
     "vehicle.tesla.model3",
@@ -72,9 +72,7 @@ def spawn_traffic(
     print(f"[traffic] {n_vehicles} vehicles + {n_walkers} walkers via TM/AI")
 
 
-def spawn_route_walkers(
-    world: carla.World, ego_t: carla.Transform, n_walkers: int
-) -> None:
+def spawn_route_walkers(world: carla.World, ego_t: carla.Transform, n_walkers: int) -> None:
     """行人布置在 ego 前方 10~60m 的**有效出生点**上、站立不动(M3-4)。
 
     教训(2026-09-07 实测):手工横向偏移的行人落点常偏离导航网格 →
@@ -93,7 +91,9 @@ def spawn_route_walkers(
         if 10.0 <= along <= 60.0 and abs(lat) <= 4.0:
             cands.append((along, lat, pt))
     cands.sort(key=lambda t: t[0])
-    picked = [cands[int(i * (len(cands) - 1) / max(n_walkers - 1, 1))] for i in range(n_walkers)] if cands else []
+    picked = (
+        [cands[int(i * (len(cands) - 1) / max(n_walkers - 1, 1))] for i in range(n_walkers)] if cands else []
+    )
     bp_lib = world.get_blueprint_library()
     walker_bp = bp_lib.find("walker.pedestrian.0001")
     ctrl_bp = bp_lib.find("controller.ai.walker")
@@ -112,8 +112,17 @@ def spawn_route_walkers(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=None, help="输出 KITTI root(默认 outputs/kitti_drive 或带 --scene 时 outputs/kitti_<scene>)")
-    ap.add_argument("--scene", default=None, choices=sorted(SCENES), help=f"corner case 场景档(见 autodrivedata/scenarios.py;天气/traffic 覆写)")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="输出 KITTI root(默认 outputs/kitti_drive 或带 --scene 时 outputs/kitti_<scene>)",
+    )
+    ap.add_argument(
+        "--scene",
+        default=None,
+        choices=sorted(SCENES),
+        help="corner case 场景档(见 autodrivedata/scenarios.py;天气/traffic 覆写)",
+    )
     ap.add_argument("--list-scenes", action="store_true", help="打印场景目录与天气覆写")
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--npc-vehicles", type=int, default=15)
@@ -150,7 +159,9 @@ def main() -> None:
 
     if scene is not None:
         world.set_weather(carla.WeatherParameters(**merged_weather(scene)))
-        print(f"[scene] {scene.name} [{scene.group}] — 覆写 {sorted(scene.weather)} | {scene.fidelity[:60] or '无评注'}")
+        print(
+            f"[scene] {scene.name} [{scene.group}] — 覆写 {sorted(scene.weather)} | {scene.fidelity[:60] or '无评注'}"
+        )
 
     tm = client.get_trafficmanager(8000)
     tm.set_synchronous_mode(True)  # 同步模式红线:TM 必须同步,否则车流冻结
@@ -158,7 +169,7 @@ def main() -> None:
     ego = spawn_ego(world)
     ego.set_autopilot(True, tm.get_port())
     tm.vehicle_percentage_speed_difference(ego, 30.0)  # 70% 速度,防冲撞
-    print(f"[ego] autopilot on (TM 8000, 70% speed)")
+    print("[ego] autopilot on (TM 8000, 70% speed)")
 
     ego_t = ego.get_transform()
     spawn_traffic(world, tm, args.npc_vehicles, args.npc_walkers, args.seed)
@@ -168,14 +179,16 @@ def main() -> None:
     cam_bp = bp_lib.find("sensor.camera.rgb")
     for k, v in CAM_ATTRS.items():
         cam_bp.set_attribute(k, v)
-    lid_bp = bp_lib.find("sensor.lidar.ray_cast" if not args.semantic_lidar else "sensor.lidar.ray_cast_semantic")
+    lid_bp = bp_lib.find(
+        "sensor.lidar.ray_cast" if not args.semantic_lidar else "sensor.lidar.ray_cast_semantic"
+    )
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
     camera = cast(carla.Sensor, world.spawn_actor(cam_bp, SENSOR_OFFSET, attach_to=ego))
     lidar = cast(carla.Sensor, world.spawn_actor(lid_bp, SENSOR_OFFSET, attach_to=ego))
 
-    img_q: "queue.Queue" = queue.Queue()
-    lid_q: "queue.Queue" = queue.Queue()
+    img_q: queue.Queue = queue.Queue()
+    lid_q: queue.Queue = queue.Queue()
     camera.listen(img_q.put)
     lidar.listen(lid_q.put)
 
@@ -233,14 +246,20 @@ def main() -> None:
                 velo = g.carla_lidar_to_velodyne(raw.reshape(-1, 4))
             write_frame(out, str(i), image_png=png, velodyne=velo, calib=calib_out, labels=labels)
             if (i + 1) % 20 == 0 or i == args.frames - 1:
-                print(f"[frame {i + 1}/{args.frames}] ego @ {tuple(round(v, 1) for v in loc(ego.get_transform()))} | {len(labels)} GT")
+                print(
+                    f"[frame {i + 1}/{args.frames}] ego @ {tuple(round(v, 1) for v in loc(ego.get_transform()))} | {len(labels)} GT"
+                )
     finally:
         camera.stop()
         lidar.stop()
         camera.destroy()
         lidar.destroy()
         for a in world.get_actors():
-            if a.type_id.startswith("vehicle") or a.type_id.startswith("walker") or a.type_id.startswith("controller"):
+            if (
+                a.type_id.startswith("vehicle")
+                or a.type_id.startswith("walker")
+                or a.type_id.startswith("controller")
+            ):
                 a.destroy()
     print(f"[done] KITTI root: {out.resolve()} ({args.frames} frames)")
 

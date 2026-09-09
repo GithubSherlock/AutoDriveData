@@ -91,11 +91,7 @@ def collect_static_frame(
             mark = cur.right_lane_marking if side == "right" else cur.left_lane_marking
             if mark is None:
                 continue
-            if (
-                str(mark.type) == "NONE"
-                or str(mark.color) == "NONE"
-                or float(mark.width) <= 0.0
-            ):
+            if str(mark.type) == "NONE" or str(mark.color) == "NONE" or float(mark.width) <= 0.0:
                 continue  # 无实体标线(路口/默认 xodr 占位 w=0),不输出
             px = b.x + right[0] * half * sign
             py = b.y + right[1] * half * sign
@@ -242,9 +238,7 @@ def main() -> None:
             png = out / "training/image_2" / f"{fid}.png"
             image.save_to_disk(str(png))
             img = Image.open(png).convert("RGB")
-            draw_overlay(img, sigs, segs, cam_loc, cam_rot, k).save(
-                out / "training/overlay" / f"{fid}.png"
-            )
+            draw_overlay(img, sigs, segs, cam_loc, cam_rot, k).save(out / "training/overlay" / f"{fid}.png")
 
             if (i + 1) % 10 == 0 or i == args.frames - 1:
                 npts = sum(len(s.points) for s in segs)

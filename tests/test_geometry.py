@@ -65,9 +65,7 @@ class TestCarlaRotationMatrix:
     def test_composed_30_45_15(self):
         # (pitch 30°, yaw 45°, roll 15°)——与 pycarla 实测矩阵一致(探针锁定)
         m = g.carla_rotation_matrix((np.pi / 6, np.pi / 4, np.pi / 12))
-        expected = np.array(
-            [[0.612, -0.592, -0.525], [0.612, 0.775, -0.158], [0.5, -0.224, 0.837]]
-        )
+        expected = np.array([[0.612, -0.592, -0.525], [0.612, 0.775, -0.158], [0.5, -0.224, 0.837]])
         np.testing.assert_allclose(m, expected, atol=1e-2)
 
     def test_det_plus_one(self):

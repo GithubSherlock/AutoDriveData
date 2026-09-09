@@ -30,6 +30,7 @@ class _WalkerCtrl(Protocol):
     def set_max_speed(self, speed: float) -> None: ...
     def go_to_location(self, destination: carla.Location) -> None: ...
 
+
 # 相机对齐 KITTI 口径(1242×375);LiDAR 64 线(与 KITTI velodyne 一致)
 CAM_ATTRS = {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}
 LIDAR_ATTRS = {
@@ -82,12 +83,12 @@ def spawn_npcs(world: carla.World, ego_t: carla.Transform) -> None:
         return carla.Transform(pos, carla.Rotation(yaw=yaw, pitch=0.0, roll=0.0))
 
     specs = [
-        ("vehicle.tesla.model3", place(12.0, 0.0, ego_yaw)),          # 同车道前车
-        ("vehicle.audi.a2", place(22.0, 2.2, ego_yaw)),               # 右邻车道
-        ("vehicle.ford.mustang", place(30.0, -3.2, ego_yaw + 180)),   # 对向车
-        ("walker.pedestrian.0001", place(8.0, 3.2, ego_yaw)),         # 右侧行人
+        ("vehicle.tesla.model3", place(12.0, 0.0, ego_yaw)),  # 同车道前车
+        ("vehicle.audi.a2", place(22.0, 2.2, ego_yaw)),  # 右邻车道
+        ("vehicle.ford.mustang", place(30.0, -3.2, ego_yaw + 180)),  # 对向车
+        ("walker.pedestrian.0001", place(8.0, 3.2, ego_yaw)),  # 右侧行人
         ("walker.pedestrian.0002", place(14.0, -3.2, ego_yaw + 90)),  # 左侧行人(面向车道)
-        ("vehicle.gazelle.omafiets", place(18.0, 3.6, ego_yaw)),      # 右侧骑行者
+        ("vehicle.gazelle.omafiets", place(18.0, 3.6, ego_yaw)),  # 右侧骑行者
     ]
     bp_lib = world.get_blueprint_library()
     for type_id, tf in specs:
@@ -153,13 +154,9 @@ def traffic_light_frame(
         dist = float(np.hypot(head[0] - ego_location[0], head[1] - ego_location[1]))
         if dist > horizon:
             continue
-        affected = tuple(
-            sorted({(wp.road_id, wp.lane_id) for wp in light.get_affected_lane_waypoints()})
-        )
+        affected = tuple(sorted({(wp.road_id, wp.lane_id) for wp in light.get_affected_lane_waypoints()}))
         stops = tuple(
-            sorted(
-                {(wp.road_id, wp.lane_id, round(float(wp.s), 1)) for wp in light.get_stop_waypoints()}
-            )
+            sorted({(wp.road_id, wp.lane_id, round(float(wp.s), 1)) for wp in light.get_stop_waypoints()})
         )
         lights.append(
             TrafficLightState(

@@ -44,9 +44,7 @@ class TestSensorToGlobal:
 
 class TestCountInBox:
     def test_yaw0_inside_outside(self):
-        pts = np.array(
-            [[1.0, 0.5, 0.5], [2.1, 0.0, 0.0], [0.0, 1.1, 0.0], [0.0, 0.0, 1.1], [1.0, 0.5, -0.5]]
-        )
+        pts = np.array([[1.0, 0.5, 0.5], [2.1, 0.0, 0.0], [0.0, 1.1, 0.0], [0.0, 0.0, 1.1], [1.0, 0.5, -0.5]])
         assert ne.count_points_in_box_nus(pts, ORIGIN, SIZE, 0.0) == 2
 
     def test_yaw90(self):
@@ -86,9 +84,19 @@ class TestMiniDataset:
         ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         table_dir = tmp_path / "v1.0-mini"
         names = {
-            "category", "attribute", "visibility", "instance", "sensor",
-            "calibrated_sensor", "ego_pose", "log", "scene", "sample",
-            "sample_data", "sample_annotation", "map",
+            "category",
+            "attribute",
+            "visibility",
+            "instance",
+            "sensor",
+            "calibrated_sensor",
+            "ego_pose",
+            "log",
+            "scene",
+            "sample",
+            "sample_data",
+            "sample_annotation",
+            "map",
         }
         assert {p.stem for p in table_dir.glob("*.json")} == names
         assert (tmp_path / "maps" / "ad_map.png").is_file()
@@ -134,7 +142,9 @@ class TestMiniDataset:
             {"scene-0103": [_sample(0), _sample(1)], "scene-0916": [_sample(2)]},
         )
         samples = json.loads((tmp_path / "v1.0-mini" / "sample.json").read_text())
-        scenes = {s["token"]: s["name"] for s in json.loads((tmp_path / "v1.0-mini" / "scene.json").read_text())}
+        scenes = {
+            s["token"]: s["name"] for s in json.loads((tmp_path / "v1.0-mini" / "scene.json").read_text())
+        }
         assert len(samples) == 3
         # 场景内成链、场景边界断开
         assert samples[0]["next"] == samples[1]["token"] and samples[1]["prev"] == samples[0]["token"]

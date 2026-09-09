@@ -88,7 +88,9 @@ class TestTrVeloToCam:
 
     def test_camera_yaw90_rotation(self):
         # 相机 yaw=+90°(朝 +y_g),LiDAR 同向:车顶前向点 → 相机系正前
-        tr = calib.tr_velo_to_cam((0.0, 0.0, 0.0), (0.0, np.pi / 2, 0.0), (0.0, 0.0, 0.0), (0.0, np.pi / 2, 0.0))
+        tr = calib.tr_velo_to_cam(
+            (0.0, 0.0, 0.0), (0.0, np.pi / 2, 0.0), (0.0, 0.0, 0.0), (0.0, np.pi / 2, 0.0)
+        )
         p_v = np.array([3.0, 0.0, 0.0, 1.0])
         np.testing.assert_allclose(tr @ p_v, [0.0, 0.0, 3.0], atol=1e-12)
 
@@ -96,15 +98,18 @@ class TestTrVeloToCam:
 class TestCalibText:
     def test_exact_text(self):
         k = calib.CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
-        out = calib.KittiCalibOut(p2=k.p2(), tr_velo_to_cam=calib.tr_velo_to_cam(
-            (0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0
-        ))
+        out = calib.KittiCalibOut(
+            p2=k.p2(), tr_velo_to_cam=calib.tr_velo_to_cam((0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0)
+        )
         text = out.to_text()
         lines = text.splitlines()
         assert len(lines) == 7
         assert lines[0] == f"P0: {' '.join('0.000000e+00' for _ in range(12))}"
         assert lines[2].startswith("P2: 6.210000e+02 0.000000e+00 6.205000e+02")
-        assert lines[4] == "R0_rect: 1.000000e+00 0.000000e+00 0.000000e+00 0.000000e+00 1.000000e+00 0.000000e+00 0.000000e+00 0.000000e+00 1.000000e+00"
+        assert (
+            lines[4]
+            == "R0_rect: 1.000000e+00 0.000000e+00 0.000000e+00 0.000000e+00 1.000000e+00 0.000000e+00 0.000000e+00 0.000000e+00 1.000000e+00"
+        )
         # Tr_velo_to_cam = VELO_TO_CAM(恒等位姿)
         assert lines[5] == (
             "Tr_velo_to_cam: 0.000000e+00 -1.000000e+00 0.000000e+00 0.000000e+00 "
@@ -114,9 +119,9 @@ class TestCalibText:
 
     def test_write_creates_file(self, tmp_path):
         k = calib.CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
-        out = calib.KittiCalibOut(p2=k.p2(), tr_velo_to_cam=calib.tr_velo_to_cam(
-            (0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0
-        ))
+        out = calib.KittiCalibOut(
+            p2=k.p2(), tr_velo_to_cam=calib.tr_velo_to_cam((0.0, 0.0, 0.0), CAM0, (0.0, 0.0, 0.0), CAM0)
+        )
         p = out.write(tmp_path / "calib" / "000000.txt")
         assert p.is_file()
         assert p.read_text().splitlines()[2].startswith("P2:")

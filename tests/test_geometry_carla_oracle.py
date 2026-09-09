@@ -34,9 +34,7 @@ class TestAgainstPycarla:
     @pytest.mark.parametrize("rot_deg", CASES_DEG)
     def test_rotation_matrix_matches(self, rot_deg):
         ours = g.carla_rotation_matrix(_to_rad(rot_deg))
-        theirs = np.asarray(
-            carla.Transform(carla.Location(), carla.Rotation(*rot_deg)).get_matrix()
-        )[:3, :3]
+        theirs = np.asarray(carla.Transform(carla.Location(), carla.Rotation(*rot_deg)).get_matrix())[:3, :3]
         np.testing.assert_allclose(ours, theirs, atol=1e-6)
 
     @pytest.mark.parametrize("rot_deg", CASES_DEG)
@@ -58,9 +56,7 @@ class TestAgainstPycarla:
             ours = g.world_to_cam(pts_world, loc, _to_rad(rot_deg))
             # pycarla 路径:T = get_matrix;world→carla 局部 = T⁻¹ @ p;再 CARLA→KITTI 相机
             # (pycarla float32,坐标 ~100m 时误差 ~1e−5,atol 相应放宽)
-            t = np.asarray(
-                carla.Transform(carla.Location(*loc), carla.Rotation(*rot_deg)).get_matrix()
-            )
+            t = np.asarray(carla.Transform(carla.Location(*loc), carla.Rotation(*rot_deg)).get_matrix())
             local = (np.linalg.inv(t) @ np.hstack([pts_world, np.ones((20, 1))]).T).T[:, :3]
             theirs = (g.CARLA_TO_CAM @ local.T).T
             np.testing.assert_allclose(ours, theirs, atol=1e-4)

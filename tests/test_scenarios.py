@@ -16,7 +16,15 @@ from autodrivedata.scenarios import (
     validate_scene,
 )
 
-WEATHER_SCENES = ["day_clear", "sunset_glare", "night_clear", "heavy_rain", "rain_night", "dense_fog", "wet_road"]
+WEATHER_SCENES = [
+    "day_clear",
+    "sunset_glare",
+    "night_clear",
+    "heavy_rain",
+    "rain_night",
+    "dense_fog",
+    "wet_road",
+]
 
 
 class TestCatalog:

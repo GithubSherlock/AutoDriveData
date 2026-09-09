@@ -52,7 +52,7 @@ def parse_cycle(text: str) -> tuple[tuple[str, float], ...]:
         raise argparse.ArgumentTypeError(f"--cycle 需 绿,黄,红 三个秒数: {text}") from e
     if len(secs) != 3 or any(s <= 0 for s in secs):
         raise argparse.ArgumentTypeError(f"--cycle 需 绿,黄,红 三个正数: {text}")
-    return tuple(zip(("Green", "Yellow", "Red"), secs))
+    return tuple(zip(("Green", "Yellow", "Red"), secs, strict=True))
 
 
 def main() -> None:
@@ -132,9 +132,7 @@ def main() -> None:
 
             fid = f"{i:06d}"
             ego_t = ego.get_transform()
-            frame = traffic_light_frame(
-                world, fid, loc(ego_t), float(ego_t.rotation.yaw), args.horizon, plan
-            )
+            frame = traffic_light_frame(world, fid, loc(ego_t), float(ego_t.rotation.yaw), args.horizon, plan)
             (out / "training/traffic_light" / f"{fid}.json").write_text(frame.to_json())
 
             png = out / "training/image_2" / f"{fid}.png"

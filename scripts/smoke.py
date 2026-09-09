@@ -2,6 +2,7 @@
 
 用法: python smoke.py [--host 127.0.0.1] [--port 2000] [--out outputs/smoke]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -80,8 +81,8 @@ def main() -> None:
     lidar = world.spawn_actor(lid_bp, carla.Transform(cam_loc, cam_rot))
     print(f"[4] lidar spawned ({args.channels}ch, range {args.lidar_range}m, {args.pps} pps)")
 
-    img_q: "queue.Queue" = queue.Queue()
-    lid_q: "queue.Queue" = queue.Queue()
+    img_q: queue.Queue = queue.Queue()
+    lid_q: queue.Queue = queue.Queue()
     camera.listen(img_q.put)
     lidar.listen(lid_q.put)
 
@@ -98,12 +99,15 @@ def main() -> None:
     bin_path = out / "smoke_lidar.bin"
     arr.tofile(bin_path)
     print(f"[5] image -> {img_path}  ({image.width}x{image.height})")
-    print(f"[6] lidar -> {bin_path}  ({len(arr)} points, 强度范围 [{arr[:,3].min():.2f},{arr[:,3].max():.2f}])")
+    print(
+        f"[6] lidar -> {bin_path}  ({len(arr)} points, 强度范围 [{arr[:, 3].min():.2f},{arr[:, 3].max():.2f}])"
+    )
 
     # BEV 散点可视化:CARLA LiDAR 传感器系 = x 前 / y 右 / z 上,俯视图取 (x, y)
     bev = arr[:, [0, 1]]
     mask = (np.abs(bev[:, 0]) < 40) & (np.abs(bev[:, 1]) < 40)
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 

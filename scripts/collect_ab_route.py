@@ -103,7 +103,7 @@ def main() -> None:
     fwd = ego.get_transform().get_forward_vector()
     right = ego.get_transform().get_right_vector()
     placed = []
-    for d, lat, i in zip(STATIC_OFFSETS, STATIC_LATS, range(len(STATIC_OFFSETS))):
+    for d, lat, i in zip(STATIC_OFFSETS, STATIC_LATS, range(len(STATIC_OFFSETS)), strict=True):
         p = start + fwd * d + right * lat
         pos = carla.Location(x=p.x, y=p.y, z=start.z)
         bp = bp_lib.find(NPC_MODELS[i % len(NPC_MODELS)])
@@ -112,9 +112,7 @@ def main() -> None:
             carla.Transform(pos, carla.Rotation(yaw=ego.get_transform().rotation.yaw)),
         )
         if v is not None:
-            veh = cast(
-                carla.Vehicle, v
-            )  # carla pyi 桩:try_spawn_actor 标返回 Actor(实为 Actor|None)
+            veh = cast(carla.Vehicle, v)  # carla pyi 桩:try_spawn_actor 标返回 Actor(实为 Actor|None)
             veh.apply_control(carla.VehicleControl(brake=1.0))  # 静置
             placed.append(veh)
     world.tick()
@@ -161,9 +159,7 @@ def main() -> None:
             )
             labels: list[str] = []
             for a in world.get_actors():
-                if not (
-                    a.type_id.startswith("vehicle") or a.type_id.startswith("walker")
-                ):
+                if not (a.type_id.startswith("vehicle") or a.type_id.startswith("walker")):
                     continue
                 bb = a.bounding_box
                 box = ActorBox(
@@ -174,9 +170,7 @@ def main() -> None:
                     actor_location=loc(a.get_transform()),
                     actor_rotation=rad(a.get_transform().rotation),
                 )
-                line = box_to_gt_line(
-                    box, loc(cam_t), rad(cam_t.rotation), k, max_distance=65.0
-                )
+                line = box_to_gt_line(box, loc(cam_t), rad(cam_t.rotation), k, max_distance=65.0)
                 if line:
                     labels.append(line)
 
@@ -185,9 +179,7 @@ def main() -> None:
             png = tmp.read_bytes()
             tmp.unlink()
             raw = np.frombuffer(pts.raw_data, dtype=np.float32)
-            velo = semantic_to_velodyne_bin(
-                raw.reshape(-1, 6), seed=args.frames * 100 + i
-            )
+            velo = semantic_to_velodyne_bin(raw.reshape(-1, 6), seed=args.frames * 100 + i)
             write_frame(
                 out,
                 str(i),
@@ -197,9 +189,7 @@ def main() -> None:
                 labels=labels,
             )
             if (i + 1) % 25 == 0 or i == args.frames - 1:
-                print(
-                    f"[frame {i + 1}/{args.frames}] ego x={ego.get_location().x:8.1f} | {len(labels)} GT"
-                )
+                print(f"[frame {i + 1}/{args.frames}] ego x={ego.get_location().x:8.1f} | {len(labels)} GT")
     finally:
         camera.stop()
         lidar.stop()

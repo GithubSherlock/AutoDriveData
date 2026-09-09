@@ -247,7 +247,7 @@ def start_server(slot: FrameSlot, port: int) -> ThreadingHTTPServer:
 def compose_grid(tiles: list[Image.Image], names: list[str], w: int, h: int) -> Image.Image:
     grid = Image.new("RGB", (w * 3, h * 2), (0, 0, 0))
     d = ImageDraw.Draw(grid)
-    for idx, (tile, name) in enumerate(zip(tiles, names)):
+    for idx, (tile, name) in enumerate(zip(tiles, names, strict=True)):
         row, col = divmod(idx, 3)
         grid.paste(tile, (col * w, row * h))
         d.text((col * w + 6, row * h + 6), name, fill=(255, 255, 0))
@@ -333,10 +333,7 @@ def main() -> None:
 
     slot = FrameSlot()
     srv = start_server(slot, args.port)
-    print(
-        f"[stream] http://127.0.0.1:{args.port}  "
-        f"(本地:ssh -L {args.port}:127.0.0.1:{args.port} <autodl>)"
-    )
+    print(f"[stream] http://127.0.0.1:{args.port}  (本地:ssh -L {args.port}:127.0.0.1:{args.port} <autodl>)")
 
     t_end = time.time() + args.duration if args.duration > 0 else float("inf")
     frames, t_report = 0, time.time()
@@ -350,9 +347,7 @@ def main() -> None:
             boxes = actor_boxes(world)
             ego_t = ego.get_transform()
             # 灯态走与采集器同一条实现(carla_common.traffic_light_frame)
-            tl_frame = traffic_light_frame(
-                world, f"{frames:06d}", loc(ego_t), float(ego_t.rotation.yaw)
-            )
+            tl_frame = traffic_light_frame(world, f"{frames:06d}", loc(ego_t), float(ego_t.rotation.yaw))
 
             tiles: list[Image.Image] = []
             raw_tiles: list[Image.Image] = []
@@ -366,9 +361,7 @@ def main() -> None:
                 tiles.append(img)
 
             frame_img = (
-                compose_grid(tiles, list(cams), args.width, args.height)
-                if args.view == "grid6"
-                else tiles[0]
+                compose_grid(tiles, list(cams), args.width, args.height) if args.view == "grid6" else tiles[0]
             )
             if args.dump and not dumped:
                 raw_img = (

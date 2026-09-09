@@ -176,8 +176,7 @@ def write_mini_dataset(
         "vehicle.truck",
     ]
     category_table = [
-        {"token": _tok("cat", i), "name": name, "description": ""}
-        for i, name in enumerate(categories)
+        {"token": _tok("cat", i), "name": name, "description": ""} for i, name in enumerate(categories)
     ]
     cat_token = {c["name"]: c["token"] for c in category_table}
 
@@ -185,9 +184,7 @@ def write_mini_dataset(
     attribute_table: list[dict] = []
 
     # 3) visibility:单条
-    visibility_table = [
-        {"token": vis_token, "level": "v0-80", "description": "0-80%"}
-    ]
+    visibility_table = [{"token": vis_token, "level": "v0-80", "description": "0-80%"}]
 
     # 4) instance
     instance_table = [
@@ -204,9 +201,7 @@ def write_mini_dataset(
     ]
 
     # 5) sensor:LIDAR_TOP + 6 相机
-    sensor_table = [
-        {"token": _tok("sens", 0), "channel": "LIDAR_TOP", "modality": "lidar"}
-    ] + [
+    sensor_table = [{"token": _tok("sens", 0), "channel": "LIDAR_TOP", "modality": "lidar"}] + [
         {"token": _tok("sens", i + 1), "channel": cam, "modality": "camera"}
         for i, cam in enumerate(NUS_CAMERAS)
     ]

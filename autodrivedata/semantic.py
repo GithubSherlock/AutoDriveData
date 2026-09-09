@@ -12,28 +12,28 @@ import numpy as np
 
 # CARLA 语义标签(cityscapes 口径)→ 反照率(对标真实 velodyne 强度经验值)
 CARLA_SEMANTIC_ALBEDO: dict[int, float] = {
-    0: 0.3,   # Unlabeled
-    1: 0.5,   # Building
-    2: 0.4,   # Fence
-    3: 0.3,   # Other
-    4: 0.7,   # Pedestrian
-    5: 0.8,   # Pole
+    0: 0.3,  # Unlabeled
+    1: 0.5,  # Building
+    2: 0.4,  # Fence
+    3: 0.3,  # Other
+    4: 0.7,  # Pedestrian
+    5: 0.8,  # Pole
     6: 0.45,  # RoadLine(路面标线反光)
     7: 0.08,  # Road
-    8: 0.2,   # Sidewalk
-    9: 0.4,   # Vegetation
+    8: 0.2,  # Sidewalk
+    9: 0.4,  # Vegetation
     10: 0.85,  # Vehicles
-    11: 0.5,   # Wall
-    12: 0.9,   # TrafficSign(高反)
-    13: 0.0,   # Sky
-    14: 0.1,   # Ground
-    15: 0.3,   # Bridge
-    16: 0.3,   # RailTrack
-    17: 0.7,   # GuardRail
-    18: 0.9,   # TrafficLight(高反)
-    19: 0.3,   # Static
-    20: 0.6,   # Dynamic
-    21: 0.1,   # Water
+    11: 0.5,  # Wall
+    12: 0.9,  # TrafficSign(高反)
+    13: 0.0,  # Sky
+    14: 0.1,  # Ground
+    15: 0.3,  # Bridge
+    16: 0.3,  # RailTrack
+    17: 0.7,  # GuardRail
+    18: 0.9,  # TrafficLight(高反)
+    19: 0.3,  # Static
+    20: 0.6,  # Dynamic
+    21: 0.1,  # Water
     22: 0.35,  # Terrain
 }
 

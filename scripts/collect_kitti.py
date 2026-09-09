@@ -7,6 +7,7 @@
   {out}/training/{image_2,velodyne,calib,label_2}/000000.*
 GT = 动态 actor(KITTI 类名);点云落盘前做 y 翻转对齐 KITTI velodyne 约定(见 geometry.py)。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,14 +17,13 @@ from typing import cast
 
 import carla
 import numpy as np
+from carla_common import CAM_ATTRS, LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, spawn_npcs, sync_mode
 
 from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
 from autodrivedata.semantic import semantic_to_velodyne_bin
-
-from carla_common import CAM_ATTRS, LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, spawn_npcs, sync_mode
 
 
 def main() -> None:
@@ -55,7 +55,9 @@ def main() -> None:
     cam_bp = bp_lib.find("sensor.camera.rgb")
     for k, v in CAM_ATTRS.items():
         cam_bp.set_attribute(k, v)
-    lid_bp = bp_lib.find("sensor.lidar.ray_cast" if not args.semantic_lidar else "sensor.lidar.ray_cast_semantic")
+    lid_bp = bp_lib.find(
+        "sensor.lidar.ray_cast" if not args.semantic_lidar else "sensor.lidar.ray_cast_semantic"
+    )
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
     # 域差距实验旋钮(M2-3):真实传感器有测距噪声与随机丢点,CARLA 默认全 0
@@ -72,8 +74,8 @@ def main() -> None:
 
     spawn_npcs(world, ego_t)
 
-    img_q: "queue.Queue" = queue.Queue()
-    lid_q: "queue.Queue" = queue.Queue()
+    img_q: queue.Queue = queue.Queue()
+    lid_q: queue.Queue = queue.Queue()
     camera.listen(img_q.put)
     lidar.listen(lid_q.put)
 
@@ -138,7 +140,11 @@ def main() -> None:
         camera.destroy()
         lidar.destroy()
         for a in world.get_actors():
-            if a.type_id.startswith("vehicle") or a.type_id.startswith("walker") or a.type_id.startswith("controller"):
+            if (
+                a.type_id.startswith("vehicle")
+                or a.type_id.startswith("walker")
+                or a.type_id.startswith("controller")
+            ):
                 a.destroy()
     print(f"[done] KITTI root: {out.resolve()}")
 
