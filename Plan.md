@@ -583,6 +583,58 @@ collect_ab_route 放静置车时设 `brake=1.0` 站定,进采集循环后**未�
 ②静置目标只有 Car,行人/骑行者样本不足;③速度维度因平台无运动模糊只能证伪,真实
 速度退化需人工注入(与 §5.7a 同思路)。
 
+### 5.11 地图矢量管道(MapTR/MapQR 口径)编排(2026-09-10 定案,待执行)
+
+**需求**:已有 2D 检测 GT(label_2)、3D LiDAR GT、静态 GT(P2)、灯色 GT,**缺 BEV 矢量地图 GT**。
+MapTR/MapQR 类架构(端到端 vectorized map)的输入 = 多视角环视图像 → BEV 特征 → 实例级折线
+(类 + 固定点数折线),本工作包补齐这条输出管道。
+
+**用户裁决(2026-09-10)**:① 目标形态 = **分阶段,A 先 B 紧随**;② 要素范围 = **MapTR 三类 +
+工程补充**;③ 输出格式 = **KITTI root 扩展 + 转换器**;④ 验收 = **几何自证 + overlay 目检**。
+
+**核心架构决策:离线 xodr 解析为主,运行时 API 为 oracle**
+
+1. 地图矢量是**整图静态事实**,不随帧/天气/光照变化 → 不绑进采集循环(采集器要清场/同步/
+   tick,重且不可复现)
+2. `autodrivedata` 不 import carla 的纪律 → 纯值解析器天然契合,两 env 可单测(与 attribution.py
+   同性质)
+3. **21 个 xodr 已在本机磁盘**(`CARLA_0.9.16/CarlaUE4/Content/Carla/Maps/**/OpenDrive/*.xodr`,
+   覆盖全部 17 图)→ 零服务器依赖、毫秒级、可复现
+4. **CARLA 自带 oracle**:`map.get_waypoint_xodr(road_id, lane_id, s)` 返回运行时几何 → 离线
+   解析的采样点逐个对账(最强形式的"几何自证")
+5. **意外收益**:Town11/12 **禁采集**(C20 spawn camera segfault)但**地图矢量照样出**——
+   离线路径不碰渲染
+
+**要素映射(xodr 语义 → MapTR 口径;实测于 2026-09-10)**
+
+| MapTR 类 | 来源(xodr) | 本机覆盖 |
+|---|---|---|
+| `divider` | 同向车道间的 `<roadMark>`(solid / broken / solid solid,**排除 curb**) | 全图,2.8k–40k 条/图 |
+| `boundary` | 道路外沿:`type="curb"` roadMark + lane type `sidewalk`/`border` 外边界 | 全图 |
+| `ped_crossing` | `<object type="crosswalk">` 的 `<outline>` 4 角多边形(5 点闭合) | Town03 73 / Town05 66 / Town04 27 / Town10HD_Opt 16 / Town06 14 / Town07 7;Town01/02/11/12/13/15 = 0(地图作者未放置,**非提取失败**) |
+| 补充 `stop_line` | `<object name="StopLine">`(与 crosswalk 同路径,含 s/t/hdg/width/length) | 待摸底确认 outline 结构 |
+| 补充 `centerline` | lane 中心线(t = ±w/2 中点链) | 全图 |
+| 补充 灯-车道关联 | `<signal>` 的 `<validity>`(复用 P2 landmark 口径) | 全图 |
+
+**阶段 A(离线矢量库,无服务器,交付物见下)**
+
+| 步骤 | 产物 | 验收 |
+|---|---|---|
+| A1 解析器 | `autodrivedata/opendrive.py`:ElementTree 解析 `<geometry>`(line/arc/spiral/poly3/paramPoly3)+ elevationProfile + lanes/width + roadMark + junction + object;核心 `road_to_xy(road, s, t)` | 单测(直线/圆弧闭式解手算)+ API oracle 对账 |
+| A2 要素提取 | `autodrivedata/mapvec.py`:上表映射 → 实例(类 + 折线 + 属性 + 实例 id) | 每类计数/拓扑自证 |
+| A3 采样与裁剪 | 等距重采样(divider/boundary 20 点;ped_crossing 4 角 → 2 点长轴)、`crop_to_ego(pose, ±51.2m)` | 采样间距/点数断言 |
+| A4 导出 + 目检 | `scripts/export_mapvec.py` → `training/map/{map}_full.json` + `{fid}.json` + BEV overlay 图 | overlay 目检(同帧差集口径,C23) |
+| A5 转换器 | `scripts/convert_mapvec.py` → MapTR 目录结构(annotation json + 可选 BEV 渲染) | 往返断言 |
+| A6 验收三件套 | — | ①几何自证(闭合/自交/曲率/点在可行驶域)②API 交叉验证(`get_waypoint_xodr` 抽样 < 5cm)③overlay 目检 |
+
+**阶段 B(多视角采集,紧随)**:B1 `collect_drive.py` 扩环视相机(6 视角)+ 内外参导出;
+B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验收 = 矢量投影回各视角
+图像 vs 渲染一致性(数值诊断,不做视觉回归)。
+
+**边界/风险**:①环视 6 相机 + LiDAR 单卡吞吐未测(B 阶段先探 FPS);②xodr → MapTR 三类是
+**有损映射**(xodr 语义更细),映射表进文档,**不静默丢要素**;③不做 MapTR 训练/推理
+(依赖方向单向,AutoLabel 侧);④不改 A/B 采集纪律。
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -626,3 +678,4 @@ AutoDriveData/
 - [x] 工程规范(2026-09-09):`[tool.ruff]` 定死(110 列 / E,F,I,UP,B / ignore E501,E741)+ 存量 25 违规清零 + 全仓 `ruff format`(26 文件 419 行),单 `style:` 提交 fc9f592 + `.git-blame-ignore-revs`;pre-commit 未装 → 不引入,纪律落到 CLAUDE.md 命令行
 - [x] 参数扫描 + 失效归因(§5.10 ✅ 2026-09-09):距离×速度网格 + 逐帧漏检归因;三大结论 = 尺度主导(<32px 0.15-0.47 vs ≥32px 0.78-1.00)、CARLA 无运动模糊(速度不改图像)、天气只前移断崖;顺带修掉 collect_ab_route 的 brake 残留(老数据集实速 6.60 而非 8.0)
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
+- [ ] **地图矢量管道**(§5.11 定案 2026-09-10,待执行):A 阶段离线 xodr → MapTR 三类 + 工程补充(divider/boundary/ped_crossing/stop_line/centerline/灯-车道),`autodrivedata/opendrive.py` + `mapvec.py` + `scripts/export_mapvec.py` + 转换器;B 阶段环视相机采集(6 视角)+ 数据集组装
