@@ -21,6 +21,8 @@ from PIL import Image
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
+from autodrivedata.attribution import box_iou2d
+
 GT_CLASSES = ("Car", "Pedestrian", "Cyclist")
 COCO_FALLBACK = {
     "car": "Car",
@@ -56,19 +58,6 @@ def load_gt(root: Path, limit: int | None = None) -> dict[str, list[tuple[float,
             if c:
                 gt[c].append(tuple(float(v) for v in p[4:8]))
     return gt
-
-
-def box_iou(a, b) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    uni = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-    return inter / uni
 
 
 def detect(root: Path, model: YOLO, names: dict[int, str], conf: float, limit: int | None):
@@ -108,7 +97,7 @@ def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int]:
         for j, g in enumerate(gt_boxes):
             if matched[j]:
                 continue
-            v = box_iou(g, box)
+            v = box_iou2d(g, box)
             if v > best_v:
                 best_i, best_v = j, v
         if best_i >= 0 and best_v >= iou_thr:

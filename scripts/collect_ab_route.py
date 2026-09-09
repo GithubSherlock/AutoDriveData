@@ -10,6 +10,7 @@ pt0 曾致 fallback 反向出生点、65m 曾卡 GT 阈值——已修,详见 Pl
 
 用法: python scripts/collect_ab_route.py --scene day_clear --frames 220 [--out ...]
       python scripts/collect_ab_route.py --scene sunset_glare --frames 220 [--out ...]
+      python scripts/collect_ab_route.py --scene day_clear --speed 4 --frames 140  # 参数扫描(定里程)
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ def main() -> None:
     ap.add_argument("--scene", required=True, choices=sorted(SCENES))
     ap.add_argument("--out", default=None)
     ap.add_argument("--frames", type=int, default=70)  # 70帧≈56m,距第4车9m刹停
+    ap.add_argument("--speed", type=float, default=SPEED, help="ego 定速 m/s(参数扫描用;默认= P1 基线 8.0)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     args = ap.parse_args()
@@ -141,7 +143,11 @@ def main() -> None:
         fov_h_deg=float(CAM_ATTRS["fov"]),
     )
 
-    fwd_v = carla.Vector3D(x=fwd.x * SPEED, y=fwd.y * SPEED, z=0.0)
+    # 解除"站定"制动:VehicleControl 一旦设置就每步生效,brake=1.0 残留会让
+    # set_target_velocity 打折扣(2026-09-09 实测:命令 8 → 实际 6.59 m/s = 0.82×;
+    # P1 四个 A/B 数据集实测均为 6.60 m/s,"定速"名不副实且 TTC 归一化偏 18%)
+    ego.apply_control(carla.VehicleControl())
+    fwd_v = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
     try:
         for i in range(args.frames):
             # 定速:每 tick 强设速度(车辆控制速度环不稳,直接 velocity)

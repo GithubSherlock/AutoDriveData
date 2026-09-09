@@ -14,6 +14,12 @@ CARLA 0.9.16 → [AutoLabel](https://github.com/GithubSherlock/AutoLabel) 自动
 
 结论:相机在三型真实驾驶长尾上均有可量化掉点;**LiDAR 兜底不受天气/光照**(平台边界:雨/雾对合成 LiDAR 无物理回波,退化只能人工注入)。
 
+**失效归因**(逐帧匹配 + 每 GT 上下文,与 AP 共用同一 IoU 口径):
+
+- **尺度主导**:框高 <32px 检出率一律 0.15–0.47,≥32px 一律 0.78–1.00,断崖 ≈21–24px(30–40m);漏检框内亮度与命中几乎相同 → 漏的是"小",不是"暗"
+- **CARLA 无运动模糊**(平台边界):4/8/12 m/s 同距离箱梯度能量 35.6/35.2/34.8、池化检出率 0.914/0.886/0.909 → 速度不改变图像质量
+- **天气只是把断崖前移**:雨夜零检出从 40–50m 提前到 30–40m(0.32),雾反而最晚(0.91)
+
 **P2 静态 GT**:地图查询 API(landmark 信号 + lane_marking 车道线)→ `training/static_gt/{fid}.json` + overlay 目检图,与天气/光照解耦。
 
 **灯色动态 GT**:灯态 = 独立时序语义层(工业口径,Off/Unknown 不猜)→ `training/traffic_light/{fid}.json`(逐帧状态 + 管制车道/停车线 + 相位计划);受控切灯 `--cycle 6,2,6` 给出**确定性变灯序列**。
@@ -46,14 +52,20 @@ python scripts/view_stream.py --view top --map Town13  # 俯视看街区/NPC
 # 6. 2D A/B 评估
 python scripts/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
 
-# 7. 3D LiDAR 检测(AutoLabel autolabel env;cwd 必须在 AutoLabel 根)
+# 7. 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像;速度用于 TTC 归一化)
+python scripts/eval_attr.py \
+  --run day4=outputs/kitti_sweep_day_clear_4:4.0 \
+  --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
+  --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
+
+# 8. 3D LiDAR 检测(AutoLabel autolabel env;cwd 必须在 AutoLabel 根)
 cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti root> \
   /root/miniconda3/envs/autolabel/bin/auto3dlabel run 000000-000069 "检测汽车" \
   --det-model pointpillars_kitti --batch --no-viz --out-dir <abs out>
 python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x
 
-# 8. 测试
-python -m pytest tests/ -q   # base env,150 passed
+# 9. 测试
+python -m pytest tests/ -q   # base env,178 passed / 3 skipped
 ```
 
 ## 环境(双环境,勿新建)
@@ -67,9 +79,9 @@ python -m pytest tests/ -q   # base env,150 passed
 
 ## 项目结构
 
-- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/semantic/export/compare/scenarios),不 import carla
-- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ 可视化(view_stream)+ `carla_common.py` 共用件 + `carla_server.sh`
-- `tests/` — 单测(base env,150 passed)
+- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios),不 import carla
+- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py` 共用件 + `carla_server.sh`
+- `tests/` — 单测(base env,178 passed / 3 skipped)
 - `outputs/` — 采集产物(不进 git)
 
 ## 文档
