@@ -40,7 +40,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ```bash
 # CARLA 服务器(专用用户 carla + LD_PRELOAD shim,GPU 修复栈;headless)
-bash scripts/carla_server.sh        # 启动;shutdown: pkill -f CarlaUE4
+bash scripts/carla_server.sh        # 启动;停止用 stop(start/stop/status;勿手敲 pkill -f CarlaUE4,自匹配坑见 C19)
 
 # 场景采集(KITTI root,含 label_2 GT/velodyne/calib)
 python scripts/collect_drive.py --scene rain_night --frames 70

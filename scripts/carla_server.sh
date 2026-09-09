@@ -29,10 +29,16 @@ wait_ready() {
   return 1
 }
 
+# 端口占用探测:connect_ex 返回 0 = 连得上 = 有人监听。不用 ss——本机未安装
+# (command not found),原 `ss -tlnp | grep ":2000 "` 恒为空 → start 守卫静默失效。
+port_busy() {
+  python -c "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if not s.connect_ex(('127.0.0.1',2000)) else 1)" 2>/dev/null
+}
+
 case "$1" in
   start)
     kill_all
-    if ss -tlnp 2>/dev/null | grep -q ":2000 "; then
+    if port_busy; then
       echo "❌ 端口 2000 仍被占用,请手动排查" >&2
       exit 1
     fi
@@ -46,6 +52,7 @@ case "$1" in
   status)
     alive=$(pgrep -c -f "$BIN_NAME" 2>/dev/null || echo 0)
     echo "进程数(含本 shell 匹配,真实判定看显存): $alive"
+    port_busy && echo "端口 2000: 被占用" || echo "端口 2000: 空闲"
     nvidia-smi --query-gpu=memory.used --format=csv,noheader
     python -c "import carla; print('server:', carla.Client('127.0.0.1',2000).get_server_version())" 2>/dev/null || echo "server: 未连接"
     ;;
