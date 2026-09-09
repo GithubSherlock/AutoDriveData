@@ -1,0 +1,11 @@
+# git blame 忽略的"纯格式"提交(逐行溯源时跳过,避免每行都指向格式化提交)。
+#
+# 用法:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs   # 本地一次性配置
+#   git blame --ignore-revs-file .git-blame-ignore-revs <file>
+# GitHub 网页 blame 自动识别本文件。
+#
+# 追加规则:只放**不改变语义**的批量格式提交(ruff format / 大范围重排)。
+
+# style: ruff 规则集定死(110 列)+ 存量违规清零 + 全仓 format
+b18e697c3fee06a16cd51b1b4c9153c64e85362b
