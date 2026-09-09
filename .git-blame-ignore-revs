@@ -8,4 +8,4 @@
 # 追加规则:只放**不改变语义**的批量格式提交(ruff format / 大范围重排)。
 
 # style: ruff 规则集定死(110 列)+ 存量违规清零 + 全仓 format
-b18e697c3fee06a16cd51b1b4c9153c64e85362b
+fc9f5925717dff998d8c77a9aab990267596882b

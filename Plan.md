@@ -217,9 +217,9 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 
 ### 5.5a P1 执行记录(2026-09-09 ✅ P1 验收)
 
-**P1-1**(7624b2b)场景目录 + 单测;可模拟性矩阵写在 scenarios.py 模块 docstring(无 flare/镜头光学、无雪、LiDAR 雨损不可模拟——防把简化渲染当真实)。
+**P1-1**(37b5359)场景目录 + 单测;可模拟性矩阵写在 scenarios.py 模块 docstring(无 flare/镜头光学、无雪、LiDAR 雨损不可模拟——防把简化渲染当真实)。
 
-**P1-2**(7c9b493)collect_drive --scene + 8 场景档实测确认(day_clear 为生产基底,其余覆写校验防打错字)。
+**P1-2**(f0003da)collect_drive --scene + 8 场景档实测确认(day_clear 为生产基底,其余覆写校验防打错字)。
 
 **P1-3 逆光 A/B**(collect_ab_route.py + eval_2d_ab.py,新增)——关键坑与最终数:
 
@@ -623,6 +623,6 @@ AutoDriveData/
 - [x] **地图池扩展**(§5.7d ✅ 2026-09-09):AdditionalMaps Town11/12/13/15 入池(17 图);约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、锚定 yaw bug 已修(spawn point 固有 rotation)
 - [x] **可视化实时流**(§5.8 ✅ 2026-09-09):自建 MJPEG(view_stream.py,3 视角 + GT overlay + 灯色);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 calib.py 共用
 - [x] **灯色动态 GT**(§5.9 ✅ 2026-09-09):traffic_light.py 纯值层 + collect_tl_states.py(记录/受控切灯)+ 前向过滤(修掉 79% 身后灯)+ 渲染探针实证(镜片 30m 处仅 4px,不做视觉回归)
-- [x] 工程规范(2026-09-09):`[tool.ruff]` 定死(110 列 / E,F,I,UP,B / ignore E501,E741)+ 存量 25 违规清零 + 全仓 `ruff format`(26 文件 419 行),单 `style:` 提交 b6d288a + `.git-blame-ignore-revs`;pre-commit 未装 → 不引入,纪律落到 CLAUDE.md 命令行
+- [x] 工程规范(2026-09-09):`[tool.ruff]` 定死(110 列 / E,F,I,UP,B / ignore E501,E741)+ 存量 25 违规清零 + 全仓 `ruff format`(26 文件 419 行),单 `style:` 提交 fc9f592 + `.git-blame-ignore-revs`;pre-commit 未装 → 不引入,纪律落到 CLAUDE.md 命令行
 - [x] 参数扫描 + 失效归因(§5.10 ✅ 2026-09-09):距离×速度网格 + 逐帧漏检归因;三大结论 = 尺度主导(<32px 0.15-0.47 vs ≥32px 0.78-1.00)、CARLA 无运动模糊(速度不改图像)、天气只前移断崖;顺带修掉 collect_ab_route 的 brake 残留(老数据集实速 6.60 而非 8.0)
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)

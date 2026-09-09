@@ -4,14 +4,14 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ## 当前进度(2026-09-09)
 
-- **P1 ✅**(fdfe065 起):场景目录 [autodrivedata/scenarios.py](autodrivedata/scenarios.py)(8 场景,不 import carla)+ `collect_drive --scene` 采集链 + 三 corner case A/B(统一 11 点插值 AP 口径,见 [Plan.md](Plan.md) §5.7c 汇总表):
+- **P1 ✅**(2388336 起):场景目录 [autodrivedata/scenarios.py](autodrivedata/scenarios.py)(8 场景,不 import carla)+ `collect_drive --scene` 采集链 + 三 corner case A/B(统一 11 点插值 AP 口径,见 [Plan.md](Plan.md) §5.7c 汇总表):
   | corner case | 相机 Δ | LiDAR Δ |
   |---|---|---|
   | 逆光(az=90 校准) | -0.014 轻掉点(AE 补偿) | +0.003 噪声 |
   | 雨夜 | **-0.153 漏检型**(检出 0.72→0.48) | +0.017 噪声 |
   | 浓雾 | -0.013 FP 型(检出 0.72→0.85) | 0.000 |
   - 结论:相机三型可量化掉点;LiDAR 兜底不受天气/光照(平台边界:雨/雾无物理回波,退化只能人工注入)
-- **P2 ✅**(1a3d357):静态 GT = **地图查询 API**(信号/标志是 landmark、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [scripts/collect_static_gt.py](scripts/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图。**更正**:Town10HD_Opt 有 15 个 traffic_light actor(xodr 17 个 dynamic 信号),原记"无信号 actor"有误——灯色属动态 GT,仍不入静态 json
+- **P2 ✅**(f66558c):静态 GT = **地图查询 API**(信号/标志是 landmark、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [scripts/collect_static_gt.py](scripts/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图。**更正**:Town10HD_Opt 有 15 个 traffic_light actor(xodr 17 个 dynamic 信号),原记"无信号 actor"有误——灯色属动态 GT,仍不入静态 json
 - **M4 挂起**(§5.7a 用户裁决):定制街道 = CARLA **源码构建**(prebuilt 无 UnrealEditor,~170G 磁盘/Epic 账号),成本过载降级为扩展 P1。开源 AdditionalMaps(Town11-15,14.8G)已探明可下载,零构建扩地图池
 - **地图池扩展 ✅**(§5.7d):AdditionalMaps 14.8G 已装,Town11/12/13/15 入池(17 图)。**新图采集约束:Town11/12 禁采集**(spawn camera segfault)、Town13 TM 车流降级 0 NPC、可用 Town13/15;默认图仍 Town10HD_Opt(重启即恢复)
 - **可视化实时流 ✅**(§5.8):[scripts/view_stream.py](scripts/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
@@ -30,9 +30,9 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ## 项目结构
 
-- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/semantic/export/compare/scenarios),不 import carla
-- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ 可视化(view_stream)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `carla_server.sh`(GPU 修复版启动)
-- `tests/` — 单测(base env,150 passed)
+- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios),不 import carla
+- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `carla_server.sh`(GPU 修复版启动)
+- `tests/` — 单测(base env,178 passed / 3 skipped)
 - `outputs/` — 采集产物(kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签)
 - `docs/milestone.md` — 版本里程碑;`Plan.md` — **单一事实源**(方案定案/执行记录/待办全在此,改决策先读再改)
 
