@@ -30,7 +30,16 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import SENSOR_OFFSET, loc, rad, spawn_ego, spawn_npcs, sync_mode
+from carla_common import (
+    SENSOR_OFFSET,
+    draw_traffic_lights,
+    loc,
+    rad,
+    spawn_ego,
+    spawn_npcs,
+    sync_mode,
+    traffic_light_frame,
+)
 from PIL import Image, ImageDraw
 
 from autodrivedata.calib import CameraIntrinsics
@@ -56,13 +65,6 @@ CLASS_COLOR = {
     "Truck": (255, 140, 0),
     "Van": (255, 140, 0),
     "Misc": (170, 170, 170),
-}
-TL_COLOR = {
-    "Red": (255, 40, 40),
-    "Yellow": (255, 210, 0),
-    "Green": (40, 255, 80),
-    "Off": (120, 120, 120),
-    "Unknown": (120, 120, 120),
 }
 PAGE = (
     "<!doctype html><meta charset='utf-8'><title>AutoDriveData 实时视图</title>"
@@ -128,35 +130,6 @@ def overlay_gt(
         col = CLASS_COLOR.get(cls, CLASS_COLOR["Misc"])
         d.rectangle([x1, y1, x2, y2], outline=col, width=2)
         d.text((x1 + 2, max(0.0, y1 - 11)), f"{cls} {dist:.0f}m", fill=col)
-    return img
-
-
-def overlay_traffic_lights(
-    img: Image.Image,
-    world: carla.World,
-    cam_loc: tuple[float, float, float],
-    cam_rot: tuple[float, float, float],
-    k: CameraIntrinsics,
-) -> Image.Image:
-    """信号灯 actor 状态(灯色圆点)。
-
-    2026-09-09 复测更正:Town10HD_Opt **有** 15 个 traffic.traffic_light actor
-    (Red/Green 状态,位置与 Signal landmark 重合 0.1m);Plan.md §5.6a 原记
-    "世界 0 信号 actor" 有误,已回填。灯色属动态 GT,故不进 P2 静态 json。
-    """
-    from autodrivedata.calib import world_to_img
-
-    d = ImageDraw.Draw(img)
-    for tl in world.get_actors().filter("traffic.traffic_light"):
-        t = tl.get_transform()
-        head = (t.location.x, t.location.y, t.location.z + 4.5)  # 灯头在杆顶
-        uv = world_to_img(head, cam_loc, cam_rot, k)
-        if uv is None:
-            continue
-        state = str(cast(carla.TrafficLight, tl).get_state()).rsplit(".", 1)[-1]
-        col = TL_COLOR.get(state, TL_COLOR["Unknown"])
-        x, y = uv
-        d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=col, outline=(0, 0, 0))
     return img
 
 
@@ -367,6 +340,7 @@ def main() -> None:
 
     t_end = time.time() + args.duration if args.duration > 0 else float("inf")
     frames, t_report = 0, time.time()
+    dumped = False  # frames 每 5s 被 FPS 统计清零,不能用它判"首帧"
     try:
         while time.time() < t_end:
             t0 = time.time()
@@ -374,6 +348,11 @@ def main() -> None:
                 ego.set_target_velocity(vel)  # 定速(同 collect_ab_route;不走 TM)
             world.tick()
             boxes = actor_boxes(world)
+            ego_t = ego.get_transform()
+            # 灯态走与采集器同一条实现(carla_common.traffic_light_frame)
+            tl_frame = traffic_light_frame(
+                world, f"{frames:06d}", loc(ego_t), float(ego_t.rotation.yaw)
+            )
 
             tiles: list[Image.Image] = []
             raw_tiles: list[Image.Image] = []
@@ -382,7 +361,7 @@ def main() -> None:
                 cam_loc, cam_rot = loc(cam_t), rad(cam_t.rotation)
                 raw = image_to_pil(drain(queues[name]))
                 img = overlay_gt(raw.copy(), boxes, cam_loc, cam_rot, k)
-                img = overlay_traffic_lights(img, world, cam_loc, cam_rot, k)
+                img = draw_traffic_lights(img, tl_frame, cam_loc, cam_rot, k)
                 raw_tiles.append(raw)
                 tiles.append(img)
 
@@ -391,17 +370,19 @@ def main() -> None:
                 if args.view == "grid6"
                 else tiles[0]
             )
-            if args.dump and frames == 0:
+            if args.dump and not dumped:
                 raw_img = (
                     compose_grid(raw_tiles, list(cams), args.width, args.height)
                     if args.view == "grid6"
                     else raw_tiles[0]
                 )
                 dump_pair(args.dump, raw_img, frame_img.copy())
+                dumped = True
             fps_now = frames / max(time.time() - t_report, 1e-6)
             draw_hud(
                 frame_img,
-                f"{world.get_map().name} | {args.view} | actors={len(boxes)} | {fps_now:.1f}fps",
+                f"{world.get_map().name} | {args.view} | actors={len(boxes)} | "
+                f"tl={len(tl_frame.lights)} | {fps_now:.1f}fps",
             )
             slot.publish(encode_jpeg(frame_img))
             frames += 1

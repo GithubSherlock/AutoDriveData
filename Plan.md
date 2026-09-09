@@ -454,6 +454,57 @@ Signal landmark 重合 0.1m)——原记"世界 0 信号 actor"有误。xodr 实
 
 **边界**:只读可视化,无交互控制;同步模式 tick 归本脚本,与采集脚本互斥。
 
+### 5.9 灯色动态 GT(2026-09-09 ✅,工业口径对齐)
+
+**工业口径(调研定案)**:灯态是**独立的时序语义层**,与检测框/静态地图几何分离。
+- BDD100K:`trafficLightColor: red|green|yellow|none` 挂在框属性上(最省,无时序)
+- WOMD:`traffic_light_state/current|future/state`,逐帧序列——**原始数据 71.7% 缺失或
+  unknown**,靠地图+轨迹+环形规则补全后闯红灯估计 15.7%→2.9% → 说明①允许 unknown/
+  遮挡(宁 Unknown 不猜)②有价值的是**变化点**与时间一致性③状态关联到**流向**而非灯头
+- nuScenes:map expansion 的 `traffic_light` 层只有静态几何(位姿/灯泡/停车线),无逐帧状态
+
+本项目取 WOMD 形态:逐帧状态 + 变化点 + 管制关系;Off/Unknown 保留不归一成三色。
+
+**实现(三层)**:
+- `autodrivedata/traffic_light.py`(纯值,不 import carla):`normalize_state` /
+  `in_front` / `phase_at` + `TrafficLightState`(状态/灯头位置/管制车道/停车线/
+  elapsed)+ `TrafficLightFrame`(逐帧 JSON 往返)
+- `scripts/carla_common.py`:`traffic_light_frame()` 把 actor 归一成纯值帧、
+  `draw_traffic_lights()` 画色点——**采集器与实时流共用同一条实现**(目检所见 = 落盘口径)
+- `scripts/collect_tl_states.py`:记录模式(默认,不动灯)/ 受控模式(`--cycle 6,2,6`
+  → freeze 全图灯 + 按 `phase_at(i·0.1s)` 驱动 → **确定性变灯序列**,真实数据集最缺的样本)
+
+**落盘**:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`。
+
+**验收(受控 6/2/6 @0.1s 步长,90 帧)**:
+- 状态变化点 = 帧 **0 / 60 / 80**,与计划逐帧吻合(灯 949/957/958/959 一致)
+- `affected_lanes`/`stop_lanes` 非空(如 #950:4 条管制车道 + 2 条停车线)
+- overlay 差集与"画面内灯数"相关 **0.99**(≈412 px/灯:圆点 + 文字)→ 绘制口径正确
+- view_stream 回归:差集 3522 px(车 1257/人 246/骑行 174/灯点 三色共 707)
+
+**前向过滤(实测驱动的修正)**:纯圆形 horizon 把身后 120m 的灯一起收进来——90 帧里
+视距内 **1046 灯次有 79% 在车后**(前方仅 221,画面内 131)。加 ego 前向半平面过滤
+(`in_front`,默认开)后为 221 灯次。工业数据集(BDD/WOMD)同样只标视野内/本车相关灯。
+
+**平台事实(受控探针实测,testLog C25–C27)**:
+- 渲染**确实跟随** `set_state`:相机正对镜片时依次拍到 **红上/黄中/绿下** 点亮
+  (带网点发光纹理)。但镜片直径 0.2m,在 KITTI 口径相机(f=621)下 30m 处仅约 4px、
+  60m 处 2px → **"按像素颜色做 GT↔图像一致性验证"在 ego 视角不成立**:12–30m 处
+  采到的是**黄色灯箱外壳**(实测 RGB≈(255,237,0),与黄灯镜片同色相),一致性率被
+  拉成 23% 的假象。结论:灯态 GT 是**逻辑层**,图像不提供强视觉证据。
+- 一个灯 actor 管**多个灯头**(`get_light_boxes()` 实测 4–5 个,分布在不同 x/y/z:
+  杆顶 z≈4.05 + 悬臂 z≈5.15);json 里 `location` = actor 锚点 + 4.5m 的近似灯头,
+  管的是"哪个流向"靠 `affected_lanes` 而非坐标。
+- `elapsed_s` 语义:红灯相位**恒 0**,绿/黄相位自相位起点计时(实测 0.3→0.8);
+  受控模式恒 0(取值 {0.0,0.2})→ **变灯时刻以状态序列变化点为准**(受控模式另有
+  `phase_plan` 可精确反推),不要把它当通用"当前状态已持续时长"。
+
+**同步模式快照坑(testLog C28)**:连到已处于同步模式的服务器时,首个 `get_actors()`
+返回空(快照只在 tick 后刷新)→ 采集器"清场"循环会静默漏清。已统一修在
+`carla_common.sync_mode()`(应用设置后补一次 tick)。
+
+**边界**:灯态来自 actor API(逻辑真值),不依赖渲染;图像侧镜片过小,不做视觉回归。
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -493,4 +544,7 @@ AutoDriveData/
 - [~] **M4** 定制街道:M4-0 调研(§5.7 ✅)+ M4-1 用户裁决降级(§5.7a,源码构建成本过载,挂起重开条件:换盘/有需求)
 - [x] **地图池扩展**(§5.7d ✅ 2026-09-09):AdditionalMaps Town11/12/13/15 入池(17 图);约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、锚定 yaw bug 已修(spawn point 固有 rotation)
 - [x] **可视化实时流**(§5.8 ✅ 2026-09-09):自建 MJPEG(view_stream.py,3 视角 + GT overlay + 灯色);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 calib.py 共用
+- [x] **灯色动态 GT**(§5.9 ✅ 2026-09-09):traffic_light.py 纯值层 + collect_tl_states.py(记录/受控切灯)+ 前向过滤(修掉 79% 身后灯)+ 渲染探针实证(镜片 30m 处仅 4px,不做视觉回归)
+- [ ] 工程规范:pyproject `[tool.ruff]` 定死规则集 + 存量 24 违规单提交(`style:` + `.git-blame-ignore-revs`)
+- [ ] 参数扫描 + 失效归因(距离×速度网格 + 漏检的 TTC/距离分布)——P1 定量延伸
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)

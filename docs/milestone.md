@@ -89,3 +89,12 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 - 交付:`scripts/view_stream.py`(follow/top/grid6 三视角 + `--scene` 天气 + `--npcs` 静置 NPC + GT 框/灯色 overlay + HUD,MJPEG 只绑 127.0.0.1 走 SSH 隧道);`world_to_img` 上移 `calib.py` 供采集器与实时流共用(+5 单测)
 - 验收(数值诊断,同帧 raw/overlay 差集):follow 3023 px、top(60m)1995 px,类别色全部命中;流 30+ 段 JPEG 有效、约 5 fps、退出清理干净
 - 顺带更正:Town10HD_Opt **有 15 个 traffic_light actor**(xodr 17 个 dynamic 信号,15 个被实例化)→ P2 "无灯色状态"边界撤回
+
+## 灯色动态 GT(2026-09-09)✅
+
+- 工业口径:灯态 = 独立时序语义层(BDD 挂框属性无时序 / WOMD 逐帧序列但 71.7% 缺失 / nuScenes 地图层只有静态几何)→ 本项目取 WOMD 形态,Off/Unknown **不猜**
+- 交付:`autodrivedata/traffic_light.py`(纯值:normalize_state / in_front / phase_at / Frame JSON 往返)+ `scripts/collect_tl_states.py`(记录模式 / `--cycle 6,2,6` 受控切灯)+ `carla_common.traffic_light_frame`/`draw_traffic_lights`(采集器与实时流共用)
+- 落盘:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`
+- 验收(受控 90 帧):状态变化点 = 帧 0/60/80 与计划逐帧吻合;管制车道/停车线非空;overlay 差集与画面内灯数相关 0.99;view_stream 回归差集 3522 px
+- 实测驱动的两处修正:①圆形 horizon 收进 79% 身后灯 → 加前向半平面过滤(1046→221 灯次);②同步模式首个 `get_actors()` 为空致清场漏清 → 修在 `sync_mode()`
+- 平台事实:渲染确实跟随 set_state(探针拍到红上/黄中/绿下点亮),但镜片 0.2m 在 30m 处仅约 4px + 黄色灯箱外壳同色相 → **不做视觉回归**,灯态 GT 定位为逻辑层;`elapsed_s` 红灯相位恒 0,变灯时刻以状态序列变化点为准

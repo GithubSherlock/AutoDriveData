@@ -1,4 +1,9 @@
-"""CARLA 采集公共件(base env,依赖 pycarla):位姿换算 / NPC 摆放 / 传感器参数。"""
+"""CARLA 采集公共件(base env,依赖 pycarla):位姿换算 / NPC 摆放 / 传感器参数。
+
+灯态 GT 的 carla→纯值归一(traffic_light_frame)与 overlay 绘制
+(draw_traffic_lights)也放这里:采集器与实时可视化共用同一条实现,
+保证"目检所见 = 落盘口径"。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,15 @@ from typing import Protocol, cast
 
 import carla
 import numpy as np
+from PIL import Image, ImageDraw
+
+from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.traffic_light import (
+    TrafficLightFrame,
+    TrafficLightState,
+    in_front,
+    normalize_state,
+)
 
 
 class _WalkerCtrl(Protocol):
@@ -89,8 +103,103 @@ def spawn_npcs(world: carla.World, ego_t: carla.Transform) -> None:
 
 
 def sync_mode(world: carla.World, delta: float = 0.1) -> None:
-    """开同步模式(固定 tick)。"""
+    """开同步模式(固定 tick),并 tick 一次刷新客户端 actor 快照。
+
+    实测(2026-09-09):连到**已处于同步模式**的服务器时,首个 get_actors()
+    返回空(快照只在 tick 后更新)→ 各采集器"清场残留 actor"的循环会静默漏清,
+    残留 ego 阻塞 pts[0] 即复现 A/B 起点失配的老坑。此处统一补一次 tick。
+    """
     settings = world.get_settings()
     settings.synchronous_mode = True
     settings.fixed_delta_seconds = delta
     world.apply_settings(settings)
+    world.tick()
+
+
+LIGHT_HEAD_Z = 4.5  # 灯头相对 actor 锚点的高度(实测灯箱 z≈4.0-5.2,状态显示在灯头)
+TL_COLOR = {
+    "Red": (255, 40, 40),
+    "Yellow": (255, 210, 0),
+    "Green": (40, 255, 80),
+    "Off": (120, 120, 120),
+    "Unknown": (120, 120, 120),
+}
+
+
+def traffic_light_frame(
+    world: carla.World,
+    frame_id: str,
+    ego_location: tuple[float, float, float],
+    ego_yaw_deg: float,
+    horizon: float = 120.0,
+    phase_plan: tuple[tuple[str, float], ...] = (),
+    forward_only: bool = True,
+) -> TrafficLightFrame:
+    """世界内信号灯 → 纯值 TrafficLightFrame(状态 + 管制车道 + 停车线)。
+
+    - 灯头位置 = actor 锚点 + LIGHT_HEAD_Z(投影/可视口径)
+    - affected_lanes = 路口内管制车道、stop_lanes = 停车线所在车道
+      → 状态关联到**流向**(一个灯头管多条道),不是只给灯头坐标
+    - 视距 horizon 外剔除(距离字段保留,供下游按需再过滤)
+    - forward_only:只收 ego 前方半平面的灯(实测不过滤则 79% 是身后灯)
+    """
+    lights: list[TrafficLightState] = []
+    for actor in world.get_actors().filter("traffic.traffic_light"):
+        light = cast(carla.TrafficLight, actor)  # pyi 桩:Actor 无 get_state/get_opendrive_id
+        t = light.get_transform()
+        head = (t.location.x, t.location.y, t.location.z + LIGHT_HEAD_Z)
+        if forward_only and not in_front(head, ego_location, ego_yaw_deg):
+            continue
+        dist = float(np.hypot(head[0] - ego_location[0], head[1] - ego_location[1]))
+        if dist > horizon:
+            continue
+        affected = tuple(
+            sorted({(wp.road_id, wp.lane_id) for wp in light.get_affected_lane_waypoints()})
+        )
+        stops = tuple(
+            sorted(
+                {(wp.road_id, wp.lane_id, round(float(wp.s), 1)) for wp in light.get_stop_waypoints()}
+            )
+        )
+        lights.append(
+            TrafficLightState(
+                opendrive_id=str(light.get_opendrive_id()),
+                state=normalize_state(str(light.get_state())),
+                location=head,
+                yaw_deg=float(t.rotation.yaw),
+                pole_index=int(light.get_pole_index()),
+                elapsed_s=float(light.get_elapsed_time()),
+                distance_m=dist,
+                affected_lanes=affected,
+                stop_lanes=stops,
+            )
+        )
+    lights.sort(key=lambda s: s.distance_m)
+    return TrafficLightFrame(
+        frame_id=frame_id,
+        map_name=world.get_map().name,
+        ego_location=ego_location,
+        ego_yaw_deg=ego_yaw_deg,
+        lights=tuple(lights),
+        phase_plan=phase_plan,
+    )
+
+
+def draw_traffic_lights(
+    img: Image.Image,
+    frame: TrafficLightFrame,
+    cam_loc: tuple[float, float, float],
+    cam_rot: tuple[float, float, float],
+    k: CameraIntrinsics,
+) -> Image.Image:
+    """灯态 overlay:色点 + `#id 状态 距离`(消费纯值帧 → 所见即落盘口径)。"""
+    d = ImageDraw.Draw(img)
+    for light in frame.lights:
+        uv = world_to_img(light.location, cam_loc, cam_rot, k)
+        if uv is None:
+            continue
+        col = TL_COLOR.get(light.state, TL_COLOR["Unknown"])
+        x, y = uv
+        d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=col, outline=(0, 0, 0))
+        d.text((x + 8, y - 6), f"#{light.opendrive_id} {light.state} {light.distance_m:.0f}m", fill=col)
+    return img

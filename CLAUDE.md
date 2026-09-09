@@ -15,6 +15,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 - **M4 挂起**(§5.7a 用户裁决):定制街道 = CARLA **源码构建**(prebuilt 无 UnrealEditor,~170G 磁盘/Epic 账号),成本过载降级为扩展 P1。开源 AdditionalMaps(Town11-15,14.8G)已探明可下载,零构建扩地图池
 - **地图池扩展 ✅**(§5.7d):AdditionalMaps 14.8G 已装,Town11/12/13/15 入池(17 图)。**新图采集约束:Town11/12 禁采集**(spawn camera segfault)、Town13 TM 车流降级 0 NPC、可用 Town13/15;默认图仍 Town10HD_Opt(重启即恢复)
 - **可视化实时流 ✅**(§5.8):[scripts/view_stream.py](scripts/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
+- **灯色动态 GT ✅**(§5.9):[autodrivedata/traffic_light.py](autodrivedata/traffic_light.py)(纯值:状态归一/前向判据/相位查表/JSON 往返)+ [scripts/collect_tl_states.py](scripts/collect_tl_states.py)(记录模式 / `--cycle 6,2,6` 受控切灯 → 确定性变灯序列),落盘 `training/traffic_light/{fid}.json`。工业口径:灯态 = 独立时序层,Off/Unknown **不猜**;受控 90 帧状态变化点 = 帧 0/60/80 与计划逐帧吻合。**边界:不做视觉回归**——镜片 0.2m 在 f=621 下 30m 处仅约 4px,且黄色灯箱外壳同色相
 - **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 
 ## 环境(双环境,勿新建)
@@ -28,9 +29,9 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ## 项目结构
 
-- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/semantic/export/compare/scenarios),不 import carla
-- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ 可视化(view_stream)+ `carla_server.sh`(GPU 修复版启动)
-- `tests/` — 单测(base env,136 passed)
+- `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/semantic/export/compare/scenarios),不 import carla
+- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ 可视化(view_stream)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `carla_server.sh`(GPU 修复版启动)
+- `tests/` — 单测(base env,150 passed)
 - `outputs/` — 采集产物(kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签)
 - `docs/milestone.md` — 版本里程碑;`Plan.md` — **单一事实源**(方案定案/执行记录/待办全在此,改决策先读再改)
 
@@ -46,6 +47,10 @@ python scripts/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B �
 
 # 静态 GT(landmark + 车道线,含 overlay 目检图)
 python scripts/collect_static_gt.py --frames 40
+
+# 灯色动态 GT(记录模式默认不动灯;--cycle 绿,黄,红 秒数 = 受控切灯)
+python scripts/collect_tl_states.py --frames 40 --speed 8
+python scripts/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
 
 # 实时可视化(本地 ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 127.0.0.1:8080)
 python scripts/view_stream.py --view follow --npcs        # 跟车视角
@@ -75,4 +80,7 @@ python -m pytest tests/ -q
 - **采集器清场 + 起点校验**:残留 actor 阻塞 spawn point 会致 fallback 反向出生点、轨迹失配(collect_ab_route/collect_static_gt 已内置,勿删)
 - **锚定 yaw 用 spawn point 固有 rotation**:collect_static_gt 曾硬编码 yaw=0,Town10HD_Opt pts[0] 固有 yaw=0.16° 恰好成立、Town13(125.9°)车道线采样走到车后 overlay 全空;已改用 pts[0].rotation(沿车道),collect_ab_route 的 yaw=0 是 P1 已验证基线勿动
 - 模型无法读图时用**数值诊断**(亮度带/过曝占比/梯度),不要硬目检;验证 overlay 必须做**同帧 raw/overlay 差集**——场景自带绿(植被)/黄(标线)与类别色撞色,数绝对颜色会误判(曾报"Car 仅 3 px")
+- **灯态 GT 不做视觉回归**:镜片 0.2m,在 KITTI 口径相机(f=621)下 30m 处仅约 4px;12–30m 处按颜色采样命中的是**黄色灯箱外壳**(≈(255,237,0),与黄灯镜片同色相)。真值取自 actor API(逻辑层)。要拍镜片必须按灯头盒**薄轴**放相机(盒 yaw 方向拍的是背面,曾据此误判"渲染不随 set_state 变")
+- **同步模式首个 `get_actors()` 为空**(快照只在 tick 后刷新)→ 清场会静默漏清;已修在 `carla_common.sync_mode()`(apply_settings 后补 tick),勿绕过它自己 apply_settings
+- **灯态收集侧要前向过滤**:圆形 horizon 会把身后 120m 的灯全收进来(实测占 79%),`traffic_light_frame(forward_only=True)` 是默认口径
 - 提交:Conventional Commits;改动后 ruff + 相关单测;决策与执行记录同步进 Plan.md

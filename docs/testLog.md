@@ -46,6 +46,10 @@
 | C22 | collect_static_gt 锚定 **yaw 硬编码 0**:Town10HD_Opt pts[0] 固有 yaw=0.16° 恰好成立;Town13 pts[0] yaw=125.9° → 车道线采样沿 lane 方向走到车后、overlay 全空(投影深度全负,数值诊断发现) | 锚定改用 **spawn point 固有 rotation**(地图作者设定的沿车道朝向);原图回归行为不变,Town13 overlay 恢复(988-1108 标注像素/帧) |
 | C23 | **数 overlay 绝对颜色会误判**:场景自带绿(植被)/黄(标线)与类别色撞色——top 视角曾报"Car 仅 3 px" | 改 **同帧 raw vs overlay 差集**(`view_stream.py --dump`);另 35m 高度只覆盖 ±20m(22/30m 的车在画面外),提到 60m 后 Car 603 px 与框周长量级吻合 |
 | C24 | **P2 "世界 0 信号 actor" 结论有误**(Plan.md §5.6a 原文):Town10HD_Opt 实测 **15 个 traffic_light actor**(Red/Green,opendrive id 943-962,与 Signal landmark 位置重合 0.1m) | xodr 实证:21 条 `<signal>` = 17 个 `dynamic="yes"`(15 命名 + 2 无名)+ 4 个 `dynamic="no"`(Stop/Yield);CARLA 只实例化动态信号。静态源仍用 landmark(更细),灯色属动态 GT 不入 P2 json;可视化侧 actor API 直读画灯色 |
+| C25 | **灯态 GT 圆形 horizon 收进大量身后灯**:90 帧视距内 1046 灯次,79% 在 ego 车后(前方仅 221、画面内 131)——与本车决策/图像无关 | 加前向半平面过滤 `traffic_light.in_front`(默认开)→ 221 灯次;正侧方归"不在前方"(cos(radians(90))=6.1e-17 是浮点刀口,不为此加 epsilon) |
+| C26 | **"渲染不随 set_state 变"是误判**:相机放在灯头盒 **yaw 方向**两侧,拍到的是黄色灯箱背面(三态图亮度均值 126.53 完全相同) | 镜片法向 = 盒**较薄那条局部轴**(extent 小的轴),不是盒 yaw;按薄轴放相机后拍到 **红上/黄中/绿下** 依次点亮(带网点发光纹理)→ 渲染确实跟随 set_state |
+| C27 | **按像素颜色验证灯态在 ego 视角不成立**:12–30m 处"最饱和像素"恒为 (255,237,0) 纯黄,一致率 23% 假象——采到的是**黄色灯箱外壳**,与黄灯镜片同色相;镜片直径 0.2m 在 f=621 下 30m 处仅约 4px | 放弃视觉回归,灯态 GT 定位为**逻辑层**(真值取自 actor API);另 `elapsed_s` 实测红灯相位恒 0、绿/黄相位自相位起点计时 → 变灯时刻以状态序列变化点为准 |
+| C28 | **同步模式首个 `get_actors()` 返回空**(连到已 sync 的服务器时,快照只在 tick 后刷新)→ 采集器"清场"循环静默漏清,残留 ego 阻塞 pts[0] 即复现 C8 的起点失配 | 统一修在 `carla_common.sync_mode()`:apply_settings 后补一次 tick(4 个采集器 + view_stream 同时受益) |
 
 ## 评估口径
 

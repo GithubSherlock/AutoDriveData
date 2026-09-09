@@ -1,8 +1,8 @@
 """静态目标/道路特征 GT(CARLA 地图查询源,P2,2026-09-09)。
 
 源裁决(2026-09-09 实测 Town10HD_Opt,详见 Plan.md §5.6a):
-- 信号灯/标志 = OpenDRIVE **landmark**(世界 0 信号 actor;58×Signal_3Light_Post01
-  红绿灯 + Sign_Stop/Sign_Yield);landmark 位置 = 地面锚点
+- 信号灯/标志 = OpenDRIVE **landmark**(landmark 面比灯 actor 更细:一个灯头管多
+  条 lane;灯 actor 见 traffic_light.py 的动态层);landmark 位置 = 地面锚点
 - 车道线 = waypoint.lane_marking 实体(type/color/width),沿 lane 中心线采样重建
 - semantic LiDAR / RoadRunner 两候选实测出局/挂起(见 §5.6a)
 
