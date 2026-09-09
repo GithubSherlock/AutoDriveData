@@ -56,6 +56,27 @@ class CameraIntrinsics:
         )
 
 
+def world_to_img(
+    world_pt: tuple[float, float, float],
+    cam_location: tuple[float, float, float],
+    cam_rotation: tuple[float, float, float],
+    intrinsics: CameraIntrinsics,
+) -> tuple[float, float] | None:
+    """世界点 → 图像像素 (u, v);相机后(深度 ≤ 0.5m)或图外返回 None。
+
+    采集器 overlay(collect_static_gt)与实时可视化(view_stream)共用,
+    保证"目检图所见 = 落盘 GT 口径"(单一投影实现)。
+    """
+    c = g.world_to_cam(np.asarray([world_pt], dtype=np.float64), cam_location, cam_rotation)[0]
+    if float(c[2]) <= 0.5:
+        return None
+    u = intrinsics.fx * (c[0] / c[2]) + intrinsics.cx
+    v = intrinsics.fy * (c[1] / c[2]) + intrinsics.cy
+    if not (0 <= u < intrinsics.width and 0 <= v < intrinsics.height):
+        return None
+    return float(u), float(v)
+
+
 def tr_velo_to_cam(
     lidar_location: tuple[float, float, float],
     lidar_rotation: tuple[float, float, float],

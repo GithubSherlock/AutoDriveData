@@ -28,7 +28,7 @@ from carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mod
 from PIL import Image, ImageDraw
 
 from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib import CameraIntrinsics, world_to_img
 from autodrivedata.static_gt import (
     LaneSegment,
     StaticFrame,
@@ -42,23 +42,6 @@ LANDMARK_HORIZON = 65.0  # 与 GT max_distance 一致的静态锚点视距
 LANE_STEP = 5.0  # 车道线采样步长(m)
 LANE_STEPS = 13  # 13×5m = 65m 采样长度
 MARK_COLOR = {"White": (255, 255, 255), "Yellow": (220, 190, 60)}
-
-
-def camera_to_img(
-    world_pt: tuple[float, float, float],
-    cam_loc: tuple[float, float, float],
-    cam_rot: tuple[float, float, float],
-    k: CameraIntrinsics,
-) -> tuple[float, float] | None:
-    """世界点 → 图像像素;相机后/图外/深度过近返回 None。"""
-    c = g.world_to_cam(np.asarray([world_pt], dtype=np.float64), cam_loc, cam_rot)[0]
-    if float(c[2]) <= 0.5:
-        return None
-    u = k.fx * (c[0] / c[2]) + k.cx
-    v = k.fy * (c[1] / c[2]) + k.cy
-    if not (0 <= u < k.width and 0 <= v < k.height):
-        return None
-    return float(u), float(v)
 
 
 def collect_static_frame(
@@ -170,7 +153,7 @@ def draw_overlay(
         col = MARK_COLOR.get(seg.color, (170, 170, 170))
         pts_2d: list[tuple[float, float]] = []
         for p in seg.points:
-            uv = camera_to_img((p[0], p[1], p[2]), cam_loc, cam_rot, k)
+            uv = world_to_img((p[0], p[1], p[2]), cam_loc, cam_rot, k)
             if uv is not None:
                 pts_2d.append(uv)
         if len(pts_2d) >= 2:
@@ -179,7 +162,7 @@ def draw_overlay(
         for z in pts_2d:
             d.ellipse([z[0] - 2, z[1] - 2, z[0] + 2, z[1] + 2], fill=col)
     for s in sigs:
-        uv = camera_to_img(s.location, cam_loc, cam_rot, k)
+        uv = world_to_img(s.location, cam_loc, cam_rot, k)
         if uv is None:
             continue
         x, y = uv

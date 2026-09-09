@@ -11,9 +11,10 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
   | 雨夜 | **-0.153 漏检型**(检出 0.72→0.48) | +0.017 噪声 |
   | 浓雾 | -0.013 FP 型(检出 0.72→0.85) | 0.000 |
   - 结论:相机三型可量化掉点;LiDAR 兜底不受天气/光照(平台边界:雨/雾无物理回波,退化只能人工注入)
-- **P2 ✅**(1a3d357):静态 GT = **地图查询 API**(Town10HD_Opt 信号是 landmark 非 actor、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [scripts/collect_static_gt.py](scripts/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图
+- **P2 ✅**(1a3d357):静态 GT = **地图查询 API**(信号/标志是 landmark、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [scripts/collect_static_gt.py](scripts/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图。**更正**:Town10HD_Opt 有 15 个 traffic_light actor(xodr 17 个 dynamic 信号),原记"无信号 actor"有误——灯色属动态 GT,仍不入静态 json
 - **M4 挂起**(§5.7a 用户裁决):定制街道 = CARLA **源码构建**(prebuilt 无 UnrealEditor,~170G 磁盘/Epic 账号),成本过载降级为扩展 P1。开源 AdditionalMaps(Town11-15,14.8G)已探明可下载,零构建扩地图池
 - **地图池扩展 ✅**(§5.7d):AdditionalMaps 14.8G 已装,Town11/12/13/15 入池(17 图)。**新图采集约束:Town11/12 禁采集**(spawn camera segfault)、Town13 TM 车流降级 0 NPC、可用 Town13/15;默认图仍 Town10HD_Opt(重启即恢复)
+- **可视化实时流 ✅**(§5.8):[scripts/view_stream.py](scripts/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
 - **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 
 ## 环境(双环境,勿新建)
@@ -28,8 +29,8 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 ## 项目结构
 
 - `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/semantic/export/compare/scenarios),不 import carla
-- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ `carla_server.sh`(GPU 修复版启动)
-- `tests/` — 单测(base env,131 passed)
+- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_nus)+ 评估(eval_2d_ab/eval_kitti)+ 可视化(view_stream)+ `carla_server.sh`(GPU 修复版启动)
+- `tests/` — 单测(base env,136 passed)
 - `outputs/` — 采集产物(kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签)
 - `docs/milestone.md` — 版本里程碑;`Plan.md` — **单一事实源**(方案定案/执行记录/待办全在此,改决策先读再改)
 
@@ -45,6 +46,12 @@ python scripts/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B �
 
 # 静态 GT(landmark + 车道线,含 overlay 目检图)
 python scripts/collect_static_gt.py --frames 40
+
+# 实时可视化(本地 ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 127.0.0.1:8080)
+python scripts/view_stream.py --view follow --npcs        # 跟车视角
+python scripts/view_stream.py --view top --map Town13     # 俯视看街区
+python scripts/view_stream.py --scene rain_night --speed 8  # 天气 + 定速直行
+python scripts/view_stream.py --view follow --dump /tmp/f.png  # 落 raw+overlay 做差集诊断
 
 # 2D A/B 评估(base env;A=day_clear 基线与 B 帧级配对)
 python scripts/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
@@ -67,5 +74,5 @@ python -m pytest tests/ -q
 - **sunset_glare 方位**:az=90=东=+x=车头正前(yaw=0 时);az=300 是顺光陷阱(太阳在车后)。判据 = 全图过曝最低(AE 压最狠)
 - **采集器清场 + 起点校验**:残留 actor 阻塞 spawn point 会致 fallback 反向出生点、轨迹失配(collect_ab_route/collect_static_gt 已内置,勿删)
 - **锚定 yaw 用 spawn point 固有 rotation**:collect_static_gt 曾硬编码 yaw=0,Town10HD_Opt pts[0] 固有 yaw=0.16° 恰好成立、Town13(125.9°)车道线采样走到车后 overlay 全空;已改用 pts[0].rotation(沿车道),collect_ab_route 的 yaw=0 是 P1 已验证基线勿动
-- 模型无法读图时用**数值诊断**(亮度带/过曝占比/梯度),不要硬目检
+- 模型无法读图时用**数值诊断**(亮度带/过曝占比/梯度),不要硬目检;验证 overlay 必须做**同帧 raw/overlay 差集**——场景自带绿(植被)/黄(标线)与类别色撞色,数绝对颜色会误判(曾报"Car 仅 3 px")
 - 提交:Conventional Commits;改动后 ruff + 相关单测;决策与执行记录同步进 Plan.md

@@ -66,7 +66,7 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 - 选型裁决(probe 实测):semantic LiDAR 后处理**出局**(信号灯非 actor、车道线非实体,LiDAR 打不到);RoadRunner 资产化挂起 → **地图查询 API 定案**(landmark 65 个 + waypoint lane_marking)
 - 交付:`autodrivedata/static_gt.py` 纯值格式(StaticFrame:signals + lane_lines)+ `collect_static_gt.py`(锚定 pt0 定速直行,65m 视距),落盘 `training/static_gt/{fid}.json` + overlay 目检图
 - 验收:人工目检通过——信号锚点在真实灯杆基座处、车道线双线透视收敛正确、跨帧一致性 ✓
-- 边界:Opt 地图无信号灯 actor → **无灯色状态**(动态 GT 范畴,排后续);静态 GT 与天气/光照解耦(换地图即换真值,M4 复用本链路)
+- 边界:静态 GT 与天气/光照解耦(换地图即换真值,M4 复用本链路);灯色属**动态** GT 不入静态 json(2026-09-09 更正:Opt 图**有** 15 个灯 actor,原记"无 actor"有误,见下)
 
 ## M4 定制街道(2026-09-08)⏸ 降级挂起
 
@@ -82,3 +82,10 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
   - Town13 TM 车流过载(153% CPU 无响应)→ 降级 0 NPC 可跑;静态 GT 10 帧 + 动态 12 帧通过
   - **锚定 yaw bug 已修**:硬编码 yaw=0 在 Town13(pts[0] 固有 yaw 125.9°)致车道线采样到车后、overlay 全空 → 改用 spawn point 固有 rotation,原图回归不变、Town13 overlay 恢复
 - 结论:新图采集用 Town13/15;静态 GT 地图查询链路新图自动生效
+
+## 可视化实时流(2026-09-09)✅
+
+- 决策:carlaviz(Three.js 线框)/ ROS2-Bridge+RViz2 出局——**都不是 UE 渲染**(P1 验证对象全是渲染效果)、carlaviz 官方最高 0.9.15(无 0.9.16)、容器无 docker/ROS;自建 MJPEG 更省且口径同源
+- 交付:`scripts/view_stream.py`(follow/top/grid6 三视角 + `--scene` 天气 + `--npcs` 静置 NPC + GT 框/灯色 overlay + HUD,MJPEG 只绑 127.0.0.1 走 SSH 隧道);`world_to_img` 上移 `calib.py` 供采集器与实时流共用(+5 单测)
+- 验收(数值诊断,同帧 raw/overlay 差集):follow 3023 px、top(60m)1995 px,类别色全部命中;流 30+ 段 JPEG 有效、约 5 fps、退出清理干净
+- 顺带更正:Town10HD_Opt **有 15 个 traffic_light actor**(xodr 17 个 dynamic 信号,15 个被实例化)→ P2 "无灯色状态"边界撤回

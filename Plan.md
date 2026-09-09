@@ -249,9 +249,11 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 ### 5.6a P2-1 选型裁决(2026-09-09,probe 实测定案)
 
 Town10HD_Opt 静态 GT 源三候选实测:
-1. **semantic LiDAR 后处理——出局**:信号灯/标志**不是 actor**(0.9.16_Opt 无
-   traffic.traffic_light 蓝图,世界 0 信号 actor),车道线非实体无 tag——LiDAR
+1. **semantic LiDAR 后处理——出局**:信号灯/标志**不是可打 tag 的实体**
+   (无 traffic.traffic_light 蓝图可 spawn;世界内 15 个灯 actor 是地图
+   dynamic 信号实例,非 semantic 实体),车道线非实体无 tag——LiDAR
    打不到,无从后处理
+   〔2026-09-09 更正:原记"世界 0 信号 actor"有误,见 §5.8 事实更正〕
 2. **RoadRunner 资产化——挂起降级**:可行但依赖 M4;且车道线/信号定义本就在
    xodr,RR 只是换地图时的载体 → M4-1 定制街道时复用
 3. **地图查询 API(定案,0 外部依赖)**:landmark 65 个(58×Signal_3Light_Post01
@@ -260,8 +262,8 @@ Town10HD_Opt 静态 GT 源三候选实测:
    width 0.125,沿 lane 中心采样重建折线)。上帝视角、传感器解耦、与帧对齐
    由 ego 位姿锚定。
 
-边界如实记录:Town10HD_Opt 无信号灯 actor → **无灯色状态周期**(状态属动态
-范畴;若需灯光状态须换非 Opt 地图或 actor 注入,排后续);本图无限速牌
+边界如实记录:Town10HD_Opt **有 15 个信号灯 actor**(灯色可读,见 §5.8 更正),
+但灯色属**动态** GT、本阶段不落盘(P2 只做静态);本图无限速牌
 (landmark 面仅信号灯/停/让);车道线几何 = xodr 事实,若渲染 mesh 与 xodr
 不符需目检兜底(第 5.6b 验收含目检图)。
 
@@ -294,7 +296,8 @@ Solid Yellow)白(右 Broken White)双线沿路缘延伸、透视收敛正确;信
 
 **边界如实记录**:静态 GT 为地图事实(xodr),与天气/光照/渲染**解耦**——
 这是特性(静止目标真 GT),但换地图即换真值(M4 RoadRunner 时复用本链路)。
-信号灯**灯色状态**不在本版本(Opt 无 actor),状态属动态 GT 范畴。
+信号灯**灯色状态**不在本版本——灯 actor 存在(15 个,§5.8 更正),但灯色属
+**动态** GT 范畴,静态 json 不收;实时可视化已画(actor API 直读)。
 
 **M4 — RoadRunner 定制街道**(外部依赖,末位)
 - M4-0 RoadRunner 可用性调研(trial 渠道/平台约束/0.9.16 USD-xodr 导入链路),P1 完成后启动
@@ -404,6 +407,53 @@ M4(定制街道)挂起,理由:M4-0 显示道路封闭 = 源码构建
 **结论**:新图采集约束 = Town13/15 可用、Town13 TM 车流降级、Town11/12
 禁采集;P1-6 候选场景与后续长尾数据源可在地图池内选图。
 
+### 5.8 场景可视化实时流(2026-09-09 ✅)
+
+**决策(两条外部候选 vs 自建)**:carlaviz(Three.js 线框)/ ROS2-Bridge+RViz2
+都不选,三条理由:
+1. **都不是 UE 渲染**——P1 的验证对象全是渲染效果(逆光过曝/雨夜对比度/浓雾),
+   线框与点云 marker 看不到要验的东西
+2. **版本/依赖不成立**:carlaviz 官方最高 0.9.15(无 0.9.16);AutoDL 容器无
+   docker 无 ROS,ROS2 路线要容器/VM/Mac 三系统联调
+3. 自建更省且口径同源:直接消费采集器同一条相机链 → **所见即落盘**,GT 框走
+   label_2 同一投影函数(box_to_gt_line)
+定案:自建 MJPEG 流(scripts/view_stream.py,base env,当天可用)。
+
+**实现**:
+- `scripts/view_stream.py`:3 视角(follow / top / grid6=nuScenes 6 向 3×2 拼图)
+  + `--scene` 天气档 + `--npcs` 静置 NPC + `--speed` 定速直行 + HUD;
+  框/行人/骑行者按类别着色,信号灯画灯色圆点;MJPEG 服务只绑 127.0.0.1
+  (本地 ssh -L 隧道),最新帧槽不排队(客户端永远看最新画面)
+- `world_to_img` 上移 `autodrivedata/calib.py`(+5 单测),采集器 overlay 与实时流
+  **共用单一投影实现**;collect_static_gt 改用它(回归:红圈 504 px、白/黄车道线
+  均绘制、static_gt json 内容不变)
+
+**验收(数值诊断;`--dump` 落同帧 raw+overlay 做差)**:
+
+| 视角 | 差集 | Car | Ped | Cyc | 信号灯 |
+|---|---|---|---|---|---|
+| follow | 3023 px | 1261 | 246 | 173 | 291 |
+| top(60m) | 1995 px | 603 | 111 | 108 | 194 |
+
+流:31/30 段 JPEG、首帧 640×360 有效、4.8/4.9 fps;退出清理干净(相机/actor
+销毁 + 恢复异步)。
+
+**坑(testLog C23)**:直接数 overlay 颜色会被场景自带绿(植被)/黄(标线)干扰——
+top 视角曾误判"Car 仅 3 px";真因是 35m 高度只覆盖 ±20m(22/30m 的车在画面外),
+高度提到 60m(覆盖 ±34m×±60m)后 Car 603 px 与框周长量级吻合。
+**overlay 验证必须做差集,不能数绝对颜色。**
+
+**事实更正(§5.6a 撤回一句,testLog C24)**:Town10HD_Opt **有** 15 个
+`traffic.traffic_light` actor(Red/Green 状态,opendrive id 943–962,位置与
+Signal landmark 重合 0.1m)——原记"世界 0 信号 actor"有误。xodr 实证:21 条
+`<signal>` 定义 = **17 个 dynamic=yes**(15 个 Signal_3Light_Post01 + 2 个无名)
++ 4 个 dynamic=no(Sign_Stop/Yield);CARLA 只把**动态信号**实例化为 actor
+(15 个,2 个无名的未实例化)。不变的两点:① 蓝图库确实无 traffic light 可 spawn
+(原判断成立);② P2 静态源仍用 landmark(56×Signal + Stop/Yield 比 15 个灯头更
+细),灯色属**动态** GT 故不进 P2 json;可视化侧用 actor API 实时画灯色。
+
+**边界**:只读可视化,无交互控制;同步模式 tick 归本脚本,与采集脚本互斥。
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -442,3 +492,5 @@ AutoDriveData/
 - [ ] **P1-4+** 第二 corner case 定量 A/B(雨夜;隧道/遮挡候选)——M4 降级后新主线
 - [~] **M4** 定制街道:M4-0 调研(§5.7 ✅)+ M4-1 用户裁决降级(§5.7a,源码构建成本过载,挂起重开条件:换盘/有需求)
 - [x] **地图池扩展**(§5.7d ✅ 2026-09-09):AdditionalMaps Town11/12/13/15 入池(17 图);约束:Town11/12 禁采集(spawn camera segfault)、Town13 TM 车流降级、锚定 yaw bug 已修(spawn point 固有 rotation)
+- [x] **可视化实时流**(§5.8 ✅ 2026-09-09):自建 MJPEG(view_stream.py,3 视角 + GT overlay + 灯色);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 calib.py 共用
+- [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)

@@ -44,6 +44,8 @@
 | C20 | 附加图 Town11/12 采集必崩:sync + ego + tick 均正常,**spawn camera(attach_to=ego)瞬间 segfault(Signal 11)**;Town10HD_Opt/Town13/Town15 同链全通 | 该二图渲染资源与 headless GPU shim 栈冲突(机制未明);已知边界:采集用 Town13/15,记入 Plan.md |
 | C21 | 附加图 Town13 TM 车流:15 车 + TM 8000 首次 tick 把服务器打满(153% CPU,client 30s 无响应)——与 segfault 不同类,是算不过来 | 双层大图 TM 计算过载;降级 `--npc-vehicles 0 --npc-walkers 0`(仅 ego autopilot)可跑 |
 | C22 | collect_static_gt 锚定 **yaw 硬编码 0**:Town10HD_Opt pts[0] 固有 yaw=0.16° 恰好成立;Town13 pts[0] yaw=125.9° → 车道线采样沿 lane 方向走到车后、overlay 全空(投影深度全负,数值诊断发现) | 锚定改用 **spawn point 固有 rotation**(地图作者设定的沿车道朝向);原图回归行为不变,Town13 overlay 恢复(988-1108 标注像素/帧) |
+| C23 | **数 overlay 绝对颜色会误判**:场景自带绿(植被)/黄(标线)与类别色撞色——top 视角曾报"Car 仅 3 px" | 改 **同帧 raw vs overlay 差集**(`view_stream.py --dump`);另 35m 高度只覆盖 ±20m(22/30m 的车在画面外),提到 60m 后 Car 603 px 与框周长量级吻合 |
+| C24 | **P2 "世界 0 信号 actor" 结论有误**(Plan.md §5.6a 原文):Town10HD_Opt 实测 **15 个 traffic_light actor**(Red/Green,opendrive id 943-962,与 Signal landmark 位置重合 0.1m) | xodr 实证:21 条 `<signal>` = 17 个 `dynamic="yes"`(15 命名 + 2 无名)+ 4 个 `dynamic="no"`(Stop/Yield);CARLA 只实例化动态信号。静态源仍用 landmark(更细),灯色属动态 GT 不入 P2 json;可视化侧 actor API 直读画灯色 |
 
 ## 评估口径
 

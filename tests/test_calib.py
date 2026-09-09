@@ -31,6 +31,37 @@ class TestIntrinsics:
         )
 
 
+class TestWorldToImg:
+    """world_to_img:采集器 overlay 与实时可视化共用的投影口径。"""
+
+    K = calib.CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
+
+    def test_point_on_optical_axis_maps_to_center(self):
+        # 相机原点朝 +x(相机系 = 世界系,恒等位姿),前方 10m → 画面中心
+        uv = calib.world_to_img((10.0, 0.0, 0.0), CAM0, CAM0, self.K)
+        assert uv is not None
+        assert uv[0] == pytest.approx(self.K.cx, abs=1e-9)
+        assert uv[1] == pytest.approx(self.K.cy, abs=1e-9)
+
+    def test_offset_point_uses_pinhole_ratio(self):
+        # 前方 10m、右侧 1m(世界 +y → 相机 x 右):u = fx*(1/10)+cx
+        uv = calib.world_to_img((10.0, 1.0, 0.0), CAM0, CAM0, self.K)
+        assert uv is not None
+        assert uv[0] == pytest.approx(self.K.fx * 0.1 + self.K.cx, abs=1e-9)
+        assert uv[1] == pytest.approx(self.K.cy, abs=1e-9)
+
+    def test_behind_camera_is_none(self):
+        assert calib.world_to_img((-10.0, 0.0, 0.0), CAM0, CAM0, self.K) is None
+
+    def test_too_close_is_none(self):
+        # 深度 ≤ 0.5m 剔除(近裁剪,防投影爆炸)
+        assert calib.world_to_img((0.4, 0.0, 0.0), CAM0, CAM0, self.K) is None
+
+    def test_outside_image_is_none(self):
+        # 前方 1m、侧向 10m → u 远超图宽
+        assert calib.world_to_img((1.0, 0.0, -10.0), CAM0, CAM0, self.K) is None
+
+
 class TestTrVeloToCam:
     def test_identity_pose_degenerates_to_velo_to_cam(self):
         # LiDAR 与相机同位同向 → Tr 退化为 VELO_TO_CAM 基变换(geometry 手算锚点)
