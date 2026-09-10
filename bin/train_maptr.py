@@ -38,6 +38,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=4, help="DataLoader 进程数(多帧训练数据加载是瓶颈)")
     ap.add_argument("--num-vec", type=int, default=50, help="每类实例 query 数(官方 50)")
     ap.add_argument("--no-pretrain", action="store_true", help="backbone 不用 ImageNet 预训练")
+    ap.add_argument("--init-ckpt", default=None, help="从既有 state_dict 续训(仅模型权重,优化器重置)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
@@ -62,6 +63,9 @@ def main() -> None:
     )
 
     model = MapTR(num_vec=args.num_vec, pretrained=not args.no_pretrain).to(dev)
+    if args.init_ckpt:
+        model.load_state_dict(torch.load(args.init_ckpt, map_location=dev))
+        print(f"[model] 从 {args.init_ckpt} 续训(优化器重置)")
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] MapTR(num_vec={args.num_vec}) @ {dev} | {n_params / 1e6:.1f}M 参数")
 
