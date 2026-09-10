@@ -1,9 +1,9 @@
 #!/bin/bash
 # CARLA 服务器生命周期辅助(项目纪律,源自 M3-5 排查结论)。
 # 用法:
-#   scripts/carla_server.sh start   # 干净启动(先杀残留 + 验证端口空闲)
-#   scripts/carla_server.sh stop    # 彻底停止(UE4 会逃逸 su 包装,必须 pkill -9)
-#   scripts/carla_server.sh status  # 状态(进程/端口/显存)
+#   bin/carla_server.sh start   # 干净启动(先杀残留 + 验证端口空闲)
+#   bin/carla_server.sh stop    # 彻底停止(UE4 会逃逸 su 包装,必须 pkill -9)
+#   bin/carla_server.sh status  # 状态(进程/端口/显存)
 #
 # M3-5 结论:headless 下客户端会话收尾(销毁传感器+断连)偶发 UE4 segfault(139),
 # 但每次采集数据已完整落盘——崩溃只发生在 teardown 阶段。纪律:每次采集前 start。

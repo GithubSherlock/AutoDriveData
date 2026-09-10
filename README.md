@@ -34,28 +34,28 @@ CARLA 0.9.16 → [AutoLabel](https://github.com/GithubSherlock/AutoLabel) 自动
 
 ```bash
 # 1. CARLA 服务器(headless,GPU 修复栈;专用用户 carla)
-bash scripts/carla_server.sh
+bash bin/carla_server.sh
 
 # 2. 场景采集(KITTI root:image_2 + label_2 GT + velodyne + calib)
-python scripts/collect_drive.py --scene rain_night --frames 70
-python scripts/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B 专用
+python bin/collect_drive.py --scene rain_night --frames 70
+python bin/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B 专用
 
 # 3. 静态 GT(landmark + 车道线,含 overlay 目检图)
-python scripts/collect_static_gt.py --frames 40
+python bin/collect_static_gt.py --frames 40
 
 # 4. 灯色动态 GT(记录模式;--cycle 绿,黄,红 秒数 = 受控切灯)
-python scripts/collect_tl_states.py --frames 40 --speed 8
-python scripts/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
+python bin/collect_tl_states.py --frames 40 --speed 8
+python bin/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
 
 # 5. 实时可视化(自建 MJPEG:真 UE 渲染 + GT 框/灯色 overlay)
-python scripts/view_stream.py --view follow --npcs     # 本地 ssh -L 8080:127.0.0.1:8080 → 浏览器打开
-python scripts/view_stream.py --view top --map Town13  # 俯视看街区/NPC
+python bin/view_stream.py --view follow --npcs     # 本地 ssh -L 8080:127.0.0.1:8080 → 浏览器打开
+python bin/view_stream.py --view top --map Town13  # 俯视看街区/NPC
 
 # 6. 2D A/B 评估
-python scripts/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
+python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
 
 # 7. 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像;速度用于 TTC 归一化)
-python scripts/eval_attr.py \
+python bin/eval_attr.py \
   --run day4=outputs/kitti_sweep_day_clear_4:4.0 \
   --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
@@ -64,7 +64,7 @@ python scripts/eval_attr.py \
 cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti root> \
   /root/miniconda3/envs/autolabel/bin/auto3dlabel run 000000-000069 "检测汽车" \
   --det-model pointpillars_kitti --batch --no-viz --out-dir <abs out>
-python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x
+python bin/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x
 
 # 9. 测试
 python -m pytest tests/ -q
@@ -84,7 +84,7 @@ python -m pytest tests/ -q
 ## 项目结构
 
 - `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios),不 import carla
-- `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py` 共用件 + `carla_server.sh`
+- `bin/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py` 共用件 + `carla_server.sh`
 - `tests/` — 单测(autodrivedata env,213 passed / 3 skipped)
 - `outputs/` — 采集产物(不进 git)
 

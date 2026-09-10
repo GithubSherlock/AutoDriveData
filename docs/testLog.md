@@ -12,7 +12,7 @@
 
 | # | 坑 | 修复 |
 |---|---|---|
-| E1 | UE4 拒绝 root 运行 | 专用用户 carla 跑服务器(`scripts/carla_server.sh`) |
+| E1 | UE4 拒绝 root 运行 | 专用用户 carla 跑服务器(`bin/carla_server.sh`) |
 | E2 | /root 权限 700 致 carla 用户不可读 | 改 711 |
 | E3 | headless GPU 栈崩溃 | EGL json 重建 + LD_PRELOAD 符号 shim |
 | E4 | TaskStop 杀不死 UE4 子进程 → 端口占用崩新实例 | `pkill -f CarlaUE4` |

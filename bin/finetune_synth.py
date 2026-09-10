@@ -1,8 +1,8 @@
 """合成 KITTI 数据 → pointpillars_kitti 微调(AutoLabel train3d 五函数复用)。
 
 用法(autolabel env,CARLA 服务器已停以腾显存):
-  KITTI_OBJECT_ROOT=outputs/kitti_ft python3 scripts/finetune_synth.py --dry-run  # 数据准备+config
-  KITTI_OBJECT_ROOT=outputs/kitti_ft python3 scripts/finetune_synth.py           # + 训练(GPU)
+  KITTI_OBJECT_ROOT=outputs/kitti_ft python3 bin/finetune_synth.py --dry-run  # 数据准备+config
+  KITTI_OBJECT_ROOT=outputs/kitti_ft python3 bin/finetune_synth.py           # + 训练(GPU)
 
 与 AutoLabel train3d 的差异:ImageSets 按本数据集实际帧号写(0..n_train-1 / 训练余下为 val),
 而非官方 7481 帧的固定划分;其余步骤(create_data/subsample/config/train)原样复用。

@@ -86,14 +86,14 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 ## 可视化实时流(2026-09-09)✅
 
 - 决策:carlaviz(Three.js 线框)/ ROS2-Bridge+RViz2 出局——**都不是 UE 渲染**(P1 验证对象全是渲染效果)、carlaviz 官方最高 0.9.15(无 0.9.16)、容器无 docker/ROS;自建 MJPEG 更省且口径同源
-- 交付:`scripts/view_stream.py`(follow/top/grid6 三视角 + `--scene` 天气 + `--npcs` 静置 NPC + GT 框/灯色 overlay + HUD,MJPEG 只绑 127.0.0.1 走 SSH 隧道);`world_to_img` 上移 `calib.py` 供采集器与实时流共用(+5 单测)
+- 交付:`bin/view_stream.py`(follow/top/grid6 三视角 + `--scene` 天气 + `--npcs` 静置 NPC + GT 框/灯色 overlay + HUD,MJPEG 只绑 127.0.0.1 走 SSH 隧道);`world_to_img` 上移 `calib.py` 供采集器与实时流共用(+5 单测)
 - 验收(数值诊断,同帧 raw/overlay 差集):follow 3023 px、top(60m)1995 px,类别色全部命中;流 30+ 段 JPEG 有效、约 5 fps、退出清理干净
 - 顺带更正:Town10HD_Opt **有 15 个 traffic_light actor**(xodr 17 个 dynamic 信号,15 个被实例化)→ P2 "无灯色状态"边界撤回
 
 ## 灯色动态 GT(2026-09-09)✅
 
 - 工业口径:灯态 = 独立时序语义层(BDD 挂框属性无时序 / WOMD 逐帧序列但 71.7% 缺失 / nuScenes 地图层只有静态几何)→ 本项目取 WOMD 形态,Off/Unknown **不猜**
-- 交付:`autodrivedata/traffic_light.py`(纯值:normalize_state / in_front / phase_at / Frame JSON 往返)+ `scripts/collect_tl_states.py`(记录模式 / `--cycle 6,2,6` 受控切灯)+ `carla_common.traffic_light_frame`/`draw_traffic_lights`(采集器与实时流共用)
+- 交付:`autodrivedata/traffic_light.py`(纯值:normalize_state / in_front / phase_at / Frame JSON 往返)+ `bin/collect_tl_states.py`(记录模式 / `--cycle 6,2,6` 受控切灯)+ `carla_common.traffic_light_frame`/`draw_traffic_lights`(采集器与实时流共用)
 - 落盘:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`
 - 验收(受控 90 帧):状态变化点 = 帧 0/60/80 与计划逐帧吻合;管制车道/停车线非空;overlay 差集与画面内灯数相关 0.99;view_stream 回归差集 3522 px
 - 实测驱动的两处修正:①圆形 horizon 收进 79% 身后灯 → 加前向半平面过滤(1046→221 灯次);②同步模式首个 `get_actors()` 为空致清场漏清 → 修在 `sync_mode()`
@@ -101,7 +101,7 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 
 ## 参数扫描 + 失效归因(2026-09-09)✅
 
-- 交付:`autodrivedata/attribution.py`(纯值:逐帧匹配 + 分箱 + 逐帧接近速度自证)+ `scripts/eval_attr.py`(多跑 × 距离/框高/TTC 网格 + 漏检画像 + `--json`)+ 28 单测;与 eval_2d_ab 共用同一个 `box_iou2d`
+- 交付:`autodrivedata/attribution.py`(纯值:逐帧匹配 + 分箱 + 逐帧接近速度自证)+ `bin/eval_attr.py`(多跑 × 距离/框高/TTC 网格 + 漏检画像 + `--json`)+ 28 单测;与 eval_2d_ab 共用同一个 `box_iou2d`
 - 数据:day_clear 4/8/12 m/s(同 56m 里程)+ 4 个 P1 数据集 → `outputs/attr_all.json`
 - **尺度主导**:<32px 一律 0.15–0.47、≥32px 一律 0.78–1.00;断崖 ≈21–24px(30–40m);漏检框内亮度与命中几乎相同 → 不是"暗",是"小"
 - **CARLA 无运动模糊**(平台边界):4/8/12 m/s 同距离箱梯度能量 35.6/35.2/34.8,池化检出率 0.914/0.886/0.909 → 速度不改变图像质量,退化只能人工注入

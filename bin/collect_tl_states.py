@@ -12,8 +12,8 @@
   training/traffic_light/{fid}.json    TrafficLightFrame(状态 + 管制车道 + 停车线)
 
 用法(base env,CARLA 服务器运行中):
-  python scripts/collect_tl_states.py --frames 60 --speed 8
-  python scripts/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
+  python bin/collect_tl_states.py --frames 60 --speed 8
+  python bin/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@
 TTC 箱是安全余量语义(同一箱在不同速度对应不同距离,检出率不可跨速度对比)。
 
 用法(base env,数据已落盘):
-  python scripts/eval_attr.py \
+  python bin/eval_attr.py \
       --run day8=outputs/kitti_ab_day_clear:8.0 \
       --run day4=outputs/kitti_sweep_day_clear_4:4.0 \
       --run rain8=outputs/kitti_ab_rain_night:8.0

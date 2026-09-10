@@ -1,7 +1,7 @@
 """KITTI root 的 GT vs AutoLabel 伪标签比对报表(比对层 CLI)。
 
 用法(base 或 autolabel env 皆可):
-  python scripts/eval_kitti.py --root outputs/kitti_scene \
+  python bin/eval_kitti.py --root outputs/kitti_scene \
       --pred /root/autodl-tmp/Documents/Projects/AutoLabel/outputs/kitti3d \
       [--frames 3] [--iou 0.5] [--classes Car Pedestrian Cyclist]
 

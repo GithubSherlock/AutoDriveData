@@ -11,7 +11,7 @@ waypoint.lane_marking(车道线实体)。非 actor 无 tag,semantic LiDAR 打不
   training/overlay/{fid}.png      目检叠加图:信号锚点(红) + 车道线段
                                   (白=White 黄=Yellow)投影到图像平面
 
-用法(base env): python scripts/collect_static_gt.py [--frames 40] [--out outputs/kitti_static_demo]
+用法(base env): python bin/collect_static_gt.py [--frames 40] [--out outputs/kitti_static_demo]
 """
 
 from __future__ import annotations

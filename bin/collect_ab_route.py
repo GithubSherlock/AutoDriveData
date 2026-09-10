@@ -8,9 +8,9 @@ A/B 纪律(2026-09-08 教训):autopilot/TM 路线失控使帧内容不可对齐(
 → 帧级配对:同位置同车同角,唯一变量 = 光照(采集史:残留 actor 阻塞
 pt0 曾致 fallback 反向出生点、65m 曾卡 GT 阈值——已修,详见 Plan.md §5.5a)。
 
-用法: python scripts/collect_ab_route.py --scene day_clear --frames 220 [--out ...]
-      python scripts/collect_ab_route.py --scene sunset_glare --frames 220 [--out ...]
-      python scripts/collect_ab_route.py --scene day_clear --speed 4 --frames 140  # 参数扫描(定里程)
+用法: python bin/collect_ab_route.py --scene day_clear --frames 220 [--out ...]
+      python bin/collect_ab_route.py --scene sunset_glare --frames 220 [--out ...]
+      python bin/collect_ab_route.py --scene day_clear --speed 4 --frames 140  # 参数扫描(定里程)
 """
 
 from __future__ import annotations

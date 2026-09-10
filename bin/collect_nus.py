@@ -1,7 +1,7 @@
 """M1b 静态采集:ego 静止 + NPC + 6 相机 + LiDAR → nuScenes 迷你集(scene-0103)。
 
 用法(base env,CARLA 服务器运行中):
-  python scripts/collect_nus.py [--out outputs/nus_mini] [--frames 2]
+  python bin/collect_nus.py [--out outputs/nus_mini] [--frames 2]
 
 落盘 = 标准 nuScenes dataroot(devkit 直读,auto3dlabel nuscenes-queue 消费):
   {out}/v1.0-mini/*.json(14 表)+ samples/LIDAR_TOP/*.bin((N,5) raw)+ samples/CAM_*/*.png

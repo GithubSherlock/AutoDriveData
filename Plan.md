@@ -98,7 +98,7 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - 坑② UE4 拒绝 root → 专用用户 `carla`(home `/root/autodl-tmp/carla_home`);坑③ `/root` 700 → `chmod 711`
 - 首启 ~8 分钟(shader 编译);ALSA 报错可忽略;版本握手 0.9.16 ✅
 - 坑④ 传感器属性设 blueprint(spawn 前);坑⑤ **轴系红线**:ray_cast LiDAR 默认 360° 旋转,原始数据为传感器系(x 前/y 右/z 上)≠ KITTI 相机系(x 右/y 下/z 前)
-- 验收:`outputs/smoke/` + `scripts/smoke.py`(已参数化 --channels/--pps/--cam-offset/--pitch/--fov/--lidar-range)
+- 验收:`outputs/smoke/` + `bin/smoke.py`(已参数化 --channels/--pps/--cam-offset/--pitch/--fov/--lidar-range)
 
 ## 5. 里程碑与编排
 
@@ -122,7 +122,7 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 | 3 | `calib.py`:fov+分辨率 → P2;R0_rect=I;LiDAR→相机外参 → Tr_velo_to_cam | KITTI 格式 calib txt + 单测 |
 | 4 | `gt.py`:actor bounding_box/transform → label_2 15 字段(类别映射、y=底心、视野过滤 + truncation) | 与 CARLA 真值手验一致 |
 | 5 | `export/kitti.py`:image_2/velodyne/calib/label_2 落盘(6 位零填充) | 目录结构单测 |
-| 6 | `scripts/collect_kitti.py`:ego 静止 + 摆 NPC,同步模式采 N 帧 | 输出一个 KITTI root |
+| 6 | `bin/collect_kitti.py`:ego 静止 + 摆 NPC,同步模式采 N 帧 | 输出一个 KITTI root |
 | 7 | **集成验收**:`KITTI_OBJECT_ROOT=... auto3dlabel run`(autolabel env) | 数据层读入全通 + pointpillars 伪标签落盘 |
 
 ### 5.1a M1a 执行记录(2026-09-07 ✅ 验收通过,含域差距首测)
@@ -419,10 +419,10 @@ M4(定制街道)挂起,理由:M4-0 显示道路封闭 = 源码构建
    docker 无 ROS,ROS2 路线要容器/VM/Mac 三系统联调
 3. 自建更省且口径同源:直接消费采集器同一条相机链 → **所见即落盘**,GT 框走
    label_2 同一投影函数(box_to_gt_line)
-定案:自建 MJPEG 流(scripts/view_stream.py,base env,当天可用)。
+定案:自建 MJPEG 流(bin/view_stream.py,base env,当天可用)。
 
 **实现**:
-- `scripts/view_stream.py`:3 视角(follow / top / grid6=nuScenes 6 向 3×2 拼图)
+- `bin/view_stream.py`:3 视角(follow / top / grid6=nuScenes 6 向 3×2 拼图)
   + `--scene` 天气档 + `--npcs` 静置 NPC + `--speed` 定速直行 + HUD;
   框/行人/骑行者按类别着色,信号灯画灯色圆点;MJPEG 服务只绑 127.0.0.1
   (本地 ssh -L 隧道),最新帧槽不排队(客户端永远看最新画面)
@@ -471,9 +471,9 @@ Signal landmark 重合 0.1m)——原记"世界 0 信号 actor"有误。xodr 实
 - `autodrivedata/traffic_light.py`(纯值,不 import carla):`normalize_state` /
   `in_front` / `phase_at` + `TrafficLightState`(状态/灯头位置/管制车道/停车线/
   elapsed)+ `TrafficLightFrame`(逐帧 JSON 往返)
-- `scripts/carla_common.py`:`traffic_light_frame()` 把 actor 归一成纯值帧、
+- `bin/carla_common.py`:`traffic_light_frame()` 把 actor 归一成纯值帧、
   `draw_traffic_lights()` 画色点——**采集器与实时流共用同一条实现**(目检所见 = 落盘口径)
-- `scripts/collect_tl_states.py`:记录模式(默认,不动灯)/ 受控模式(`--cycle 6,2,6`
+- `bin/collect_tl_states.py`:记录模式(默认,不动灯)/ 受控模式(`--cycle 6,2,6`
   → freeze 全图灯 + 按 `phase_at(i·0.1s)` 驱动 → **确定性变灯序列**,真实数据集最缺的样本)
 
 **落盘**:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`。
@@ -520,7 +520,7 @@ Signal landmark 重合 0.1m)——原记"世界 0 信号 actor"有误。xodr 实
   eval_2d_ab 的本地副本已删)→ **检出率与 AP 两个数字互相解释得通**
 
 **交付**:`autodrivedata/attribution.py`(纯值,不 import carla/PIL/ultralytics)+
-`scripts/eval_attr.py`(`--run 名字=路径:速度` 可重复 → 每跑分箱表 + 漏检画像 +
+`bin/eval_attr.py`(`--run 名字=路径:速度` 可重复 → 每跑分箱表 + 漏检画像 +
 跨跑距离/框高网格 + `--json`)+ `tests/test_attribution.py`(28 例)+
 数据 `outputs/kitti_sweep_day_clear_{4,8,12}`(同 56m 里程)+ `outputs/attr_all.json`。
 
@@ -625,8 +625,8 @@ MapTR/MapQR 类架构(端到端 vectorized map)的输入 = 多视角环视图像
 | A1 解析器 | `autodrivedata/opendrive.py`:ElementTree 解析 `<geometry>`(line/arc/spiral/poly3/paramPoly3)+ elevationProfile + lanes/width + roadMark + junction + object;核心 `road_to_xy(road, s, t)` | 单测(直线/圆弧闭式解手算)+ API oracle 对账 |
 | A2 要素提取 | `autodrivedata/mapvec.py`:上表映射 → 实例(类 + 折线 + 属性 + 实例 id) | 每类计数/拓扑自证 |
 | A3 采样与裁剪 | 等距重采样(divider/boundary 20 点;ped_crossing 4 角 → 2 点长轴)、`crop_to_ego(pose, ±51.2m)` | 采样间距/点数断言 |
-| A4 导出 + 目检 | `scripts/export_mapvec.py` → `training/map/{map}_full.json` + `{fid}.json` + BEV overlay 图 | overlay 目检(同帧差集口径,C23) |
-| A5 转换器 | `scripts/convert_mapvec.py` → MapTR 目录结构(annotation json + 可选 BEV 渲染) | 往返断言 |
+| A4 导出 + 目检 | `bin/export_mapvec.py` → `training/map/{map}_full.json` + `{fid}.json` + BEV overlay 图 | overlay 目检(同帧差集口径,C23) |
+| A5 转换器 | `bin/convert_mapvec.py` → MapTR 目录结构(annotation json + 可选 BEV 渲染) | 往返断言 |
 | A6 验收三件套 | — | ①几何自证(闭合/自交/曲率/点在可行驶域)②API 交叉验证(`get_waypoint_xodr` 抽样 < 5cm)③overlay 目检 |
 
 **阶段 B(多视角采集,紧随)**:B1 `collect_drive.py` 扩环视相机(6 视角)+ 内外参导出;
@@ -671,7 +671,7 @@ AutoDriveData/
 │   ├── calib.py           # 内参/外参 → KITTI calib txt
 │   ├── gt.py              # actor → label_2 行
 │   └── export/kitti.py    # KITTI 布局落盘
-├── scripts/               # 采集入口(依赖 pycarla,autodrivedata env 跑)
+├── bin/               # 采集入口(依赖 pycarla,autodrivedata env 跑)
 │   └── smoke.py           # ✅ M0;collect_kitti.py 待建(步骤 6)
 ├── tests/                 # 单测(autodrivedata)+ oracle 脚本(autolabel env)
 └── outputs/               # 数据落盘(不进 git)
@@ -698,5 +698,5 @@ AutoDriveData/
 - [x] 参数扫描 + 失效归因(§5.10 ✅ 2026-09-09):距离×速度网格 + 逐帧漏检归因;三大结论 = 尺度主导(<32px 0.15-0.47 vs ≥32px 0.78-1.00)、CARLA 无运动模糊(速度不改图像)、天气只前移断崖;顺带修掉 collect_ab_route 的 brake 残留(老数据集实速 6.60 而非 8.0)
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 - [x] **环境迁移**(§4.4,2026-09-10 用户拍板):项目 env base(3.10)→ autodrivedata(3.11.16,pycarla/ultralytics 全量迁入);requirements.txt 钉版本;direnv + .envrc 自动激活;base 仅剩 conda 底座;验收 = 213 单测 + 采集冒烟;env 迁数据盘(软链)避开系统盘
-- [ ] **scripts→bin 改名**(第 1 步):git mv + 文档引用统一更新
-- [ ] **地图矢量管道**(§5.11 定案 2026-09-10,待执行):A 阶段离线 xodr → MapTR 三类 + 工程补充(divider/boundary/ped_crossing/stop_line/centerline/灯-车道),`autodrivedata/opendrive.py` + `mapvec.py` + `scripts/export_mapvec.py` + 转换器;B 阶段环视相机采集(6 视角)+ 数据集组装
+- [x] **scripts→bin 改名**(第 1 步 ✅):`git mv scripts bin` + 全仓 69 处 `scripts/` 引用 sed 统一替换(代码 18 + 文档 45 + 其余),残留 0
+- [ ] **地图矢量管道**(§5.11 定案 2026-09-10,待执行):A 阶段离线 xodr → MapTR 三类 + 工程补充(divider/boundary/ped_crossing/stop_line/centerline/灯-车道),`autodrivedata/opendrive.py` + `mapvec.py` + `bin/export_mapvec.py` + 转换器;B 阶段环视相机采集(6 视角)+ 数据集组装

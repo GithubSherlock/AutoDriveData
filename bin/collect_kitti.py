@@ -1,7 +1,7 @@
 """M1a 静态采集:ego 静止 + 摆 NPC + 相机/LiDAR 同步模式 → KITTI root 落盘(raw + GT)。
 
 用法(base env,CARLA 服务器运行中):
-  python scripts/collect_kitti.py [--out outputs/kitti_scene] [--frames 10] [--host 127.0.0.1]
+  python bin/collect_kitti.py [--out outputs/kitti_scene] [--frames 10] [--host 127.0.0.1]
 
 落盘布局照 auto3dlabel KittiFrame 契约(验收时 KITTI_OBJECT_ROOT=--out 零改动读入):
   {out}/training/{image_2,velodyne,calib,label_2}/000000.*

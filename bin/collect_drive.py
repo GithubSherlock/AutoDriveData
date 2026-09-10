@@ -1,7 +1,7 @@
 """M2 动态采集:ego autopilot + Traffic Manager 车流 + 行走行人 → KITTI 序列。
 
 用法(base env,CARLA 服务器运行中):
-  python scripts/collect_drive.py [--out outputs/kitti_drive] [--frames 200]
+  python bin/collect_drive.py [--out outputs/kitti_drive] [--frames 200]
     [--npc-vehicles 15] [--npc-walkers 6] [--seed 42]
 
 与 collect_kitti 同格式(KITTI root);区别:场景动态(ego 自动驾驶、NPC 交通流)。

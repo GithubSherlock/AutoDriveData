@@ -7,10 +7,10 @@ docker,ROS2 路线要容器/VM/Mac 三系统联调。本脚本消费与采集器
 → 所见即落盘,且 GT 框走 label_2 同一投影口径(box_to_gt_line)。
 
 用法(base env,CARLA 服务器运行中):
-  python scripts/view_stream.py --view follow                 # 跟车视角
-  python scripts/view_stream.py --view top --map Town13       # 俯视(看街区/NPC)
-  python scripts/view_stream.py --view grid6 --npcs           # nuScenes 6 视角 + 静置 NPC
-  python scripts/view_stream.py --scene rain_night --speed 8  # 带天气 + 定速直行
+  python bin/view_stream.py --view follow                 # 跟车视角
+  python bin/view_stream.py --view top --map Town13       # 俯视(看街区/NPC)
+  python bin/view_stream.py --view grid6 --npcs           # nuScenes 6 视角 + 静置 NPC
+  python bin/view_stream.py --scene rain_night --speed 8  # 带天气 + 定速直行
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
 红线:同步模式下 tick 归本脚本,不能与采集脚本同时运行(抢 tick)。

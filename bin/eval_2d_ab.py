@@ -1,7 +1,7 @@
 """P1-3 逆光 A/B:冻结 YOLO11s(KITTI 微调)在 A/B 两 KITTI root 的 2D AP 对比。
 
 用法(base env):
-  python scripts/eval_2d_ab.py --root-a outputs/kitti_day_clear --root-b outputs/kitti_sunset_glare \
+  python bin/eval_2d_ab.py --root-a outputs/kitti_day_clear --root-b outputs/kitti_sunset_glare \
       [--limit 150] [--conf 0.25] [--iou 0.5]
 
 评估口径:GT label_2 2D bbox(列 5-8) vs YOLO 预测(原图尺度),
