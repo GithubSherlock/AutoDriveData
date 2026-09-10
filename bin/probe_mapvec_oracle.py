@@ -120,6 +120,69 @@ def main() -> None:
     if bad:
         raise SystemExit(f"FAIL:{bad} 组超位置容差")
     print("PASS:几何对账在容差内")
+    print("— A6 几何自证(mapvec 全图六类) —")
+    self_check(xodr)
+
+
+def self_check(xodr) -> None:
+    """A6 ①几何自证:ped 闭合 / 折线自交 / 大折角(曲率) / 点数分布统计。"""
+    from autodrivedata.mapvec import extract_mapvec
+
+    vecs = extract_mapvec(xodr)
+    stats: dict[str, list[int]] = {}
+    for v in vecs:
+        stats.setdefault(v.cls, []).append(len(v.points))
+    print("点数分布:", {k: f"n={len(v)} min={min(v)} max={max(v)}" for k, v in sorted(stats.items())})
+    ped_open = sum(1 for v in vecs if v.cls == "ped_crossing" and math.dist(v.points[0], v.points[-1]) > 1e-6)
+    self_int = 0
+    sharp = 0
+    for v in vecs:
+        if v.cls in ("traffic_light", "ped_crossing"):
+            continue  # ped 是闭合多边形,角点大折角属地图作者几何(实测 10 例全在 ped)
+        n = len(v.points)
+        for i in range(1, n - 1):
+            u = (v.points[i][0] - v.points[i - 1][0], v.points[i][1] - v.points[i - 1][1])
+            w = (v.points[i + 1][0] - v.points[i][0], v.points[i + 1][1] - v.points[i][1])
+            lu, lw = math.hypot(*u), math.hypot(*w)
+            if lu < 1e-9 or lw < 1e-9:
+                continue
+            if u[0] * w[0] + u[1] * w[1] < -0.5 * lu * lw:  # 折角 >120° 视为回折(曲率异常)
+                sharp += 1
+        # 非相邻段相交粗查(沿 s 的参数折线正常不自交)
+        for i in range(n - 2):
+            a, b = v.points[i], v.points[i + 1]
+            for j in range(i + 2, n - 1):
+                c, d = v.points[j], v.points[j + 1]
+                if _seg_intersect(a, b, c, d):
+                    self_int += 1
+                    break
+            else:
+                continue
+            break
+    print(f"ped 未闭合: {ped_open} | 折线自交实例: {self_int} | 回折折角: {sharp}")
+
+
+def _seg_intersect(a, b, c, d) -> bool:
+    """2D 线段相交(含端点接触;xodr 系 y 取反不影响相交性)。"""
+
+    def cross(o, p, q):
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+    def on(o, p, q):
+        return (
+            min(o[0], q[0]) - 1e-9 <= p[0] <= max(o[0], q[0]) + 1e-9
+            and min(o[1], q[1]) - 1e-9 <= p[1] <= max(o[1], q[1]) + 1e-9
+        )
+
+    d1, d2, d3, d4 = cross(c, d, a), cross(c, d, b), cross(a, b, c), cross(a, b, d)
+    if ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4)):
+        return True
+    return (
+        (abs(d1) < 1e-9 and on(c, a, d))
+        or (abs(d2) < 1e-9 and on(c, b, d))
+        or (abs(d3) < 1e-9 and on(a, c, b))
+        or (abs(d4) < 1e-9 and on(a, d, b))
+    )
 
 
 if __name__ == "__main__":

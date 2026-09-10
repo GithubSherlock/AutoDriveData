@@ -695,6 +695,10 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
   增 `to_ego_frame/from_ego_frame`(往返断言)+ `to_maptr_annotation`。
   Town10HD_Opt@spawn0 实测:divider 72 / ped 7 / boundary 82 / centerline 163,
   局部坐标 ±51.3m 与裁剪窗口吻合,ped 闭合 20 点
+- **A6 三件套全过** ✅:①几何自证(ped 未闭合 0 / 折线自交 0 / 车道线类回折 0;
+  回折 10 例全在 ped 闭合多边形角点,属地图作者几何)②API oracle 0.00cm ③overlay
+  目检(路网/路口/斑马线/停止线/灯空间关系正确)。**第 2 步(A1–A6)完成**,提交
+  b16d2bd / dd8aa5c / 80821dd / 0a66da6(本小节为合并记录)
 
 ### 5.6 测试环境策略(已定)
 
@@ -741,4 +745,4 @@ AutoDriveData/
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 - [x] **环境迁移**(§4.4,2026-09-10 用户拍板):项目 env base(3.10)→ autodrivedata(3.11.16,pycarla/ultralytics 全量迁入);requirements.txt 钉版本;direnv + .envrc 自动激活;base 仅剩 conda 底座;验收 = 213 单测 + 采集冒烟;env 迁数据盘(软链)避开系统盘
 - [x] **scripts→bin 改名**(第 1 步 ✅):`git mv scripts bin` + 全仓 69 处 `scripts/` 引用 sed 统一替换(代码 18 + 文档 45 + 其余),残留 0
-- [ ] **地图矢量管道**(§5.11 定案 2026-09-10,待执行):A 阶段离线 xodr → MapTR 三类 + 工程补充(divider/boundary/ped_crossing/stop_line/centerline/灯-车道),`autodrivedata/opendrive.py` + `mapvec.py` + `bin/export_mapvec.py` + 转换器;B 阶段环视相机采集(6 视角)+ 数据集组装
+- [~] **地图矢量管道 A 阶段**(§5.11 ✅ 2026-09-11,第 2 步完成):opendrive.py + mapvec.py + export_mapvec.py + convert_mapvec.py + A6 三件套(自证/oracle 0.00cm/overlay);B 阶段环视相机采集(6 视角)+ 数据集组装待做(第 3 步)
