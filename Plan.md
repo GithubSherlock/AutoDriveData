@@ -635,6 +635,23 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
 **有损映射**(xodr 语义更细),映射表进文档,**不静默丢要素**;③不做 MapTR 训练/推理
 (依赖方向单向,AutoLabel 侧);④不改 A/B 采集纪律。
 
+### 5.11a A1 执行记录(2026-09-10 ✅)
+
+**交付**:`autodrivedata/opendrive.py`(纯值,stdlib+numpy)+ `tests/test_opendrive.py`(35 例)。
+
+- 解析:planView(line/arc/spiral/poly3/paramPoly3)+ elevationProfile + lanes
+  (laneOffset/width/roadMark/link)+ objects(outline 4 角)+ signals(validity)+
+  junction(connection/laneLink);核心 `road_to_xy(s, t)`(闭式解;spiral Simpson N=128)
+- **实测口径修正**(比 §5.11 摸底更细):
+  - 全库几何类型总计 = line **54460** / arc **33841** / spiral **262**(仅 Town15)——§5.11 摸底
+    的 65570/39301 是 glob `**/` 把顶层 OpenDrive 目录双计了,以本行为准
+  - 车道 id 惯例 = **左正右负**(与 OpenDRIVE 标准相反,与 CARLA 运行时 lane_id 同向)
+  - signal 在 `<signals>` 包裹内(曾 `findall("signal")` 直取 → 0 条,已修)
+  - Town10HD_Opt 锚点:road 108 / roadMark 2802 / crosswalk 16 / signal 21 / object 60
+    (16 crosswalk + 44 路面花纹)
+- 测试:闭式解手算锚定(line/arc 圆方程/螺旋退化=arc/细网格独立积分对照)+
+  真实文件计数锚点(逐项与 grep 复核一致,20 文件全解析;无 CARLA 机器自动 skip)
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
