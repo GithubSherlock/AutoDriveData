@@ -1,0 +1,15 @@
+# AutoDriveData 运行时依赖(autodrivedata env,Python 3.11;版本对齐 base 已验证组合)
+carla==0.9.16
+ultralytics==8.4.115
+numpy==1.26.4
+pillow==12.3.0
+nuscenes-devkit==1.2.0
+# opencv 必须钉 4.x:nuscenes-devkit 要 numpy<2,而 opencv 5.x 要 numpy>=2(解析冲突)
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+# torch/torchvision 显式固定:CUDA 13.0 组合已在 base 验证可用(cu130)
+torch==2.13.0
+torchvision==0.28.0
+# 开发/测试
+pytest==9.1.1
+ruff==0.16.3

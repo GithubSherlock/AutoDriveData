@@ -19,20 +19,22 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 - **P1 参数扫描 + 失效归因 ✅**(§5.10):[autodrivedata/attribution.py](autodrivedata/attribution.py) 纯值(逐帧匹配/分箱/逐帧速度自证)+ [scripts/eval_attr.py](scripts/eval_attr.py)(多跑 × 距离/框高/TTC 网格 + 漏检画像),与 AP 共用同一 `box_iou2d`。三结论:**尺度主导**(<32px 0.15–0.47 / ≥32px 0.78–1.00,断崖 ≈21–24px)、**CARLA 无运动模糊**(4/8/12 m/s 梯度能量 35.6/35.2/34.8,检出率 0.914/0.886/0.909 → 速度不改图像,退化只能人工注入)、**天气只前移断崖**(雨夜 40-50m 零检出→30-40m 0.32,雾最晚 0.91)
 - **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 
-## 环境(双环境,勿新建)
+## 环境(勿新建;direnv 进入目录自动激活 autodrivedata,首次需 `direnv allow`)
 
 | 环境 | Python | 用途 |
 |---|---|---|
-| **base**(当前 shell) | 3.10.8 | pycarla + ultralytics;采集 `scripts/collect_*.py`、2D 评估 eval_2d_ab.py、3D 比对 eval_kitti.py、全部单测 |
+| **autodrivedata**(本项目) | 3.11.16 | pycarla + ultralytics;采集 `scripts/collect_*.py`、2D 评估 eval_2d_ab.py、3D 比对 eval_kitti.py、全部单测 |
 | **autolabel** `/root/miniconda3/envs/autolabel` | 3.11.15 | mmdet3d;3D 检测 `auto3dlabel run`、oracle 对比 |
+| **base** | 3.10.8 | conda 底座 + direnv;pycarla/ultralytics 已于 2026-09-10 迁出,不承担项目职责 |
+| **maptr**(未建,§5.11 C 阶段预留) | 3.8 | MapTR/MapQR 老栈(mmcv-full 1.4 + torch 1.9),与 autodrivedata 严格分开 |
 
-纪律:autodrivedata 包**不 import carla**(纯值,两 env 可单测);依赖单向 AutoDriveData → AutoLabel(3D 检测消费方),禁止反向。
+纪律:autodrivedata 包**不 import carla**(纯值,任何 env 可单测);依赖单向 AutoDriveData → AutoLabel(3D 检测消费方),禁止反向。
 
 ## 项目结构
 
 - `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios),不 import carla
 - `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `carla_server.sh`(GPU 修复版启动)
-- `tests/` — 单测(base env,178 passed / 3 skipped)
+- `tests/` — 单测(autodrivedata env,213 passed / 3 skipped)
 - `outputs/` — 采集产物(kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签)
 - `docs/milestone.md` — 版本里程碑;`Plan.md` — **单一事实源**(方案定案/执行记录/待办全在此,改决策先读再改)
 
@@ -59,10 +61,10 @@ python scripts/view_stream.py --view top --map Town13     # 俯视看街区
 python scripts/view_stream.py --scene rain_night --speed 8  # 天气 + 定速直行
 python scripts/view_stream.py --view follow --dump /tmp/f.png  # 落 raw+overlay 做差集诊断
 
-# 2D A/B 评估(base env;A=day_clear 基线与 B 帧级配对)
+# 2D A/B 评估(A=day_clear 基线与 B 帧级配对)
 python scripts/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
 
-# 失效归因(base env;逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像)
+# 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像)
 python scripts/eval_attr.py --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
@@ -70,7 +72,7 @@ python scripts/eval_attr.py --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
 cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti root> \
   /root/miniconda3/envs/autolabel/bin/auto3dlabel run 000000-000069 "检测汽车" \
   --det-model pointpillars_kitti --batch --no-viz --out-dir <abs out>
-python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对(base env)
+python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对
 
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一

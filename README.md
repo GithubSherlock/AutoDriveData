@@ -30,6 +30,8 @@ CARLA 0.9.16 → [AutoLabel](https://github.com/GithubSherlock/AutoLabel) 自动
 
 ## 快速开始
 
+> 环境:进入项目目录自动激活 **autodrivedata** conda env(direnv + .envrc;首次 `direnv allow`)。VSCode 解释器已指向该 env。
+
 ```bash
 # 1. CARLA 服务器(headless,GPU 修复栈;专用用户 carla)
 bash scripts/carla_server.sh
@@ -65,23 +67,25 @@ cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti
 python scripts/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x
 
 # 9. 测试
-python -m pytest tests/ -q   # base env,178 passed / 3 skipped
+python -m pytest tests/ -q
 ```
 
-## 环境(双环境,勿新建)
+## 环境(勿新建;direnv 进入目录自动激活 autodrivedata)
 
 | 环境 | Python | 用途 |
 |---|---|---|
-| **base** | 3.10.8 | pycarla + ultralytics;采集、2D 评估、3D 比对、全部单测 |
+| **autodrivedata**(本项目) | 3.11.16 | pycarla + ultralytics;采集、2D 评估、3D 比对、全部单测 |
 | **autolabel** `/root/miniconda3/envs/autolabel` | 3.11.15 | mmdet3d;3D 检测、oracle 对比 |
+| **base** | 3.10.8 | conda 底座 + direnv;pycarla/ultralytics 已迁出(2026-09-10) |
+| **maptr**(未建,§5.11 C 阶段预留) | 3.8 | MapTR/MapQR 老栈 |
 
-纪律:autodrivedata 包**不 import carla**(纯值,两 env 可单测);依赖单向 AutoDriveData → AutoLabel,禁止反向。
+纪律:autodrivedata 包**不 import carla**(纯值,任何 env 可单测);依赖单向 AutoDriveData → AutoLabel,禁止反向。
 
 ## 项目结构
 
 - `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios),不 import carla
 - `scripts/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py` 共用件 + `carla_server.sh`
-- `tests/` — 单测(base env,178 passed / 3 skipped)
+- `tests/` — 单测(autodrivedata env,213 passed / 3 skipped)
 - `outputs/` — 采集产物(不进 git)
 
 ## 文档

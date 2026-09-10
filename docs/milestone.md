@@ -107,3 +107,12 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 - **CARLA 无运动模糊**(平台边界):4/8/12 m/s 同距离箱梯度能量 35.6/35.2/34.8,池化检出率 0.914/0.886/0.909 → 速度不改变图像质量,退化只能人工注入
 - **天气只是把断崖前移**:雨夜 40-50m 零检出提前到 30-40m(0.32),雾反而最晚(0.91);雨夜另有近场异常(0-10m 0.56、128+px 0.58),未定性
 - 顺带修 bug:collect_ab_route 的 `brake=1.0` 残留使"定速"打 0.82 折 → **P1 四个老数据集实为 6.60 m/s**(标称 8.0),TTC 口径据此校正
+
+## 环境迁移 base → autodrivedata(2026-09-10)✅
+
+- 用户拍板:新建 conda env **autodrivedata**(py3.11.16)为项目唯一 env;base 卸载 pycarla + ultralytics,仅剩 conda 底座 + direnv
+- requirements.txt 钉死版本(carla 0.9.16 / ultralytics 8.4.115 / torch 2.13.0+cu130 / numpy 1.26.4 / pillow 12.3.0 / nuscenes-devkit 1.2.0 / pytest 9.1.1 / ruff 0.16.3,对齐 base 已验证组合)
+- 自动激活:direnv(conda-forge)+ 项目根 .envrc + ~/.bashrc hook;VSCode `python.defaultInterpreterPath` 指向 env
+- 文档:CLAUDE.md/README/Plan.md 环境表与命令注释同步更新;MapTR/MapQR 老栈(py3.8 + torch1.9 + mmcv-full1.4)与 autodrivedata 不兼容 → 预留 maptr env(未建,§5.11 C 阶段)
+- 验收:213 单测通过 + `collect_drive --frames 3` 落盘 ✅;`pip check` 无破损依赖;opencv 钉 4.11(5.x 要 numpy>=2 与 nuscenes-devkit <2 冲突)
+- 插曲:阿里云镜像单连接 ~160KB/s 且拒 aria2 默认 UA(403)→ curl UA + 16 线程批量下载;系统盘满(100%)→ 旧 vscode-server 版本清理 + env 迁数据盘(软链),系统盘回落到 81%

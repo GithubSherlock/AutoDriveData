@@ -70,7 +70,7 @@ GT 类别直落 KITTI 名(`COCO_TO_KITTI` 已存:car→Car/person→Pedestrian/b
 |---|---|---|---|
 | GPU | RTX 3080 Ti 12GB,driver 595.58 | ≥8GB VRAM | ✅(Low 画质实占 ~5G) |
 | OS | Ubuntu 22.04 x86_64 | Linux | ✅ |
-| Python | base 3.10 / autolabel env 3.11 | API 支持 3.7–3.12 | ✅ 双 wheel |
+| Python | autodrivedata env 3.11(本项目)/ autolabel env 3.11 | API 支持 3.7–3.12 | ✅ 双 wheel |
 | 内存/CPU | 440GB / 12 核 | 8GB+ | ✅ |
 | 磁盘 | autodl-tmp **190G(余 76G)** | ~20G | ✅(已扩容) |
 
@@ -81,14 +81,16 @@ GT 类别直落 KITTI 名(`COCO_TO_KITTI` 已存:car→Car/person→Pedestrian/b
 ### 4.3 安装与启动(已执行,速查)
 
 ```bash
-# 安装位置 /root/autodl-tmp/CARLA_0.9.16/(19G);pycarla 在 base(3.10): pip install carla==0.9.16
+# 安装位置 /root/autodl-tmp/CARLA_0.9.16/(19G);pycarla 装 autodrivedata env: pip install carla==0.9.16
 # 启动(必须专用用户 carla,UE4 拒绝 root;headless 适配):
 su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScreen -quality-level=Low"
 ```
 
 ### 4.4 环境共存策略(已定)
 
-采集脚本独立进程跑在 base(3.10):只 import pycarla + numpy;绝不装进 `autolabel` env(mmdet3d CUDA13 编译环境脆弱)。落盘后再由 AutoLabel 侧读取(跨进程边界即解耦点)。
+采集脚本独立进程跑在 **autodrivedata env**(3.11):只 import pycarla + numpy;绝不装进 `autolabel` env(mmdet3d CUDA13 编译环境脆弱)。落盘后再由 AutoLabel 侧读取(跨进程边界即解耦点)。
+
+**2026-09-10 环境迁移定案**(用户拍板):项目 env 从 base(3.10)→ 新建 **autodrivedata**(3.11.16),pycarla/ultralytics 全量迁入,base 仅剩 conda 底座 + direnv;direnv + .envrc 进入目录自动激活,VSCode 解释器指向该 env;依赖钉死在 requirements.txt(版本对齐 base 已验证组合,cu130)。MapTR/MapQR(§5.11 C 阶段)需 py3.8 + torch1.9 + mmcv-full1.4 老栈,与 autodrivedata 不兼容 → 预留独立 maptr env(未建)。
 
 ### 4.5 M0 执行记录(2026-09-06 ✅)
 
@@ -596,7 +598,7 @@ MapTR/MapQR 类架构(端到端 vectorized map)的输入 = 多视角环视图像
 
 1. 地图矢量是**整图静态事实**,不随帧/天气/光照变化 → 不绑进采集循环(采集器要清场/同步/
    tick,重且不可复现)
-2. `autodrivedata` 不 import carla 的纪律 → 纯值解析器天然契合,两 env 可单测(与 attribution.py
+2. `autodrivedata` 不 import carla 的纪律 → 纯值解析器天然契合,任何 env 可单测(与 attribution.py
    同性质)
 3. **21 个 xodr 已在本机磁盘**(`CARLA_0.9.16/CarlaUE4/Content/Carla/Maps/**/OpenDrive/*.xodr`,
    覆盖全部 17 图)→ 零服务器依赖、毫秒级、可复现
@@ -654,7 +656,7 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
 
 ### 5.6 测试环境策略(已定)
 
-- **纯数学单测**:base env(手算断言,不依赖 carla 与 auto3dlabel)
+- **纯数学单测**:autodrivedata env(手算断言,不依赖 carla 与 auto3dlabel)
 - **oracle 对比脚本**:autolabel env 跑,直接 import auto3dlabel 的 geometry/data 模块当单一事实源(双向转换往返断言)
 - 两边互不污染,遵循 AutoLabel"依赖方向单向"纪律
 
@@ -664,14 +666,14 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
 AutoDriveData/
 ├── Plan.md                # 本文件(单一事实源)
 ├── pyproject.toml         # autodrivedata 包:纯逻辑,numpy only
-├── autodrivedata/         # 包:不 import carla(可在两 env 测试)
+├── autodrivedata/         # 包:不 import carla(可在任何 env 测试)
 │   ├── geometry.py        # 坐标转换唯一落点(照 auto3dlabel 纪律)
 │   ├── calib.py           # 内参/外参 → KITTI calib txt
 │   ├── gt.py              # actor → label_2 行
 │   └── export/kitti.py    # KITTI 布局落盘
-├── scripts/               # 采集入口(依赖 pycarla,base env 跑)
+├── scripts/               # 采集入口(依赖 pycarla,autodrivedata env 跑)
 │   └── smoke.py           # ✅ M0;collect_kitti.py 待建(步骤 6)
-├── tests/                 # 单测(base)+ oracle 脚本(autolabel env)
+├── tests/                 # 单测(autodrivedata)+ oracle 脚本(autolabel env)
 └── outputs/               # 数据落盘(不进 git)
 ```
 
@@ -695,4 +697,6 @@ AutoDriveData/
 - [x] 工程规范(2026-09-09):`[tool.ruff]` 定死(110 列 / E,F,I,UP,B / ignore E501,E741)+ 存量 25 违规清零 + 全仓 `ruff format`(26 文件 419 行),单 `style:` 提交 fc9f592 + `.git-blame-ignore-revs`;pre-commit 未装 → 不引入,纪律落到 CLAUDE.md 命令行
 - [x] 参数扫描 + 失效归因(§5.10 ✅ 2026-09-09):距离×速度网格 + 逐帧漏检归因;三大结论 = 尺度主导(<32px 0.15-0.47 vs ≥32px 0.78-1.00)、CARLA 无运动模糊(速度不改图像)、天气只前移断崖;顺带修掉 collect_ab_route 的 brake 残留(老数据集实速 6.60 而非 8.0)
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
+- [x] **环境迁移**(§4.4,2026-09-10 用户拍板):项目 env base(3.10)→ autodrivedata(3.11.16,pycarla/ultralytics 全量迁入);requirements.txt 钉版本;direnv + .envrc 自动激活;base 仅剩 conda 底座;验收 = 213 单测 + 采集冒烟;env 迁数据盘(软链)避开系统盘
+- [ ] **scripts→bin 改名**(第 1 步):git mv + 文档引用统一更新
 - [ ] **地图矢量管道**(§5.11 定案 2026-09-10,待执行):A 阶段离线 xodr → MapTR 三类 + 工程补充(divider/boundary/ped_crossing/stop_line/centerline/灯-车道),`autodrivedata/opendrive.py` + `mapvec.py` + `scripts/export_mapvec.py` + 转换器;B 阶段环视相机采集(6 视角)+ 数据集组装
