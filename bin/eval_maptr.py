@@ -28,13 +28,15 @@ def main() -> None:
     ap.add_argument("--infos", required=True, help="B2 组装 infos json")
     ap.add_argument("--root", required=True, help="图像根目录")
     ap.add_argument("--ckpt", required=True, help="train_maptr.py 输出的 state_dict")
-    ap.add_argument("--frames", type=int, default=None, help="评估前 N 帧(默认全部)")
+    ap.add_argument("--frames", type=int, default=None, help="评估帧数(默认全部)")
+    ap.add_argument("--start", type=int, default=0, help="起始帧(留出集评估:训练 0..N-1,评估 --start N)")
     ap.add_argument("--score-thr", type=float, default=0.2, help="实例得分阈值(sigmoid)")
     args = ap.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     infos = json.loads(Path(args.infos).read_text(encoding="utf-8"))
-    frames = list(range(min(args.frames or len(infos), len(infos))))
+    n = min(args.frames or len(infos), len(infos))
+    frames = list(range(args.start, min(args.start + n, len(infos))))
     ds = MapTRDataset(infos, args.root, frames=frames)
     print(f"[data] {len(frames)} 帧 × {len(ds.cam_names)} 相机")
 

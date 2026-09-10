@@ -3,6 +3,7 @@
 单帧模式(--frames 1,默认)目标:总损失压到 ~0(分类全中 + 点回归收敛)。这是
 "参考实现数学正确"的最强自证——任何坐标口径 / 匹配 / 损失错误都会把单帧
 损失卡在高位,无法过拟合。通过判据:最后 20 步平均 total < 0.5,否则退出码 1。
+多帧模式(--frames N > 1):常规训练,无过拟合判据,收敛量级看 D 阶段 chamfer AP。
 
 匹配(匈牙利)在 CPU 上做(每步 detach 后),不进入训练图——与官方训练流程一致。
 
@@ -34,6 +35,7 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=4, help="DataLoader 进程数(多帧训练数据加载是瓶颈)")
     ap.add_argument("--num-vec", type=int, default=50, help="每类实例 query 数(官方 50)")
     ap.add_argument("--no-pretrain", action="store_true", help="backbone 不用 ImageNet 预训练")
     ap.add_argument("--seed", type=int, default=0)
@@ -49,7 +51,9 @@ def main() -> None:
     if args.frames > len(infos):
         raise SystemExit(f"--frames {args.frames} 超过 infos 帧数 {len(infos)}")
     ds = MapTRDataset(infos, args.root, frames=list(range(args.frames)))
-    loader = DataLoader(ds, batch_size=args.batch, shuffle=False, collate_fn=collate)
+    loader = DataLoader(
+        ds, batch_size=args.batch, shuffle=False, collate_fn=collate, num_workers=args.workers
+    )
     print(f"[data] {args.frames} 帧({len(ds.cam_names)} 相机),每帧 GT 实例:")
     first = ds[0]["gt"]
     print(
@@ -107,6 +111,8 @@ def main() -> None:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), args.out)
     print(f"[save] {args.out}")
+    if args.frames > 1:
+        return  # 多帧训练无过拟合判据(损失收敛量级看 D 阶段 AP)
     if final < 0.5:
         print("PASS:单帧过拟合达标(损失 → ~0),参考实现数学链自洽")
     else:
