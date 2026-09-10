@@ -654,6 +654,32 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
 - 测试:闭式解手算锚定(line/arc 圆方程/螺旋退化=arc/细网格独立积分对照)+
   真实文件计数锚点(逐项与 grep 复核一致,20 文件全解析;无 CARLA 机器自动 skip)
 
+### 5.11b A2+A3+A6 执行记录(2026-09-11 ✅)
+
+**交付**:`autodrivedata/mapvec.py`(纯值,六类提取/重采样/裁剪)+ `tests/test_mapvec.py`(11 例)+
+`bin/probe_mapvec_oracle.py`(A6 API oracle 探针)。
+
+- **要素提取口径**(xodr 实测修正,比 §5.11 摸底更细):
+  - `divider` = driving-driving 共享边缘标记(**标记附着于车道外侧边缘**,统计证明:23 例
+    broken/solid 模式 + curb 位于 sidewalk/shoulder 上)∪ center lane(id=0)标记;center lane
+    标记 = 双向道路中心线(solid solid yellow 对向分隔,attrs `centerline=yes, same_dir=no`)
+  - `boundary` = curb ∪ 最外侧实线 ∪ 最外侧兜底(沿 t 区间排序共享端点 ε=1cm 合边)
+  - `stop_line` = `<object name="StopLine">` outline(2/3/15 点,沿 hdg 的线段);`ped_crossing`
+    = outline 4 角 + 闭合(5 点);signal 类型为**数字编码** `"1000001"`(='traffic_light',
+    Town10HD_Opt 17 个),字符串 `"traffic_light"` 匹配会漏光
+  - Town10HD_Opt 计数锚点:ped_crossing 16 / stop_line 21 / traffic_light 15–21 /
+    center_divider 106(586 段同属性相邻合并)
+- **裁剪与重采样**:`crop_to_ego(pose, ±51.2m)` 用 **Liang-Barsky**(修掉"两端点在窗外
+  但线段穿窗"的漏段 + V 形折线分裂为多段);`resample(v, n=20)` 弧长等距,traffic_light
+  定点类原样返回
+- **A6 oracle 对账**(`probe_mapvec_oracle.py --map Town10HD_Opt --samples 200`):
+  - **CARLA 世界 = xodr 的 y 取反**(Unreal 左手系;镜像后 3D 位置误差 **0.00cm**,
+    184 组全通过,验收口径 <5cm ✅)
+  - **yaw 仅诊断、不定验收口径**:个别 road 的行驶方向被 CARLA 导入器按路网拓扑整体翻转
+    (实测 road 1 正负 lane 与 +s 的关系和 road 0/2 相反;xodr 侧 link 无一致判据)。
+    MapTR 矢量 GT 是**无向几何**折线,行驶方向非产物需求;若 B 阶段需要车道方向,
+    从 CARLA 运行时 API 拿
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:autodrivedata env(手算断言,不依赖 carla 与 auto3dlabel)
