@@ -634,8 +634,39 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
 图像 vs 渲染一致性(数值诊断,不做视觉回归)。
 
 **边界/风险**:①环视 6 相机 + LiDAR 单卡吞吐未测(B 阶段先探 FPS);②xodr → MapTR 三类是
-**有损映射**(xodr 语义更细),映射表进文档,**不静默丢要素**;③不做 MapTR 训练/推理
-(依赖方向单向,AutoLabel 侧);④不改 A/B 采集纪律。
+**有损映射**(xodr 语义更细),映射表进文档,**不静默丢要素**;③依赖方向单向:
+MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
+
+### 5.11d C/D 阶段实现路径定案(2026-09-11 用户裁决)
+
+- **先参考自实现**:忠实移植 MapTR 核心数学(GKT BEV 变换 + 分层 query + 置换等价
+  匹配 + focal/L1),基础设施用现代栈(torch2.x,autodrivedata env),不动 autolabel
+  生产环境
+- **老栈降级 optional**:`maptr` env(py3.8 + torch1.9 + mmcv-full1.4)不再作为 C 阶段
+  前置;**若后续需要官方权重对标**(绝对性能数字),再启动官方对照(工作记录在案)
+- **正确性口径**:无官方权重对照 → 实现正确性靠**单帧过拟合测试**(小数据上 loss
+  必须压到 ~0)锚定;性能数字只做**内部对比**(场景/天气间)
+- 结构:新建顶层包 `maptr_impl/`(torch 依赖,不进 autodrivedata 纯值包),评估
+  chamfer AP 入 D 阶段
+
+### 5.11e C 阶段执行记录(2026-09-11 ~,参考自实现)
+
+- **C1 GKT**(`maptr_impl/gkt.py`):BEV 200×100 @ 0.3m(x∈[−15,15] 前向 / y∈[−30,30]),
+  相机链投影 + bilinear 采样 + **topk=1 最近相机独占融合**(贴近官方交叉注意力口径;
+  加权平均在相机边界混叠出 0.5 值,弃用)。6 单测与 calib.world_to_img oracle 锁定
+  (平/斜/端到端 <0.01px)
+- **C2 分层 query head**(`maptr_impl/head.py`):实例 query + 点 query + 6 层解码器
+  (点级 BEV 采样 → 回归 → 均值回聚);置换等价匹配(按类匈牙利 + GT 双向增强,
+  代价 = −logit + 5·L1);focal + 5·L1 损失(官方 pts_loss_coef)。7 单测
+- **C3 组装 + 训练入口**(`maptr_impl/model.py` / `dataset.py` / `bin/train_maptr.py`):
+  ResNet50+FPN(P2)+GKT+head 33.2M,ImageNet 预训练;单帧过拟合 = 正确性锚点
+  (判据:最后 20 步平均 total < 0.5)。修 `_sample_bev` expand 物化 4GB 临时块
+  OOM(grid 打平进 H_out 维)
+- **C4 单帧过拟合**(进行中):lr=1e-4 × 400 → total 14.9→5.9 稳步降未达标
+  (cls 已收敛 0.011,瓶颈在点回归,优化量不足);lr=5e-4 × 1000 重跑中
+- **D 纯值**(`autodrivedata/chamfer_ap.py`):chamfer 距离 + 贪婪一对一匹配 +
+  阈值 {0.5,1.0,1.5} AP(官方口径),4 单测(单点/多点/边界情形)
+- 提交 62f9121
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 
@@ -763,4 +794,4 @@ AutoDriveData/
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 - [x] **环境迁移**(§4.4,2026-09-10 用户拍板):项目 env base(3.10)→ autodrivedata(3.11.16,pycarla/ultralytics 全量迁入);requirements.txt 钉版本;direnv + .envrc 自动激活;base 仅剩 conda 底座;验收 = 213 单测 + 采集冒烟;env 迁数据盘(软链)避开系统盘
 - [x] **scripts→bin 改名**(第 1 步 ✅):`git mv scripts bin` + 全仓 69 处 `scripts/` 引用 sed 统一替换(代码 18 + 文档 45 + 其余),残留 0
-- [~] **地图矢量管道 A+B 阶段**(§5.11 ✅ 2026-09-11,第 2/3 步完成):A 阶段 opendrive/mapvec/export/convert + A6 三件套;B 阶段 collect_surround(6 相机,实测 0.6 fps)+ assemble_maptr(infos 同构)+ B3 投影路面性 94.7–100%;C 阶段(MapTR/MapQR 预测,独立 maptr env)+ D 阶段(chamfer AP 评估)待做
+- [~] **地图矢量管道 A+B 阶段**(§5.11 ✅ 2026-09-11,第 2/3 步完成):A 阶段 opendrive/mapvec/export/convert + A6 三件套;B 阶段 collect_surround(6 相机,实测 0.6 fps)+ assemble_maptr(infos 同构)+ B3 投影路面性 94.7–100%;C/D 阶段 = **参考自实现**(§5.11d 用户裁决 2026-09-11),`maptr_impl/` 顶层包 + 单帧过拟合锚定正确性;老栈 maptr env 降级 optional(需要官方权重对标再启动)
