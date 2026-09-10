@@ -26,6 +26,7 @@ auto3dlabel/weights/
 
 # ===== 采集 / 数据产物 =====
 outputs/
+training/
 *.bin
 *.pkl
 *.npy

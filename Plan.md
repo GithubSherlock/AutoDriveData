@@ -679,6 +679,14 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
     (实测 road 1 正负 lane 与 +s 的关系和 road 0/2 相反;xodr 侧 link 无一致判据)。
     MapTR 矢量 GT 是**无向几何**折线,行驶方向非产物需求;若 B 阶段需要车道方向,
     从 CARLA 运行时 API 拿
+- **A4 导出**(`bin/export_mapvec.py`):`training/map/{map}_full.json`(全精度)+
+  `{map}_{fid}.json`(ego ±51.2m 裁剪后 20 点重采样)+ 两档 BEV overlay PNG。
+  **落盘坐标系 = CARLA 世界系**(xodr y 取反,`meta.frame="carla_world"` 标注),与
+  B 阶段采集 ego pose 同系;`mapvec.py` 增 `flip_y/to_carla/vecs_dump/vecs_load`
+  纯值 JSON 往返(attrs 保持有序列表,validity 多车道对不丢)。Town10HD_Opt 实测
+  816 实例(799 折线),帧级裁剪 332 实例;resample 零长线段 0/0 除零已修(np.divide
+  where 掩码)。目检:路口/斑马线/停止线/红绿灯空间关系符合交通拓扑,C23 撞色口径
+  避让(divider 橙 / stop_line 红 / ped 绿 / boundary 蓝)
 
 ### 5.6 测试环境策略(已定)
 

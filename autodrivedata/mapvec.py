@@ -356,7 +356,13 @@ def resample(v: MapVec, n: int = 20) -> MapVec:
     cum = np.concatenate(([0.0], np.cumsum(segs)))
     idx = np.searchsorted(cum, targets, side="right") - 1
     idx = np.clip(idx, 0, len(segs) - 1)
-    frac = np.where(segs[idx] > 1e-12, (targets - cum[idx]) / segs[idx], 0.0)
+    # np.where 两分支都算,零长线段(裁剪后重合点)会 0/0 → 先全算再掩码
+    frac = np.divide(
+        targets - cum[idx],
+        segs[idx],
+        out=np.zeros_like(targets),
+        where=segs[idx] > 1e-12,
+    )
     pts = p[idx] + (p[idx + 1] - p[idx]) * frac[:, None]
     pts[-1] = p[-1]
     return v.with_points(tuple((float(x), float(y), float(z)) for x, y, z in pts))
@@ -425,3 +431,56 @@ def _liang_barsky(
 
 def _near(p: tuple[float, float, float], q: tuple[float, float, float]) -> bool:
     return abs(p[0] - q[0]) < 1e-6 and abs(p[1] - q[1]) < 1e-6
+
+
+# ---------- A4:坐标变换与 JSON 往返(纯值,落盘/A5 转换器共用) ----------
+
+
+def flip_y(v: MapVec) -> MapVec:
+    """xodr 系 → CARLA 世界系:y 取反(Unreal 左手系;A6 oracle 实测 0.00cm 定案)。"""
+    return v.with_points(tuple((x, -y, z) for x, y, z in v.points))
+
+
+def to_carla(vecs: tuple[MapVec, ...]) -> tuple[MapVec, ...]:
+    """整组折线从 xodr 系翻到 CARLA 世界系(幂等:再翻一次回原值)。"""
+    return tuple(flip_y(v) for v in vecs)
+
+
+def vec_to_dict(v: MapVec) -> dict:
+    """实例 → JSON dict;attrs 保持有序列表(允许重复键,如 validity 多车道对)。"""
+    return {
+        "cls": v.cls,
+        "pts": [[round(x, 3), round(y, 3), round(z, 3)] for x, y, z in v.points],
+        "attrs": [list(a) for a in v.attrs],
+        "id": v.id,
+        "src": v.src,
+    }
+
+
+def vec_from_dict(d: dict) -> MapVec:
+    return MapVec(
+        d["cls"],
+        tuple((float(p[0]), float(p[1]), float(p[2])) for p in d["pts"]),
+        tuple((str(k), str(v)) for k, v in d["attrs"]),
+        d.get("id", ""),
+        d.get("src", ""),
+    )
+
+
+def vecs_dump(vecs: tuple[MapVec, ...], map_name: str, frame: str = "carla_world") -> str:
+    """整图矢量 → JSON 文本(顶层 meta + vecs 列表;落盘 mm 精度)。"""
+    import json
+
+    return json.dumps(
+        {"map": map_name, "frame": frame, "vecs": [vec_to_dict(v) for v in vecs]},
+        ensure_ascii=False,
+        indent=1,
+    )
+
+
+def vecs_load(text: str) -> tuple[str, str, tuple[MapVec, ...]]:
+    """JSON 文本 → (map_name, frame, vecs);与 vecs_dump 严格往返。"""
+    import json
+
+    d = json.loads(text)
+    return d["map"], d["frame"], tuple(vec_from_dict(v) for v in d["vecs"])

@@ -6,7 +6,16 @@ import glob
 
 import pytest
 
-from autodrivedata.mapvec import MapVec, crop_to_ego, extract_mapvec, resample
+from autodrivedata.mapvec import (
+    MapVec,
+    crop_to_ego,
+    extract_mapvec,
+    flip_y,
+    resample,
+    to_carla,
+    vecs_dump,
+    vecs_load,
+)
 from autodrivedata.opendrive import parse_xodr_text
 
 # 双向四车道 + sidewalk/curb + center 双黄线 + crosswalk + StopLine + signal
@@ -166,6 +175,31 @@ def test_crop_splits_crossing_polyline() -> None:
     out = crop_to_ego((v,), (0.0, 0.0), radius=51.2)
     assert len(out) == 2
     assert {o.id for o in out} == {"sp_0", "sp_1"}
+
+
+def test_flip_y_involutive() -> None:
+    v = MapVec("divider", ((1.0, 2.0, 3.0), (4.0, 5.0, 6.0)), (), "d_1", "")
+    f = flip_y(v)
+    assert f.points == ((1.0, -2.0, 3.0), (4.0, -5.0, 6.0))
+    assert flip_y(f).points == v.points  # 幂等(翻两次回原值)
+    g = to_carla((v,))
+    assert g[0].points == f.points and g[0].cls == v.cls
+
+
+def test_vecs_json_roundtrip(vecs: tuple[MapVec, ...]) -> None:
+    text = vecs_dump(vecs, "t", "carla_world")
+    name, frame, back = vecs_load(text)
+    assert name == "t" and frame == "carla_world"
+    assert [v.cls for v in back] == [v.cls for v in vecs]
+    for a, b in zip(vecs, back, strict=True):
+        assert a.points == b.points and a.attrs == b.attrs and a.id == b.id
+
+
+def test_vecs_json_attrs_keep_dup_keys() -> None:
+    # attrs 允许重复键(validity 多车道对),JSON 往返后保持有序列表
+    v = MapVec("traffic_light", ((0.0, 0.0, 0.0),), (("validity", "1->2"), ("validity", "3->4")), "t_1", "")
+    _, _, (b,) = vecs_load(vecs_dump((v,), "t"))
+    assert b.attrs == (("validity", "1->2"), ("validity", "3->4"))
 
 
 @pytest.mark.skipif(
