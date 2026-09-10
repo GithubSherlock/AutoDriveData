@@ -484,3 +484,47 @@ def vecs_load(text: str) -> tuple[str, str, tuple[MapVec, ...]]:
 
     d = json.loads(text)
     return d["map"], d["frame"], tuple(vec_from_dict(v) for v in d["vecs"])
+
+
+# ---------- A5:MapTRv2 annotation 口径(ego 局部系) ----------
+
+# MapTRv2 训练消费的四类(vec_classes);stop_line/traffic_light 是工程补充,不进训练口径
+MAPTR_CLASSES = ("divider", "ped_crossing", "boundary", "centerline")
+
+
+def to_ego_frame(vecs: tuple[MapVec, ...], x: float, y: float, yaw_deg: float) -> tuple[MapVec, ...]:
+    """CARLA 世界系 → ego 局部系:先平移再绕 z 顺时针转 yaw(≡ rotate -patch_angle,
+    与 MapTRv2 `custom_nusc_map_converter` 的 patch 坐标口径一致;z 不变)。"""
+    import math
+
+    a = math.radians(yaw_deg)
+    c, s = math.cos(a), math.sin(a)
+    out: list[MapVec] = []
+    for v in vecs:
+        pts = tuple(
+            (c * (px - x) + s * (py - y), -s * (px - x) + c * (py - y), pz) for px, py, pz in v.points
+        )
+        out.append(v.with_points(pts))
+    return tuple(out)
+
+
+def from_ego_frame(vecs: tuple[MapVec, ...], x: float, y: float, yaw_deg: float) -> tuple[MapVec, ...]:
+    """to_ego_frame 的逆变换(往返断言用):局部系 → CARLA 世界系。"""
+    import math
+
+    a = math.radians(yaw_deg)
+    c, s = math.cos(a), math.sin(a)
+    out: list[MapVec] = []
+    for v in vecs:
+        pts = tuple((c * px - s * py + x, s * px + c * py + y, pz) for px, py, pz in v.points)
+        out.append(v.with_points(pts))
+    return tuple(out)
+
+
+def to_maptr_annotation(vecs: tuple[MapVec, ...]) -> dict:
+    """vecs → MapTRv2 annotation dict:四类 {cls: [[x, y], ...]}(2D,丢弃 z)。"""
+    ann: dict[str, list[list[list[float]]]] = {c: [] for c in MAPTR_CLASSES}
+    for v in vecs:
+        if v.cls in ann:
+            ann[v.cls].append([[round(p[0], 3), round(p[1], 3)] for p in v.points])
+    return ann

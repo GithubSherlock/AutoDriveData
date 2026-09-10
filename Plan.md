@@ -687,6 +687,14 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
   816 实例(799 折线),帧级裁剪 332 实例;resample 零长线段 0/0 除零已修(np.divide
   where 掩码)。目检:路口/斑马线/停止线/红绿灯空间关系符合交通拓扑,C23 撞色口径
   避让(divider 橙 / stop_line 红 / ped 绿 / boundary 蓝)
+- **A5 转换器**(`bin/convert_mapvec.py`):帧级 JSON → MapTRv2 annotation 口径
+  (与官方 `custom_nusc_map_converter.VectorizedLocalMap` 同构:四类
+  divider/ped_crossing/boundary/centerline 的 N×2 折线,**ego 局部系** =
+  rotate(-yaw) 后平移,z 丢弃;训练管线再 resample 20 + 归一化 [-1,1])。
+  stop_line/traffic_light 工程补充类不进训练口径(留在 full json)。`mapvec.py`
+  增 `to_ego_frame/from_ego_frame`(往返断言)+ `to_maptr_annotation`。
+  Town10HD_Opt@spawn0 实测:divider 72 / ped 7 / boundary 82 / centerline 163,
+  局部坐标 ±51.3m 与裁剪窗口吻合,ped 闭合 20 点
 
 ### 5.6 测试环境策略(已定)
 

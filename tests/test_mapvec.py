@@ -11,8 +11,11 @@ from autodrivedata.mapvec import (
     crop_to_ego,
     extract_mapvec,
     flip_y,
+    from_ego_frame,
     resample,
     to_carla,
+    to_ego_frame,
+    to_maptr_annotation,
     vecs_dump,
     vecs_load,
 )
@@ -200,6 +203,40 @@ def test_vecs_json_attrs_keep_dup_keys() -> None:
     v = MapVec("traffic_light", ((0.0, 0.0, 0.0),), (("validity", "1->2"), ("validity", "3->4")), "t_1", "")
     _, _, (b,) = vecs_load(vecs_dump((v,), "t"))
     assert b.attrs == (("validity", "1->2"), ("validity", "3->4"))
+
+
+def test_to_ego_frame_yaw90_handcalc() -> None:
+    # yaw=90 逆时针旋转:世界 (1, 0) → 局部 (0, -1);z 不变
+    v = MapVec("divider", ((1.0, 0.0, 3.0),), (), "d_1", "")
+    (e,) = to_ego_frame((v,), 0.0, 0.0, 90.0)
+    p = e.points[0]
+    assert abs(p[0]) < 1e-9 and abs(p[1] + 1.0) < 1e-9 and p[2] == 3.0
+
+
+def test_ego_frame_roundtrip() -> None:
+    # 世界 → 局部 → 世界:严格还原(往返断言,A5 验收口径)
+    v = MapVec("boundary", ((12.5, -3.2, 0.1), (40.0, 7.7, 0.2)), (), "b_1", "")
+    local = to_ego_frame((v,), -64.64, 24.47, 0.16)
+    back = from_ego_frame(local, -64.64, 24.47, 0.16)
+    for p, q in zip(v.points, back[0].points, strict=True):
+        assert max(abs(a - b) for a, b in zip(p, q, strict=True)) < 1e-9
+
+
+def test_to_maptr_annotation_classes() -> None:
+    vecs = (
+        MapVec("divider", ((0.0, 0.0, 1.0), (1.0, 1.0, 1.0)), (), "d", ""),
+        MapVec(
+            "ped_crossing", ((0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 2.0, 0.0)), (), "p", ""
+        ),
+        MapVec("stop_line", ((0.0, 0.0, 0.0), (3.0, 0.0, 0.0)), (), "s", ""),
+        MapVec("traffic_light", ((9.0, 9.0, 5.0),), (), "t", ""),
+    )
+    ann = to_maptr_annotation(vecs)
+    assert set(ann) == {"divider", "ped_crossing", "boundary", "centerline"}
+    assert len(ann["divider"]) == 1 and len(ann["ped_crossing"]) == 1
+    assert ann["boundary"] == [] and ann["centerline"] == []
+    # 2D 口径:z 丢弃
+    assert ann["divider"][0] == [[0.0, 0.0], [1.0, 1.0]]
 
 
 @pytest.mark.skipif(
