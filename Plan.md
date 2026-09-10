@@ -700,6 +700,24 @@ B2 数据集组装器(图像 + ego pose + map GT → MapTR 训练格式);B3 验�
   目检(路网/路口/斑马线/停止线/灯空间关系正确)。**第 2 步(A1–A6)完成**,提交
   b16d2bd / dd8aa5c / 80821dd / 0a66da6(本小节为合并记录)
 
+### 5.11c B 阶段执行记录(2026-09-11 ✅,第 3 步)
+
+- **B1 环视采集**(`bin/collect_surround.py`):6 相机 nuScenes 布局(FRONT 0 /
+  FRONT_RIGHT -55 / FRONT_LEFT +55 / BACK 180 / BACK_LEFT 235 / BACK_RIGHT 125,
+  共用挂点 SENSOR_OFFSET),落盘 6 视角 png + calib.json(sensor2ego + intrinsic)
+  + ego_pose.json。**不改 A/B 采集器**(P1 复现红线),NPC 布置复用 collect_drive。
+  smoke 20 帧 × 6 视角完整。**FPS 实测 0.6**(单相机 47.3、6 相机 1.7s/帧,非线性
+  回读瓶颈)——§5.11 风险① 探明:100 帧 ≈ 3 分钟,可接受,不降分辨率
+- **B2 组装器**(`bin/assemble_maptr.py`):surround root + 全图矢量 → MapTRv2 infos
+  同构 json(逐帧 cams + ego2global + annotation 四类 ego 局部系)。口径注记:
+  MapTRv2 官方 annotation 在 **LiDAR 局部系**,本管道无 LiDAR → **ego 局部系**
+  (lidar2ego 恒等,训练消费端无差别)。20 帧 smoke 首帧 annotation 与 A5 完全一致
+  (divider 72 / ped 7 / boundary 82 / centerline 163,交叉验证通过)
+- **B3 验收**(`bin/probe_mapvec_proj.py`):矢量折线点投影回 6 视角图像,数值诊断
+  (不做视觉回归):图像内投影占比 12.8–30.1%(环视 fov 90 合理),**路面性
+  94.7–100%**(投影点像素非天空比例)——内外参 + 坐标系链正确的最强实证。
+  **第 3 步(B1–B3)完成**,提交 fda2286(本小节合并记录 B2/B3 提交)
+
 ### 5.6 测试环境策略(已定)
 
 - **纯数学单测**:autodrivedata env(手算断言,不依赖 carla 与 auto3dlabel)
@@ -745,4 +763,4 @@ AutoDriveData/
 - [ ] **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 - [x] **环境迁移**(§4.4,2026-09-10 用户拍板):项目 env base(3.10)→ autodrivedata(3.11.16,pycarla/ultralytics 全量迁入);requirements.txt 钉版本;direnv + .envrc 自动激活;base 仅剩 conda 底座;验收 = 213 单测 + 采集冒烟;env 迁数据盘(软链)避开系统盘
 - [x] **scripts→bin 改名**(第 1 步 ✅):`git mv scripts bin` + 全仓 69 处 `scripts/` 引用 sed 统一替换(代码 18 + 文档 45 + 其余),残留 0
-- [~] **地图矢量管道 A 阶段**(§5.11 ✅ 2026-09-11,第 2 步完成):opendrive.py + mapvec.py + export_mapvec.py + convert_mapvec.py + A6 三件套(自证/oracle 0.00cm/overlay);B 阶段环视相机采集(6 视角)+ 数据集组装待做(第 3 步)
+- [~] **地图矢量管道 A+B 阶段**(§5.11 ✅ 2026-09-11,第 2/3 步完成):A 阶段 opendrive/mapvec/export/convert + A6 三件套;B 阶段 collect_surround(6 相机,实测 0.6 fps)+ assemble_maptr(infos 同构)+ B3 投影路面性 94.7–100%;C 阶段(MapTR/MapQR 预测,独立 maptr env)+ D 阶段(chamfer AP 评估)待做
