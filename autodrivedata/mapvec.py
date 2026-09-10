@@ -373,43 +373,77 @@ def crop_to_ego(
 ) -> tuple[MapVec, ...]:
     """方形窗口 |x-px|,|y-py| <= radius 裁剪(Liang-Barsky);跨窗折线裁成窗口内子段(可能分裂实例)。"""
     cx, cy = pose_xy
+    bounds = (cx - radius, cy - radius, cx + radius, cy + radius)
     out: list[MapVec] = []
     for v in vecs:
-        pts = list(v.points)
-        if v.cls == "ped_crossing" and len(pts) > 1:
-            pts = pts + [pts[0]]  # 显式闭合,遍历边不重不漏
-        pieces: list[list[tuple[float, float, float]]] = []
-        cur: list[tuple[float, float, float]] | None = None
-        for i in range(len(pts) - 1):
-            r = _liang_barsky(pts[i], pts[i + 1], cx, cy, radius)
-            if r is None:
-                continue
-            p0, p1 = r
-            if cur is not None and _near(cur[-1], p0):
-                cur.append(p1)  # 相邻段连续,合并
-            else:
-                if cur is not None:
-                    pieces.append(cur)
-                cur = [p0, p1]
-        if cur is not None:
-            pieces.append(cur)
+        pieces = _clip_pieces(list(v.points), bounds, close=v.cls == "ped_crossing")
         for j, p in enumerate(pieces):
             if len(p) >= 2:
                 out.append(v.with_points(tuple(p), "" if len(pieces) == 1 else f"_{j}"))
     return tuple(out)
 
 
-def _liang_barsky(
-    a: tuple[float, float, float], b: tuple[float, float, float], cx: float, cy: float, radius: float
+# MapTR 训练 BEV 窗口(x 前向 / y 左向,米;与 maptr_impl.gkt.BEVParams 默认一致)
+BEV_RANGE = (-15.0, -30.0, 15.0, 30.0)
+
+
+def clip_to_bev(
+    vecs: tuple[MapVec, ...], bev_range: tuple[float, float, float, float] = BEV_RANGE
+) -> tuple[MapVec, ...]:
+    """BEV 训练窗口裁剪(MapTR 官方 GT 口径):折线裁到 60×30m 矩形内,窗外部分丢弃。
+
+    在 ego 局部系调用(矩形轴对齐、原点居中),与 crop_to_ego 共用逐段裁剪逻辑;
+    官方 nuscenes_converter 即把矢量 GT 裁剪到 BEV patch,窗外要素不参与训练。
+    """
+    out: list[MapVec] = []
+    for v in vecs:
+        pieces = _clip_pieces(list(v.points), bev_range, close=v.cls == "ped_crossing")
+        for j, p in enumerate(pieces):
+            if len(p) >= 2:
+                out.append(v.with_points(tuple(p), "" if len(pieces) == 1 else f"_{j}"))
+    return tuple(out)
+
+
+def _clip_pieces(
+    pts: list[tuple[float, float, float]],
+    bounds: tuple[float, float, float, float],
+    close: bool,
+) -> list[list[tuple[float, float, float]]]:
+    """逐段矩形裁剪 → 窗口内连续子段列表(close=True 时折线显式闭合后裁剪)。"""
+    if close and len(pts) > 1:
+        pts = pts + [pts[0]]  # 显式闭合,遍历边不重不漏
+    pieces: list[list[tuple[float, float, float]]] = []
+    cur: list[tuple[float, float, float]] | None = None
+    for i in range(len(pts) - 1):
+        r = _clip_segment_rect(pts[i], pts[i + 1], bounds)
+        if r is None:
+            continue
+        p0, p1 = r
+        if cur is not None and _near(cur[-1], p0):
+            cur.append(p1)  # 相邻段连续,合并
+        else:
+            if cur is not None:
+                pieces.append(cur)
+            cur = [p0, p1]
+    if cur is not None:
+        pieces.append(cur)
+    return pieces
+
+
+def _clip_segment_rect(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+    bounds: tuple[float, float, float, float],
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
-    """线段 a→b 与方形窗口的交集段;无交集返回 None(含两端点均窗外的穿角情形)。"""
+    """线段 a→b 与矩形窗口 (xmin, ymin, xmax, ymax) 的交集段;无交集返回 None。"""
+    xmin, ymin, xmax, ymax = bounds
     dx, dy = b[0] - a[0], b[1] - a[1]
     t0, t1 = 0.0, 1.0
     for p, q in (
-        (-dx, a[0] - (cx - radius)),
-        (dx, cx + radius - a[0]),
-        (-dy, a[1] - (cy - radius)),
-        (dy, cy + radius - a[1]),
+        (-dx, a[0] - xmin),
+        (dx, xmax - a[0]),
+        (-dy, a[1] - ymin),
+        (dy, ymax - a[1]),
     ):
         if p == 0.0:
             if q < 0.0:

@@ -3,7 +3,8 @@
 消费 B1 的 surround root(6 视角图像 + calib.json + ego_pose.json)与 A 阶段的
 全图矢量 json,逐帧组装 MapTRv2 `_fill_trainval_infos` 同构的核心字段:
 cams(每相机 data_path/sensor2ego/intrinsic)+ 帧级 ego2global + annotation
-(四类矢量 GT,ego 局部系,裁剪 ±radius 后 20 点重采样)。
+(四类矢量 GT,ego 局部系,先 ±radius 预裁剪、再按官方口径裁到 BEV 60×30m
+训练窗口后 20 点重采样)。
 
 口径注记:MapTRv2 官方 annotation 在 **LiDAR 局部系**(lidar2global 变换);
 本管道无 LiDAR,用 **ego 局部系**(A5 `to_ego_frame` 口径,与 lidar 局部系
@@ -21,7 +22,15 @@ import argparse
 import json
 from pathlib import Path
 
-from autodrivedata.mapvec import crop_to_ego, resample, to_ego_frame, to_maptr_annotation, vecs_load
+from autodrivedata.mapvec import (
+    BEV_RANGE,
+    clip_to_bev,
+    crop_to_ego,
+    resample,
+    to_ego_frame,
+    to_maptr_annotation,
+    vecs_load,
+)
 
 
 def main() -> None:
@@ -43,12 +52,9 @@ def main() -> None:
     for p in poses:
         i = p["frame"]
         ego = (p["x"], p["y"])
-        local = to_ego_frame(
-            tuple(resample(v, 20) for v in crop_to_ego(vecs, ego, radius=args.radius)),
-            p["x"],
-            p["y"],
-            p["yaw"],
-        )
+        local = to_ego_frame(crop_to_ego(vecs, ego, radius=args.radius), p["x"], p["y"], p["yaw"])
+        # MapTR 官方口径:GT 裁剪到 BEV 训练窗口(60×30m)后再 20 点重采样
+        local = tuple(resample(v, 20) for v in clip_to_bev(local, BEV_RANGE))
         infos.append(
             {
                 "frame": i,

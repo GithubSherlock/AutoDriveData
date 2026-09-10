@@ -8,6 +8,7 @@ import pytest
 
 from autodrivedata.mapvec import (
     MapVec,
+    clip_to_bev,
     crop_to_ego,
     extract_mapvec,
     flip_y,
@@ -178,6 +179,43 @@ def test_crop_splits_crossing_polyline() -> None:
     out = crop_to_ego((v,), (0.0, 0.0), radius=51.2)
     assert len(out) == 2
     assert {o.id for o in out} == {"sp_0", "sp_1"}
+
+
+def test_clip_to_bev_states() -> None:
+    # 全内保留、全外丢弃、跨界裁到 BEV 边界(60×30m: x∈[−15,15], y∈[−30,30])
+    inner = MapVec("divider", ((1.0, 1.0, 0.0), (5.0, 1.0, 0.0)), (), "i", "")
+    outer = MapVec("divider", ((60.0, 60.0, 0.0), (70.0, 70.0, 0.0)), (), "o", "")
+    cross = MapVec("divider", ((-40.0, 0.0, 0.0), (0.0, 0.0, 0.0)), (), "c", "")
+    out = clip_to_bev((inner, outer, cross))
+    assert {v.id for v in out} == {"i", "c"}
+    c = next(v for v in out if v.id == "c")
+    assert abs(c.points[0][0] + 15.0) < 1e-6 and abs(c.points[1][0]) < 1e-6
+
+
+def test_clip_to_bev_splits() -> None:
+    # 穿出再穿回:峰顶在窗外(y=46,两翼斜穿窗)→ 两段,全部点落在 BEV 窗内
+    v = MapVec("divider", ((-40.0, 0.0, 0.0), (0.0, 46.0, 0.0), (40.0, 0.0, 0.0)), (), "sp", "")
+    out = clip_to_bev((v,))
+    assert len(out) == 2
+    assert {o.id for o in out} == {"sp_0", "sp_1"}
+    for o in out:
+        for x, y, _ in o.points:
+            assert -15.0 - 1e-9 <= x <= 15.0 + 1e-9 and -30.0 - 1e-9 <= y <= 30.0 + 1e-9
+
+
+def test_clip_to_bev_ped_strip() -> None:
+    # 闭合斑马线纵贯 BEV(短边横穿窗口)→ 两条纵向边,y 裁到 ±30
+    ped = MapVec(
+        "ped_crossing",
+        ((-4.0, -40.0, 0.0), (4.0, -40.0, 0.0), (4.0, 40.0, 0.0), (-4.0, 40.0, 0.0)),
+        (),
+        "p",
+        "",
+    )
+    out = clip_to_bev((ped,))
+    assert len(out) == 2
+    ys = sorted({round(q[1], 6) for o in out for q in o.points})
+    assert ys == [-30.0, 30.0]
 
 
 def test_flip_y_involutive() -> None:
