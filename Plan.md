@@ -668,12 +668,30 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   `clip_to_bev`(bb3292d)重装 infos 后 ③同参重跑:**最后 20 步平均 total =
   0.395 < 0.5**(cls 0.0002 / 点 L1 0.08m)。**数学链自洽锚定通过**
 - **C5 正式训练**:300 帧采集(0.6 fps autopilot,8.3 分钟)+ infos 组装(44.9 万
-  GT 点,窗外 0);训练帧 0–199(batch 2 × 24 epochs,lr 5e-4),留出 200–299
-  供 D 阶段评估
+  GT 点,窗外 0);训练帧 0–199,留出 200–299 供 D 阶段评估。首轮 batch 2 × 24
+  epochs(lr 5e-4)损失平坦 10.94→10.53;续训 +48 epochs(阶梯 lr 衰减 +
+  `--save-every` 防长训中断丢进度)至 72 累计,最后 20 步平均 10.24——仍在
+  高位,损失未收敛
+- **D 阶段评估**(72-epoch ckpt,score-thr 0.2,官方 chamfer AP 口径):
+
+  | 集合 | mAP | divider / ped / boundary / center |
+  |---|---|---|
+  | 训练集对照(帧 100–199) | **0.0061** | 0.0059 / 0.0030 / 0.0050 / 0.0104 |
+  | 留出集(帧 200–299) | **0.0045** | 0.0041 / 0.0007 / 0.0050 / 0.0083 |
+
+  双低且无过拟合间隙 → **欠训练**(损失 10 高位,不是管道故障——C4 锚点已
+  证明数学链自洽)。Pareto 定案:C4 锚点 + 测量装置 + 诚实基线数字 = D 阶段
+  交付物;长训收敛(400+ epochs)列为可选后续
 - **D 纯值**(`autodrivedata/chamfer_ap.py`):chamfer 距离 + 贪婪一对一匹配 +
-  阈值 {0.5,1.0,1.5} AP(官方口径),4 单测(单点/多点/边界情形);
-  `bin/eval_maptr.py` 评估入口(得分阈值 --score-thr 可扫,--start 留出集)
-- 提交 62f9121 / bb3292d / e73adcd / fd08442
+  阈值 {0.5,1.0,1.5} AP(官方口径),7 单测(单点/多点/边界/向量化等价);
+  `bin/eval_maptr.py` 评估入口(得分阈值 --score-thr 可扫,--start 留出集)。
+  代价矩阵向量化:GEMM 平方展开 + 补齐虚点 1e4m + 三阈值共用,评估
+  75min → ~10min,随机交叉验证与逐对口径 1e-9 等价
+- **自适应 GPU batch**(`maptr_impl/device.py`,参考 AutoLabel tools/device.py):
+  实测增量法——batch 1 warmup + batch 2 增量测 forward+backward 每样本显存,
+  budget = 空闲 × 0.85,bs 钳制 [1, --max-batch];train_maptr `--batch 0`
+  (默认)= 自适应、N>0 显式优先。真实模型冒烟:实测 batch = 4(空闲 10.0 GiB)
+- 提交 62f9121 / bb3292d / e73adcd / fd08442 / 7f1bd8a / f3a7478 / 0888e3a / 257e031
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 
