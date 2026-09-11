@@ -11,6 +11,7 @@ import numpy as np
 from autodrivedata.chamfer_ap import (
     chamfer_ap,
     chamfer_ap_per_class,
+    chamfer_cost_matrix,
     chamfer_distance,
     match_greedy,
 )
@@ -70,3 +71,32 @@ def test_chamfer_ap_per_class() -> None:
     assert aps[0] == 1.0 and aps[1] == 0.0 and aps[3] == 0.0
     assert abs(aps[2] - 2 / 3) < 1e-9
     assert abs(mean - (1.0 + 0.0 + 2 / 3 + 0.0) / 4) < 1e-9
+
+
+def _rnd_poly(rng: np.random.Generator, n_pts: int) -> np.ndarray:
+    return rng.uniform(-5, 5, size=(n_pts, 2))
+
+
+def test_chamfer_cost_matrix_matches_pairwise() -> None:
+    """向量化代价矩阵与逐对 chamfer_distance 同口径(chunk=3 跨块验证 q2p 累积)。"""
+    rng = np.random.default_rng(7)
+    preds = [_rnd_poly(rng, 20) for _ in range(9)]
+    gts = [_rnd_poly(rng, int(rng.integers(1, 26))) for _ in range(7)]
+    fast = chamfer_cost_matrix(preds, gts, chunk=3)
+    slow = np.array([[chamfer_distance(p, g) for g in gts] for p in preds])
+    assert np.allclose(fast, slow, atol=1e-9, rtol=1e-9)
+
+
+def test_chamfer_cost_matrix_empty() -> None:
+    assert chamfer_cost_matrix([], []).shape == (0, 0)
+    assert chamfer_cost_matrix([_line()], []).shape == (1, 0)
+    assert chamfer_cost_matrix([], [_line()]).shape == (0, 1)
+
+
+def test_match_greedy_precomputed_cost_equivalent() -> None:
+    rng = np.random.default_rng(3)
+    preds = [_rnd_poly(rng, 20) for _ in range(5)]
+    gts = [_rnd_poly(rng, 12) for _ in range(4)]
+    cost = chamfer_cost_matrix(preds, gts)
+    for thr in (0.5, 1.5, 4.0):
+        assert match_greedy(preds, gts, thr, cost=cost) == match_greedy(preds, gts, thr)
