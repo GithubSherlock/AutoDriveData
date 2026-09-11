@@ -7,6 +7,11 @@
 
 匹配(匈牙利)在 CPU 上做(每步 detach 后),不进入训练图——与官方训练流程一致。
 
+batch 口径:--batch 0(默认)= 自适应实测(空闲显存 × 0.85 / 每样本训练步增量,
+上限 --max-batch;参考 AutoLabel tools/device.py);--batch N>0 = 显式指定
+(显式 > 实测)。自适应探针 = 完整训练步 ×2(batch 1 warmup + batch 2 增量),
+含 optimizer.step,见 maptr_impl/device.py。
+
 用法:
   python bin/train_maptr.py --infos outputs/surround_drive/map_infos.json \
       --root outputs/surround_drive --frames 1 --epochs 400 --out outputs/maptr_overfit.pt
@@ -23,8 +28,45 @@ import torch
 from torch.utils.data import DataLoader
 
 from maptr_impl.dataset import MapTRDataset, collate
+from maptr_impl.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from maptr_impl.head import maptr_loss, match_assign
 from maptr_impl.model import MapTR
+
+
+def _train_batch(
+    model: MapTR, opt: torch.optim.Optimizer, dev: torch.device, ds: MapTRDataset, batch: dict
+) -> tuple[float, float]:
+    """跑一个完整训练步(forward+匈牙利匹配+loss+backward+step),返回 (cls, pts) 损失。
+
+    同时用作自适应 batch 的探针步(measure_batch_memory 的 step_fn):探针必须与
+    真实训练步完全同构,否则每样本显存增量测不准。
+    """
+    images = {n: t.to(dev) for n, t in batch["images"].items()}
+    poses = batch["poses"].to(dev)
+    out, _ = model(images, poses, ds.calibs)
+    cls_ts, pts_ts, masks = [], [], []
+    for bi in range(poses.shape[0]):
+        cls_t, pts_t, mask = match_assign(
+            out["pred_points"][bi].detach().float().cpu().numpy(),
+            out["pred_logits"][bi].detach().float().cpu().numpy(),
+            batch["gts"][bi],
+            model.num_classes,
+            model.num_vec,
+        )
+        cls_ts.append(cls_t)
+        pts_ts.append(pts_t)
+        masks.append(mask)
+    loss = maptr_loss(
+        out["pred_logits"],
+        out["pred_points"],
+        torch.tensor(np.stack(cls_ts), device=dev),
+        torch.tensor(np.stack(pts_ts), device=dev),
+        torch.tensor(np.stack(masks), device=dev),
+    )
+    opt.zero_grad()
+    loss["total"].backward()
+    opt.step()
+    return float(loss["cls"].detach()), float(loss["pts"].detach())
 
 
 def main() -> None:
@@ -34,12 +76,15 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=1, help="取前 N 帧;1 = 单帧过拟合锚点")
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--batch", type=int, default=1)
+    ap.add_argument("--batch", type=int, default=0, help="0 = 自适应实测(默认);>0 = 显式指定")
+    ap.add_argument("--max-batch", type=int, default=16, help="自适应实测的批大小上限")
     ap.add_argument("--workers", type=int, default=4, help="DataLoader 进程数(多帧训练数据加载是瓶颈)")
     ap.add_argument("--num-vec", type=int, default=50, help="每类实例 query 数(官方 50)")
     ap.add_argument("--no-pretrain", action="store_true", help="backbone 不用 ImageNet 预训练")
     ap.add_argument("--init-ckpt", default=None, help="从既有 state_dict 续训(仅模型权重,优化器重置)")
-    ap.add_argument("--save-every", type=int, default=0, help="每 N epochs 覆盖存盘 --out(0=仅结束存;长训防中断)")
+    ap.add_argument(
+        "--save-every", type=int, default=0, help="每 N epochs 覆盖存盘 --out(0=仅结束存;长训防中断)"
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
@@ -53,9 +98,6 @@ def main() -> None:
     if args.frames > len(infos):
         raise SystemExit(f"--frames {args.frames} 超过 infos 帧数 {len(infos)}")
     ds = MapTRDataset(infos, args.root, frames=list(range(args.frames)))
-    loader = DataLoader(
-        ds, batch_size=args.batch, shuffle=False, collate_fn=collate, num_workers=args.workers
-    )
     print(f"[data] {args.frames} 帧({len(ds.cam_names)} 相机),每帧 GT 实例:")
     first = ds[0]["gt"]
     print(
@@ -71,6 +113,24 @@ def main() -> None:
     print(f"[model] MapTR(num_vec={args.num_vec}) @ {dev} | {n_params / 1e6:.1f}M 参数")
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+    # batch 解析:显式 > 自适应实测(与 AutoLabel device.py 同口径)
+    model.train()
+    if args.batch > 0:
+        batch_size = args.batch
+        print(f"[gpu] batch = {batch_size}(显式指定)")
+    else:
+
+        def probe_step(bs: int) -> None:
+            _train_batch(model, opt, dev, ds, collate([ds[i % len(ds)] for i in range(bs)]))
+
+        free_gb = get_gpu_free_memory_gb()
+        batch_size = auto_tune_batch_size(probe_step, max_batch=args.max_batch)
+        free_str = "?" if free_gb is None else f"{free_gb:.1f} GiB"
+        print(f"[gpu] batch = {batch_size}(自适应实测:空闲 {free_str} × {SAFETY_FACTOR:.2f} / 每样本增量)")
+    loader = DataLoader(
+        ds, batch_size=batch_size, shuffle=False, collate_fn=collate, num_workers=args.workers
+    )
     hist: list[float] = []
     for epoch in range(1, args.epochs + 1):
         # 阶梯衰减:每 12 epochs 减半(长训后期稳定;单帧过拟合不受影响)
@@ -80,33 +140,9 @@ def main() -> None:
         model.train()
         ep = {"cls": 0.0, "pts": 0.0}
         for batch in loader:
-            images = {n: t.to(dev) for n, t in batch["images"].items()}
-            poses = batch["poses"].to(dev)
-            out, _ = model(images, poses, ds.calibs)
-            cls_ts, pts_ts, masks = [], [], []
-            for bi in range(poses.shape[0]):
-                cls_t, pts_t, mask = match_assign(
-                    out["pred_points"][bi].detach().float().cpu().numpy(),
-                    out["pred_logits"][bi].detach().float().cpu().numpy(),
-                    batch["gts"][bi],
-                    model.num_classes,
-                    model.num_vec,
-                )
-                cls_ts.append(cls_t)
-                pts_ts.append(pts_t)
-                masks.append(mask)
-            loss = maptr_loss(
-                out["pred_logits"],
-                out["pred_points"],
-                torch.tensor(np.stack(cls_ts), device=dev),
-                torch.tensor(np.stack(pts_ts), device=dev),
-                torch.tensor(np.stack(masks), device=dev),
-            )
-            opt.zero_grad()
-            loss["total"].backward()
-            opt.step()
-            ep["cls"] += float(loss["cls"].detach())
-            ep["pts"] += float(loss["pts"].detach())
+            c, p = _train_batch(model, opt, dev, ds, batch)
+            ep["cls"] += c
+            ep["pts"] += p
         steps = max(1, len(loader))
         hist.append((ep["cls"] + ep["pts"]) / steps)
         if args.save_every and epoch % args.save_every == 0:
