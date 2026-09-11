@@ -76,6 +76,9 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=1, help="取前 N 帧;1 = 单帧过拟合锚点")
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument(
+        "--lr-halve", type=int, default=12, help="lr 每 N epochs 减半(0=不衰减;长训必须关,否则 lr 提前归零)"
+    )
     ap.add_argument("--batch", type=int, default=0, help="0 = 自适应实测(默认);>0 = 显式指定")
     ap.add_argument("--max-batch", type=int, default=16, help="自适应实测的批大小上限")
     ap.add_argument("--workers", type=int, default=4, help="DataLoader 进程数(多帧训练数据加载是瓶颈)")
@@ -133,8 +136,12 @@ def main() -> None:
     )
     hist: list[float] = []
     for epoch in range(1, args.epochs + 1):
-        # 阶梯衰减:每 12 epochs 减半(长训后期稳定;单帧过拟合不受影响)
-        lr = args.lr * (0.5 ** ((epoch - 1) // 12))
+        # 阶梯衰减:每 --lr-halve epochs 减半(0 = 不衰减;长训必须关,
+        # 否则 400-epoch 跑的后半程 lr 已衰减到 ~1e-8,平台是 lr 归零不是收敛)
+        if args.lr_halve > 0:
+            lr = args.lr * (0.5 ** ((epoch - 1) // args.lr_halve))
+        else:
+            lr = args.lr
         for g in opt.param_groups:
             g["lr"] = lr
         model.train()
