@@ -39,6 +39,7 @@ def main() -> None:
     ap.add_argument("--num-vec", type=int, default=50, help="每类实例 query 数(官方 50)")
     ap.add_argument("--no-pretrain", action="store_true", help="backbone 不用 ImageNet 预训练")
     ap.add_argument("--init-ckpt", default=None, help="从既有 state_dict 续训(仅模型权重,优化器重置)")
+    ap.add_argument("--save-every", type=int, default=0, help="每 N epochs 覆盖存盘 --out(0=仅结束存;长训防中断)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
@@ -72,6 +73,10 @@ def main() -> None:
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     hist: list[float] = []
     for epoch in range(1, args.epochs + 1):
+        # 阶梯衰减:每 12 epochs 减半(长训后期稳定;单帧过拟合不受影响)
+        lr = args.lr * (0.5 ** ((epoch - 1) // 12))
+        for g in opt.param_groups:
+            g["lr"] = lr
         model.train()
         ep = {"cls": 0.0, "pts": 0.0}
         for batch in loader:
@@ -104,6 +109,10 @@ def main() -> None:
             ep["pts"] += float(loss["pts"].detach())
         steps = max(1, len(loader))
         hist.append((ep["cls"] + ep["pts"]) / steps)
+        if args.save_every and epoch % args.save_every == 0:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), args.out)
+            print(f"[ckpt] epoch {epoch}: 覆盖存盘 {args.out}")
         if epoch % args.log_every == 0 or epoch == args.epochs:
             print(
                 f"[epoch {epoch:4d}/{args.epochs}] total={hist[-1]:.4f} "
