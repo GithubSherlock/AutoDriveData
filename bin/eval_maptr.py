@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import torch
 
-from autodrivedata.chamfer_ap import chamfer_ap_per_class
+from autodrivedata.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
+from maptr_impl.chamfer_gpu import chamfer_cost_matrix_cuda
 from maptr_impl.dataset import MAPTR_CLASSES, MapTRDataset
 from maptr_impl.model import MapTR
 
@@ -31,7 +33,17 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=None, help="评估帧数(默认全部)")
     ap.add_argument("--start", type=int, default=0, help="起始帧(留出集评估:训练 0..N-1,评估 --start N)")
     ap.add_argument("--score-thr", type=float, default=0.2, help="实例得分阈值(sigmoid)")
+    ap.add_argument("--match", choices=("auto", "cpu", "gpu"), default="auto", help="代价矩阵后端(默认 auto)")
     args = ap.parse_args()
+
+    if args.match == "cpu":
+        cost_fn, backend = chamfer_cost_matrix, "cpu"
+    elif args.match == "gpu":
+        cost_fn, backend = chamfer_cost_matrix_cuda, "gpu"
+    else:
+        cost_fn, backend = (
+            (chamfer_cost_matrix_cuda, "gpu") if torch.cuda.is_available() else (chamfer_cost_matrix, "cpu")
+        )
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     infos = json.loads(Path(args.infos).read_text(encoding="utf-8"))
@@ -47,6 +59,7 @@ def main() -> None:
 
     preds_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
     gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
+    t0 = time.perf_counter()
     with torch.no_grad():
         for i, item in enumerate(ds):
             images = {n: t[None].to(dev) for n, t in item["images"].items()}
@@ -60,10 +73,11 @@ def main() -> None:
                 preds_by_class[c].extend(pts[idx][keep])
                 gts_by_class[c].extend(item["gt"][c])
             if (i + 1) % 50 == 0:
-                print(f"[infer] {i + 1}/{len(frames)} 帧")
+                print(f"[infer] {i + 1}/{len(frames)} 帧 ({time.perf_counter() - t0:.1f}s)")
 
-    aps, mAP = chamfer_ap_per_class(preds_by_class, gts_by_class)
-    print(f"[eval] score_thr={args.score_thr}")
+    t1 = time.perf_counter()
+    aps, mAP = chamfer_ap_per_class(preds_by_class, gts_by_class, cost_fn=cost_fn)
+    print(f"[eval] score_thr={args.score_thr} 后端={backend} 匹配 {time.perf_counter() - t1:.1f}s")
     for cls_name, ap_, preds, gts in zip(MAPTR_CLASSES, aps, preds_by_class, gts_by_class, strict=True):
         print(f"  {cls_name:14s} AP={ap_:.4f}  (pred {len(preds)} / gt {len(gts)})")
     print(f"  {'mAP':14s} = {mAP:.4f}")

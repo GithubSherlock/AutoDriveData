@@ -22,8 +22,8 @@ from torchvision.transforms.functional import normalize, to_tensor
 
 from autodrivedata.mapvec import MAPTR_CLASSES
 
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
+IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
+IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
 
 
 class MapTRDataset(Dataset):
@@ -40,6 +40,9 @@ class MapTRDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.infos)
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
 
     def __getitem__(self, idx: int) -> dict:
         info = self.infos[idx]

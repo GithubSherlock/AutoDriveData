@@ -78,13 +78,17 @@ def _rnd_poly(rng: np.random.Generator, n_pts: int) -> np.ndarray:
 
 
 def test_chamfer_cost_matrix_matches_pairwise() -> None:
-    """向量化代价矩阵与逐对 chamfer_distance 同口径(chunk=3 跨块验证 q2p 累积)。"""
+    """向量化代价矩阵与逐对 chamfer_distance 同口径(chunk=3 跨块验证 q2p 累积)。
+
+    矩阵内部 float32、逐对口径 float64,允许 ~1e-3m 误差;语义错误是 O(1)
+    量级(曾现 2× 偏差),1e-3 容差足够锁定。
+    """
     rng = np.random.default_rng(7)
     preds = [_rnd_poly(rng, 20) for _ in range(9)]
     gts = [_rnd_poly(rng, int(rng.integers(1, 26))) for _ in range(7)]
     fast = chamfer_cost_matrix(preds, gts, chunk=3)
     slow = np.array([[chamfer_distance(p, g) for g in gts] for p in preds])
-    assert np.allclose(fast, slow, atol=1e-9, rtol=1e-9)
+    assert np.allclose(fast, slow, atol=2e-3, rtol=1e-3)
 
 
 def test_chamfer_cost_matrix_empty() -> None:

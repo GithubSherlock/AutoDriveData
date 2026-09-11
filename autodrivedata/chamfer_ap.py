@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 
 # MapTR 官方 chamfer 阈值口径(米)
@@ -29,14 +31,18 @@ def chamfer_distance(pred: np.ndarray, gt: np.ndarray) -> float:
     return float((p2q + q2p) / (pred.shape[0] + gt.shape[0]))
 
 
-def chamfer_cost_matrix(preds: list[np.ndarray], gts: list[np.ndarray], chunk: int = 16) -> np.ndarray:
-    """批量 Chamfer 代价矩阵 (Np, Ng)——与逐对 chamfer_distance 完全同口径,向量化加速。
+def chamfer_cost_matrix(preds: list[np.ndarray], gts: list[np.ndarray], chunk: int = 32) -> np.ndarray:
+    """批量 Chamfer 代价矩阵 (Np, Ng)——与逐对 chamfer_distance 同口径(内部 float32),向量化加速。
 
     折线点数可变(GT 裁剪后 2..N):按最长补齐,虚点放在 _PAD_XY 远处——真实点
     距离 < 1e3m,min 永不选虚点,求和后再按掩码置零(避免 inf/NaN 参与运算)。
     距离用平方展开 + BLAS GEMM:‖p−q‖² = ‖p‖² + ‖q‖² − 2·p·qᵀ,分块(chunk 个
     预测/块)限制中间张量 (Nc·Lp × Ng·Lq) 的大小。q2p 是逐对口径(每个 GT 点
     对该预测折线自身点的最小),块内直接算,不可跨块累积。
+
+    精度口径:平方距离与 min 走 float32(带宽减半),逐点距离求和与归一化走
+    float64——误差 ~1e-3m 量级,远小于 0.5m 阈值,不影响贪婪判定(随机交叉
+    验证锁定,见 tests/test_chamfer_ap.py)。
     """
     np_ = len(preds)
     ng = len(gts)
@@ -45,18 +51,20 @@ def chamfer_cost_matrix(preds: list[np.ndarray], gts: list[np.ndarray], chunk: i
         return cost
     p_pad, p_mask, p_len = _pad_polylines(preds)
     q_pad, q_mask, q_len = _pad_polylines(gts)
-    qf = q_pad.reshape(-1, 2)  # (Ng·Lq, 2)
+    qf = q_pad.reshape(-1, 2).astype(np.float32)  # (Ng·Lq, 2)
     q_norm2 = (qf * qf).sum(axis=1)  # (Ng·Lq,)
 
     for c in range(0, np_, chunk):
         pc = p_pad[c : c + chunk]  # (Nc, Lp, 2)
         pm = p_mask[c : c + chunk]
         nc, lp = pc.shape[:2]
-        pf = pc.reshape(-1, 2)  # (Nc·Lp, 2)
-        sq = (pf * pf).sum(axis=1)[:, None] + q_norm2[None, :] - 2.0 * (pf @ qf.T)
-        d = np.sqrt(np.clip(sq, 0.0, None)).reshape(nc, lp, ng, q_pad.shape[1])
-        p2q = np.where(pm[:, :, None], 0.0, d.min(axis=3)).sum(axis=1)  # (Nc, Ng)
-        q2p = np.where(q_mask[None, :, :], 0.0, d.min(axis=1)).sum(axis=2)  # (Nc, Ng)
+        pf = pc.reshape(-1, 2).astype(np.float32)  # (Nc·Lp, 2)
+        sq = (pf * pf).sum(axis=1)[:, None] + q_norm2[None, :] - 2 * (pf @ qf.T)
+        np.clip(sq, 0.0, None, out=sq)  # 浮点负零截断 + 原地省两次分配
+        np.sqrt(sq, out=sq)
+        d = sq.reshape(nc, lp, ng, q_pad.shape[1])
+        p2q = np.where(pm[:, :, None], np.float32(0), d.min(axis=3)).sum(axis=1, dtype=np.float64)
+        q2p = np.where(q_mask[None, :, :], np.float32(0), d.min(axis=1)).sum(axis=2, dtype=np.float64)
         cost[c : c + chunk] = (p2q + q2p) / (p_len[c : c + chunk][:, None] + q_len[None, :])
     return cost
 
@@ -104,15 +112,20 @@ def match_greedy(
 
 
 def chamfer_ap(
-    preds: list[np.ndarray], gts: list[np.ndarray], thresholds: tuple[float, ...] = CHAMFER_THRESHOLDS
+    preds: list[np.ndarray],
+    gts: list[np.ndarray],
+    thresholds: tuple[float, ...] = CHAMFER_THRESHOLDS,
+    cost_fn: Callable[[list[np.ndarray], list[np.ndarray]], np.ndarray] = chamfer_cost_matrix,
 ) -> float:
     """单类 Chamfer AP = 各阈值 precision 均值(官方口径)。
 
     代价矩阵与阈值无关,算一次供三阈值共用(旧实现每阈值重算一遍)。
+    cost_fn 注入代价矩阵实现(如 maptr_impl.chamfer_gpu 的 CUDA 版),默认
+    纯值 numpy 版——本模块不 import torch,GPU 依赖由调用方注入。
     """
     if not preds:
         return 0.0
-    cost = chamfer_cost_matrix(preds, gts)
+    cost = cost_fn(preds, gts)
     precisions = []
     for thr in thresholds:
         tp, fp, _ = match_greedy(preds, gts, thr, cost=cost)
@@ -124,7 +137,11 @@ def chamfer_ap_per_class(
     preds_by_class: list[list[np.ndarray]],
     gts_by_class: list[list[np.ndarray]],
     thresholds: tuple[float, ...] = CHAMFER_THRESHOLDS,
+    cost_fn: Callable[[list[np.ndarray], list[np.ndarray]], np.ndarray] = chamfer_cost_matrix,
 ) -> tuple[list[float], float]:
     """逐类 AP + 类均值。输入与 head.match_assign 的 gt_by_class 同构(类序一致)。"""
-    aps = [chamfer_ap(p, g, thresholds) for p, g in zip(preds_by_class, gts_by_class, strict=True)]
+    aps = [
+        chamfer_ap(p, g, thresholds, cost_fn=cost_fn)
+        for p, g in zip(preds_by_class, gts_by_class, strict=True)
+    ]
     return aps, float(np.mean(aps))

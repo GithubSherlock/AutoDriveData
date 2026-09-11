@@ -684,9 +684,15 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   交付物;长训收敛(400+ epochs)列为可选后续
 - **D 纯值**(`autodrivedata/chamfer_ap.py`):chamfer 距离 + 贪婪一对一匹配 +
   阈值 {0.5,1.0,1.5} AP(官方口径),7 单测(单点/多点/边界/向量化等价);
-  `bin/eval_maptr.py` 评估入口(得分阈值 --score-thr 可扫,--start 留出集)。
-  代价矩阵向量化:GEMM 平方展开 + 补齐虚点 1e4m + 三阈值共用,评估
-  75min → ~10min,随机交叉验证与逐对口径 1e-9 等价
+  `bin/eval_maptr.py` 评估入口(--score-thr 可扫,--start 留出集,--match 后端)。
+  代价矩阵向量化:GEMM 平方展开 + 补齐虚点 1e4m + 三阈值共用 + float32
+  内部口径(min 后 float64 累加,误差 ~1e-3m 远小于 0.5m 阈值),随机交叉
+  验证与逐对口径 1e-3 等价(语义错误 O(1) 量级必被抓)
+- **GPU 匹配**(`maptr_impl/chamfer_gpu.py`):代价矩阵 CUDA 版(torch 约束在
+  maptr_impl,autodrivedata 纯值纪律不破——chamfer_ap 经 cost_fn 注入,
+  贪婪配对复用纯值 match_greedy);4 GPU 单测交叉锁定。held-out 复验
+  mAP 0.0045 与 CPU 慢路径**逐位一致**;评估 75min → **~30s**(推理 25s /
+  匹配 134s → 1.7s)
 - **自适应 GPU batch**(`maptr_impl/device.py`,参考 AutoLabel tools/device.py):
   实测增量法——batch 1 warmup + batch 2 增量测 forward+backward 每样本显存,
   budget = 空闲 × 0.85,bs 钳制 [1, --max-batch];train_maptr `--batch 0`
