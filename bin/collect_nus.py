@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import queue
-from pathlib import Path
 from typing import cast
 
 import carla
@@ -36,6 +35,7 @@ from autodrivedata.export.nuscenes import (
     write_mini_dataset,
 )
 from autodrivedata.gt import ActorBox, box_center_world, box_heading_world, classify_nus
+from autodrivedata.paths import project_path
 
 # 6 相机视角(相对 ego,CARLA yaw 度,左转正):nuScenes 标准通道
 CAM_YAW_OFFSET = {
@@ -131,7 +131,7 @@ def main() -> None:
         for q in cam_qs.values():
             q.get(timeout=10)
 
-    out = Path(args.out)
+    out = project_path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     calib_lidar = (
         (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z),

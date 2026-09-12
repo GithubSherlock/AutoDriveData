@@ -5,6 +5,11 @@
 均值(autodrivedata.chamfer_ap)。解码:每类 query 取 sigmoid 得分 > --score-thr
 的实例(默认 0.2,官方 nuscenes 惯例;阈值可扫)。
 
+**口径警告(实测)**:该 AP 是 precision 均值、**无 recall 项** → 保守操作点
+(阈值高、预测少而准)天然占便宜。同一权重 score_thr 0.2→0.4 可达 0.0510→
+0.1350(2.6×)。因此**跨权重比较必须固定 --score-thr**,或直接用 --sweep 报告
+曲线;绝对数字离开阈值无意义。--sweep 复用同一次推理(阈值只是后处理)。
+
 用法:
   python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \
       --root outputs/surround_train --ckpt outputs/maptr.pt --frames 300
@@ -21,6 +26,7 @@ import numpy as np
 import torch
 
 from autodrivedata.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
+from autodrivedata.paths import project_path
 from maptr_impl.chamfer_gpu import chamfer_cost_matrix_cuda
 from maptr_impl.dataset import MAPTR_CLASSES, MapTRDataset
 from maptr_impl.model import MapTR
@@ -83,10 +89,13 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=None, help="评估帧数(默认全部)")
     ap.add_argument("--start", type=int, default=0, help="起始帧(留出集评估:训练 0..N-1,评估 --start N)")
     ap.add_argument("--score-thr", type=float, default=0.2, help="实例得分阈值(sigmoid)")
+    ap.add_argument("--sweep", default=None, help="逗号分隔阈值列表,单次推理出扫描表(如 0.1,0.2,0.3,0.4)")
     ap.add_argument("--match", choices=("auto", "cpu", "gpu"), default="auto", help="代价矩阵后端(默认 auto)")
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用;GPU 被占用时可 --device cpu)")
     ap.add_argument("--out-pred", default=None, help="预测落盘基路径:写 <path>.json + <path>.png(BEV 目检)")
     args = ap.parse_args()
+    if args.out_pred:
+        args.out_pred = str(project_path(args.out_pred))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     if args.match == "cpu":
         cost_fn, backend = chamfer_cost_matrix, "cpu"
@@ -109,8 +118,9 @@ def main() -> None:
     model.eval()
     print(f"[model] {args.ckpt} 载入完成")
 
-    preds_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
-    scores_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
+    sweep = [float(x) for x in args.sweep.split(",")] if args.sweep else []
+    floor = min([args.score_thr, *sweep])  # 单次推理收全部 >floor 的实例,阈值纯后处理
+    inst_by_class: list[list[tuple[float, np.ndarray]]] = [[] for _ in MAPTR_CLASSES]
     gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
     t0 = time.perf_counter()
     with torch.no_grad():
@@ -122,15 +132,31 @@ def main() -> None:
             scores = torch.sigmoid(logits).cpu().numpy()
             for c in range(len(MAPTR_CLASSES)):
                 idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
-                keep = scores[idx, c + 1] > args.score_thr
-                preds_by_class[c].extend(pts[idx][keep])
-                scores_by_class[c].extend(scores[idx, c + 1][keep])
+                sc_c = scores[idx, c + 1]
+                keep = sc_c > floor
+                inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
                 gts_by_class[c].extend(item["gt"][c])
             if (i + 1) % 50 == 0:
                 print(f"[infer] {i + 1}/{len(frames)} 帧 ({time.perf_counter() - t0:.1f}s)")
 
+    def _at(thr: float) -> tuple[list[list], list[float], float]:
+        """按阈值过滤实例 → (逐类折线, 逐类 AP, mAP)。代价矩阵与阈值无关,每档重算。"""
+        preds = [[p for s, p in items if s > thr] for items in inst_by_class]
+        aps_, m_ = chamfer_ap_per_class(preds, gts_by_class, cost_fn=cost_fn)
+        return preds, aps_, m_
+
     t1 = time.perf_counter()
-    aps, mAP = chamfer_ap_per_class(preds_by_class, gts_by_class, cost_fn=cost_fn)
+    if sweep:
+        print(f"[eval] score 阈值扫描 后端={backend}")
+        print("   " + "thr".rjust(5) + "   mAP".ljust(11) + "  ".join(n.rjust(11) for n in MAPTR_CLASSES))
+        for thr in sweep:
+            preds_s, aps_s, m_s = _at(thr)
+            counts = "/".join(str(len(p)) for p in preds_s)
+            print(
+                f"  {thr:5.2f}   {m_s:<11.4f}" + "  ".join(f"{a:11.4f}" for a in aps_s) + f"   pred={counts}"
+            )
+    preds_by_class, aps, mAP = _at(args.score_thr)
+    scores_by_class = [[s for s, _ in items if s > args.score_thr] for items in inst_by_class]
     print(f"[eval] score_thr={args.score_thr} 后端={backend} 匹配 {time.perf_counter() - t1:.1f}s")
     for cls_name, ap_, preds, gts in zip(MAPTR_CLASSES, aps, preds_by_class, gts_by_class, strict=True):
         print(f"  {cls_name:14s} AP={ap_:.4f}  (pred {len(preds)} / gt {len(gts)})")

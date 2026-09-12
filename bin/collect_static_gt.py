@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import queue
 from itertools import pairwise
-from pathlib import Path
 from typing import cast
 
 import carla
@@ -29,6 +28,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.paths import project_path
 from autodrivedata.static_gt import (
     LaneSegment,
     StaticFrame,
@@ -216,7 +216,7 @@ def main() -> None:
         fov_h_deg=float(CAM_ATTRS["fov"]),
     )
 
-    out = Path(args.out)
+    out = project_path(args.out)
     (out / "training/static_gt").mkdir(parents=True, exist_ok=True)
     (out / "training/image_2").mkdir(parents=True, exist_ok=True)
     (out / "training/overlay").mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import queue
-from pathlib import Path
 from typing import cast
 
 import carla
@@ -37,6 +36,7 @@ from carla_common import (
 from PIL import Image
 
 from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.paths import project_path
 from autodrivedata.traffic_light import phase_at
 
 DELTA = 0.1  # 同步模式固定步长(sync_mode 默认)
@@ -110,7 +110,7 @@ def main() -> None:
         fov_h_deg=float(CAM_ATTRS["fov"]),
     )
 
-    out = Path(args.out)
+    out = project_path(args.out)
     for sub in ("image_2", "overlay", "traffic_light"):
         (out / "training" / sub).mkdir(parents=True, exist_ok=True)
 

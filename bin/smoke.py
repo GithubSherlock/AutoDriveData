@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import argparse
 import queue
-from pathlib import Path
 
 import carla
 import numpy as np
+
+from autodrivedata.paths import project_path
 
 CAM_ATTRS = {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}  # 对齐 KITTI 口径
 LIDAR_ATTRS = {
@@ -39,7 +40,7 @@ def main() -> None:
     ap.add_argument("--pps", default="100000", help="每秒点数(线数翻倍建议同步翻倍)")
     args = ap.parse_args()
 
-    out = Path(args.out)
+    out = project_path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     client = carla.Client(args.host, args.port)

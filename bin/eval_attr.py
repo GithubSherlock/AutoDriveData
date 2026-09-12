@@ -46,6 +46,7 @@ from autodrivedata.attribution import (
     norm_cls,
     ttc_s,
 )
+from autodrivedata.paths import project_path
 
 DELTA_S = 0.1  # 同步模式固定步长(同 carla_common.sync_mode / 各采集器)
 
@@ -257,6 +258,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", default=None, help="把原始归因记录落 JSON(备查/复算)")
     args = ap.parse_args()
+    if args.json:
+        args.json = str(project_path(args.json))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     model = YOLO(args.weight)
     names = model.names

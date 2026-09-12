@@ -20,6 +20,7 @@ import json
 import os
 
 from autodrivedata.mapvec import to_ego_frame, to_maptr_annotation, vecs_load
+from autodrivedata.paths import project_path
 
 
 def main() -> None:
@@ -28,6 +29,7 @@ def main() -> None:
     ap.add_argument("--ego", nargs=3, type=float, required=True, metavar=("X", "Y", "YAW"))
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    args.out = str(project_path(args.out))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     _, frame, vecs = vecs_load(open(args.src, encoding="utf-8").read())
     if frame != "carla_world":

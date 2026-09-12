@@ -390,6 +390,9 @@ M4(定制街道)挂起,理由:M4-0 显示道路封闭 = 源码构建
 `load_world` 验证 4 图全通过(15s/50s/123s/188s);默认图仍 Town10HD_Opt
 (DefaultGame.ini,重启即恢复)。
 
+**归档处置(2026-09-12)**:安装包 `AdditionalMaps_0.9.16.tar.gz`(14G,数据盘)已删——
+4 图已实装(本体 17 张 umap)且采集验证通过,要重装按官方 release 重下即可。
+
 **采集验证(probe 分层定位,两型新问题 + 1 个采集器 bug)**:
 1. **Town11/12 禁采集**:sync + ego + tick 均正常,spawn camera(attach_to=ego)
    瞬间 segfault(Signal 11)——该二图渲染资源与 headless GPU shim 栈冲突
@@ -477,6 +480,12 @@ Signal landmark 重合 0.1m)——原记"世界 0 信号 actor"有误。xodr 实
   → freeze 全图灯 + 按 `phase_at(i·0.1s)` 驱动 → **确定性变灯序列**,真实数据集最缺的样本)
 
 **落盘**:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`。
+
+**证据归档(2026-09-12 清盘)**:采集时落在 `/tmp` 的四套灯态运行(受控 tl_static 90 帧、
+记录 tl_record 40 帧、演示 tl_demo/tl_demo2 各 90 帧,合计 594M 的 image_2/overlay)已清,
+**GT 全量迁入项目**:`outputs/kitti_tl_{static,record,demo,demo2}/training/traffic_light/`;
+受控那套另存变化帧 overlay(帧 000000/000001/000059-61/000079-81)+ 切灯对比网格 + 灯头裁剪
+诊断图。复核:受控序列变化帧 = **60/80**,与本节验收一致。
 
 **验收(受控 6/2/6 @0.1s 步长,90 帧)**:
 - 状态变化点 = 帧 **0 / 60 / 80**,与计划逐帧吻合(灯 949/957/958/959 一致)
@@ -733,6 +742,27 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   轨迹单调升 = 终值即最优,**损失仍在下行 → 续训继续获益**(判据:留出集爬升
   未停);训练/留出间隙 2.1× 是 200 帧小数据的必然,扩数据或早停由快照轨迹裁决。
   产物:mapvec_pred_final_held.{json,png}(pred 1654/399/3058/4372)
+- **评估口径固化**(2026-09-12,阈值敏感度实测):同一权重 score_thr 0.2→0.4 给出
+  **0.0510→0.1350(2.6×)**。根因:`chamfer_ap` 是 3 阈值 precision 均值、**无 recall
+  项** → 保守操作点(预测少而准)天然占优;默认 0.2 是任意选的。**规则:跨权重比较
+  固定 --score-thr,绝对数字必须带阈值**;看曲线用 `eval_maptr --sweep`(单次推理,
+  阈值纯后处理,已验证扫描行与单阈值路径逐位一致)。留出集对照:
+  | score_thr | 72e 基线 | ep256 | 倍数 |
+  |---|---|---|---|
+  | 0.2 | 0.0045 | 0.0510 | 11× |
+  | 0.3 | 0.0062 | 0.0952 | 15× |
+  | 0.4 | 0.0078 | 0.1350 | 17× |
+
+  结论不变(提升在所有阈值成立),但**绝对值只在带阈值时可引用**
+- **重启尖峰根因修复**(`bin/train_maptr.py`,2026-09-12):尖峰 = 优化器状态丢失
+  (Adam 力矩清零后每步退化为 ~lr·sign(g))× 步长。e132 三档 lr 全败即此——该 ckpt
+  结束 lr≈2e-7,盆地极窄,任何有效步长都把它踢出去。修:①**优化器状态侧车**
+  `<out>.opt`(与 --out 同步写、--init-ckpt 自动载入、--no-opt 关闭);②**--warmup N**
+  lr 线性升温。实测:ep256 → lr 2e-5/warmup 3 重启,尖峰仅 **+0.8**(6.77@ep6)且
+  ep12 即回落 6.68,对比 e132 同量级 lr 的 +2.2~+2.9
+- **第二轮续训启动**(2026-09-12 中午):ep256 冻结为 `outputs/maptr_ep256.pt`(留出集
+  0.0510 的参考产物)→ lr 2e-5 每 128ep 减半 × 256 epochs(batch 5,~34s/ep ≈ 2.4h),
+  out=`outputs/maptr_ep512.pt`,30min 快照循环 + 侧车同步落盘
 - **live 场景间隙交付**(训练暂停期):`bin/viz_maptr_pred.py` 预测回投目检
   (pred 品红 / GT 青绿 → 6 相机拼图 + BEV 面板,投影链与 B3 同式,内参从 infos
   直读;epoch-132 权重 6 帧产物 `outputs/viz_maptr_e120/frame_*.png`,raw 零
@@ -745,6 +775,83 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   20 帧留出集 CPU 端到端验证通过:产物 `outputs/mapvec_pred_72e_held20.{json,png}`
   (JSON 结构 + 数值色检红 31.6k / 绿 20.4k 像素)
 - 提交 62f9121 / bb3292d / e73adcd / fd08442 / 7f1bd8a / f3a7478 / 0888e3a / 257e031
+
+### 5.11f C 阶段收尾(2026-09-12 ✅):第二轮结果 + 实时 overlay + 两处根因
+
+**① 第二轮续训(ep512,`outputs/maptr_ep512.pt`)结果——口径分化**
+
+| score_thr | ep256 | ep512 | 变化 |
+|---|---|---|---|
+| 0.2 | 0.0510 | **0.0674** | **+32%** ✅ |
+| 0.3 | 0.0952 | 0.0904 | −5% |
+| 0.4 | 0.1350 | 0.1280 | −5% |
+
+- 快照轨迹单调:r2_1329(≈ep145)0.0514 → r2_1400(≈ep230)0.0616 → ep512 **0.0674**
+  → 终值即最优(选 ep512 的理由)
+- **训练集对照 0.2603(帧 100–199)** vs 留出集 0.0674 → **泛化间隙 3.9×**
+  (ep256 时是 2.1×)。结合"低阈值升、高阈值不升":模型在**保守操作点**上更敢输出
+  (覆盖收益),但高阈值精度无增益 → **下一轮收益应来自扩数据,不是继续长训**
+- 评估口径提醒见 §5.11e:绝对数字必须带 `--score-thr`,跨权重固定阈值比较
+
+**② 投影单位 bug(已提交的 viz 里,用户发现的第三交付项带出的)**
+
+- 症状:`bin/viz_maptr_pred.py` 的 `_cam_pose` 把**度**直接传进吃**弧度**的
+  `calib.world_to_img`/`carla_rotation_matrix`。6 相机里只有 yaw≈0 的 CAM_FRONT
+  恰好接近正确 → 目检不炸、数值不查则漏
+- 判据(与目检无关):**命中点方位角落在该相机自身 yaw±45°(其 90° FOV)内的比例**
+  ——弧度口径 91–100%,度数口径 **0–6%**(一次性诊断脚本曾放 /tmp,已废弃;
+  该判据现固化为 `tests/test_mapviz.py`)
+- 修:抽 `autodrivedata/mapviz.py`(纯值:**位置米 / 姿态弧度**出口口径,离线 viz 与
+  实时流共用一条链)+ `tests/test_mapviz.py` 23 例(主锚点 = 旋转单位,含解析期望
+  u = cx + fy·lat/fwd 手算);`viz_maptr_pred` 复验逐相机 GT 分段 23/26/24/16/7/13
+  **全非零**(修复前侧/后相机近零)。教训:**"能跑出图"不是投影正确的证据**,要数值判据
+
+**③ 实时 overlay 交付**(`bin/view_stream.py --maptr-ckpt/--maptr-thr/--maptr-scale/--maptr-bev`)
+
+- rig 只认 `collect_surround.SURROUND_CAMS` **一处定义**(BACK_LEFT 235 / BACK_RIGHT 125
+  与显示用 CAM_YAW_OFFSET 正好镜像互换——错位则第 i 路图与其学过的语义错位);推理用
+  **实挂相机世界位姿(弧度)**,与 mapviz.cam_pose 同口径
+- 实况数值验证(40 s / grid6 / ep512,`--dump` 做差集):
+  overlay 品红 **25553 px** vs raw **0**(场景本身不含品红)✓;6 瓦片全覆盖(2047–7963 px)✓;
+  **地平线以上 0 / 18496**(地面矢量必须全部 v > cy),v_min 109–127 与解析值
+  "30m 地面点 v ≈ cy + fy·1.65/30 = 110.6" 吻合 ✓;BEV 内嵌 7057 px ✓
+- FPS 1.1–1.4(6 路 1242×375 推理 + CARLA 共享 GPU,显示侧 621×187);够看、不够流畅
+- **自检假阳性修复**:`rig_yaw_deviation` 在 tick 前读传感器 transform(全 0 陈旧值)
+  → 假报 179.841°(= CAM_BACK 规格 180 − ego 固有 yaw 0.159)。加一次 `world.tick()`
+  后 **0.000°**(实测逐台 dev 全 0)。与 C19"快照只在 tick 后刷新"同类坑,勿在 tick 前读 actor
+
+**④ CARLA 渲染停摆根因:宿主驱动升版后 Vulkan ICD 加载失败(环境级,非本项目代码)**
+
+- 现象:GameThread timed out waiting for RenderThread (60 s) + Signal 11、显存恒 **0 MiB**;
+  端口 2000 能通(RPC 起得来)、首启无 shader 编译
+- 根因(`VK_LOADER_DEBUG=all`):`ERROR: libnvidia-gpucomp.so.580.105.08: cannot open
+  shared object file` → `loader_icd_scan: Failed to add ICD JSON libGLX_nvidia.so.0` →
+  **枚举 0 个 Vulkan 设备** → UE4 渲染线程无从初始化。镜像里 580.76.05/580.82.07 的
+  gpucomp 是**真实 72 MB 文件**、580.105.08 **完全缺失**(宿主驱动已升到该版本)
+- 处置:`bin/carla_server.sh` 加 `setup_gpucompat()`——检测当前驱动版本是否缺 gpucomp,
+  缺则用镜像自带副本按缺失 SONAME 顶名到项目私有目录(`outputs/carla/nvidia-compat`,
+  见 §5.11g)+ `LD_LIBRARY_PATH` 注入(**不动 /usr/lib**,驱动回退后自动免用);
+  判据脚本 `bin/probe_vulkan.py`:无兼容层只剩 llvmpipe(1 个),有兼容层
+  NVIDIA+llvmpipe(2 个)且应列出 `NVIDIA GeForce RTX 3080 Ti`(对照 lavapipe 验证探针本身)
+- 修复后:server 0.9.16 / 5036–5629 MiB / 日志零崩溃标记 / view_stream 实况通过
+
+### 5.11g 产出归拢项目内(2026-09-12 ✅,用户要求)
+
+- 缘起:用户将清理系统盘(/)与数据盘(`/root/autodl-tmp`)。历史口径是"相对 cwd 的
+  `outputs/...`"——从别处 cwd 调用就把权重/可视化散到项目外,清盘时无从分辨;运行支撑物
+  (shim、Vulkan 兼容层、服务器日志)散在 `/tmp` 与 `carla_home`,**清盘即失效**
+- 做法:`autodrivedata/paths.py`(纯值,只 pathlib)提供 `PROJECT_ROOT`/`OUTPUTS`/
+  `project_path()`/`ensure_parent()`——**写盘相对路径一律解释为相对项目根**,绝对路径
+  原样放行;**读路径不锚定**(输入沿用 cwd 口径);16 个脚本的 `args.out*` 全部过 `project_path`
+- 运行支撑物一并迁入 `outputs/carla/`:shim(`libmhookshim.so`,缺失时 `ensure_shim()`
+  现编 `bin/gpu_fix/mhookshim.c`)、`nvidia-compat/`、`carla_server.log`;
+  `bin/gpu_fix/install.sh` 同步改为编到项目内(原 `/tmp/libmhookshim.so` 与
+  `carla_home/nvidia-compat` 副本已废弃)
+- 验收:清空 `outputs/carla/` 后 `bash bin/carla_server.sh start` → 现编 shim + 重建兼容层
+  + server 0.9.16(零崩溃标记);从 `/tmp` cwd 跑 `viz_maptr_pred.py --out-dir outputs/viz_check`
+  → 图落在项目内、`/tmp/outputs` 不存在;`tests/test_paths.py` 6 例(含 chdir 锚定回归 + 包纯度)
+
+未提交清单(用户手动提交):见对话末尾提醒。
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 

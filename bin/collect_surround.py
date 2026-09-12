@@ -25,13 +25,13 @@ import argparse
 import json
 import queue
 import time
-from pathlib import Path
 from typing import cast
 
 import carla
 from carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, spawn_ego, sync_mode
 from collect_drive import spawn_route_walkers, spawn_traffic
 
+from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
 
 # nuScenes 6 相机布局:名 → 相对 ego 的 yaw(度);pitch/roll 恒 0,挂点共用 SENSOR_OFFSET
@@ -127,7 +127,7 @@ def main() -> None:
         for name, yaw in SURROUND_CAMS.items()
     }
 
-    out = Path(args.out)
+    out = project_path(args.out)
     for name in SURROUND_CAMS:
         (out / name.lower()).mkdir(parents=True, exist_ok=True)
     with open(out / "calib.json", "w", encoding="utf-8") as f:

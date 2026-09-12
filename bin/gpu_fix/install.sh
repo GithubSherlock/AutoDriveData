@@ -12,11 +12,15 @@
 #   1. 重建两个 0 字节 json
 #   2. shim 源码编译为 .so,通过 LD_PRELOAD 注入(NVIDIA 库加载时补符号)
 #
-# 用法: bash install.sh   (编译 shim → /tmp/libmhookshim.so)
-# 注意:json 修复写入系统目录,一次执行永久生效;shim 需在每次启动 CARLA 前存在。
+# 用法: bash install.sh   (编译 shim → <项目>/outputs/carla/libmhookshim.so)
+# 注意:json 修复写入系统目录,一次执行永久生效;shim 落在**项目内**(原来在 /tmp,
+#       清系统盘即失效);carla_server.sh start 会在缺失时自动现编,本脚本用于手动重建。
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+STATE="${STATE:-$(cd "$HERE/../.." && pwd)/outputs/carla}"  # 产出纪律:项目内
+SHIM="$STATE/libmhookshim.so"
+mkdir -p "$STATE"
 
 echo "== 1/2 重建 ICD json(0 字节损坏修复)=="
 cat > /etc/vulkan/icd.d/nvidia_icd.json << 'EOF'
@@ -39,6 +43,6 @@ EOF
 echo "✅ nvidia_icd.json + 10_nvidia.json"
 
 echo "== 2/2 编译 shim =="
-gcc -shared -fPIC -O2 -o /tmp/libmhookshim.so "$HERE/mhookshim.c" -ldl
-ls -l /tmp/libmhookshim.so
-echo "✅ 完成。CARLA 启动需注入: LD_PRELOAD=/tmp/libmhookshim.so"
+gcc -shared -fPIC -O2 -o "$SHIM" "$HERE/mhookshim.c" -ldl
+ls -l "$SHIM"
+echo "✅ 完成。CARLA 启动需注入: LD_PRELOAD=$SHIM"

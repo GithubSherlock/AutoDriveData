@@ -31,6 +31,7 @@ from autodrivedata.mapvec import (
     to_maptr_annotation,
     vecs_load,
 )
+from autodrivedata.paths import project_path
 
 
 def main() -> None:
@@ -40,6 +41,7 @@ def main() -> None:
     ap.add_argument("--out", required=True, help="输出 infos json")
     ap.add_argument("--radius", type=float, default=51.2, help="ego 窗口裁剪半径(方形)")
     args = ap.parse_args()
+    args.out = str(project_path(args.out))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     root = Path(args.surround)
     calib = json.loads((root / "calib.json").read_text(encoding="utf-8"))

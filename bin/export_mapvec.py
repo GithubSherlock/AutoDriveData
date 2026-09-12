@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.mapvec import crop_to_ego, extract_mapvec, resample, to_carla, vecs_dump
 from autodrivedata.opendrive import parse_xodr
+from autodrivedata.paths import project_path
 
 XODR_GLOB = "/root/autodl-tmp/CARLA_0.9.16/CarlaUE4/Content/Carla/Maps/**/*.xodr"
 OUT_DIR = "training/map"
@@ -76,6 +77,7 @@ def main() -> None:
     ap.add_argument("--radius", type=float, default=51.2)
     ap.add_argument("--out", default=OUT_DIR)
     args = ap.parse_args()
+    args.out = str(project_path(args.out))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     vecs = to_carla(extract_mapvec(parse_xodr(find_xodr(args.map))))
     os.makedirs(args.out, exist_ok=True)

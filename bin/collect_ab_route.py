@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import queue
-from pathlib import Path
 from typing import cast
 
 import carla
@@ -35,6 +34,7 @@ from carla_common import (
 from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
 from autodrivedata.semantic import semantic_to_velodyne_bin
 
@@ -136,7 +136,7 @@ def main() -> None:
     camera.listen(img_q.put)
     lidar.listen(lid_q.put)
 
-    out = Path(args.out or f"outputs/kitti_ab_{scene.name}")
+    out = project_path(args.out or f"outputs/kitti_ab_{scene.name}")
     k = CameraIntrinsics(
         width=int(CAM_ATTRS["image_size_x"]),
         height=int(CAM_ATTRS["image_size_y"]),

@@ -27,6 +27,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from autodrivedata.paths import project_path
 from maptr_impl.dataset import MapTRDataset, collate
 from maptr_impl.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from maptr_impl.head import maptr_loss, match_assign
@@ -69,6 +70,27 @@ def _train_batch(
     return float(loss["cls"].detach()), float(loss["pts"].detach())
 
 
+def _load_opt_sidecar(opt: torch.optim.Optimizer, args: argparse.Namespace, dev: torch.device) -> None:
+    """`--init-ckpt X` 且 X.opt 存在时载入优化器状态(Adam 力矩不重置)。"""
+    if args.no_opt or not args.init_ckpt:
+        return
+    path = Path(str(args.init_ckpt) + ".opt")
+    if not path.exists():
+        if args.warmup <= 0:
+            print(f"[opt] 无侧车 {path}——Adam 力矩重置,建议加 --warmup 抑制重启尖峰")
+        return
+    side = torch.load(path, map_location=dev)
+    opt.load_state_dict(side["optimizer"])
+    print(f"[opt] 载入优化器状态 {path}(存盘于 epoch {side.get('epoch', '?')},力矩不重置)")
+
+
+def _save_opt_sidecar(opt: torch.optim.Optimizer, args: argparse.Namespace, epoch: int) -> None:
+    """与 --out 同步写 <out>.opt(仅优化器状态;模型权重留在 --out 供 eval 直读)。"""
+    if args.no_opt:
+        return
+    torch.save({"optimizer": opt.state_dict(), "epoch": epoch}, str(args.out) + ".opt")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--infos", required=True, help="B2 组装 infos json")
@@ -79,6 +101,8 @@ def main() -> None:
     ap.add_argument(
         "--lr-halve", type=int, default=12, help="lr 每 N epochs 减半(0=不衰减;长训必须关,否则 lr 提前归零)"
     )
+    ap.add_argument("--warmup", type=int, default=0, help="前 N epochs lr 线性升温(重启续训防尖峰;0=关)")
+    ap.add_argument("--no-opt", action="store_true", help="不读写优化器状态侧车 <out>.opt")
     ap.add_argument("--batch", type=int, default=0, help="0 = 自适应实测(默认);>0 = 显式指定")
     ap.add_argument("--max-batch", type=int, default=16, help="自适应实测的批大小上限")
     ap.add_argument("--workers", type=int, default=4, help="DataLoader 进程数(多帧训练数据加载是瓶颈)")
@@ -92,6 +116,7 @@ def main() -> None:
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
     args = ap.parse_args()
+    args.out = str(project_path(args.out))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -116,6 +141,9 @@ def main() -> None:
     print(f"[model] MapTR(num_vec={args.num_vec}) @ {dev} | {n_params / 1e6:.1f}M 参数")
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # 优化器状态侧车:续训时 Adam 力矩不重置(重启尖峰的根因是力矩清零后
+    # 每步退化为 ~lr·sign(g),大步长下把模型踢出盆地)。侧车与 --out 同步写。
+    _load_opt_sidecar(opt, args, dev)
 
     # batch 解析:显式 > 自适应实测(与 AutoLabel device.py 同口径)
     model.train()
@@ -142,6 +170,8 @@ def main() -> None:
             lr = args.lr * (0.5 ** ((epoch - 1) // args.lr_halve))
         else:
             lr = args.lr
+        if args.warmup > 0 and epoch <= args.warmup:
+            lr *= epoch / args.warmup  # 线性升温:防"力矩重置 + 大步长"的起步尖峰
         for g in opt.param_groups:
             g["lr"] = lr
         model.train()
@@ -155,6 +185,7 @@ def main() -> None:
         if args.save_every and epoch % args.save_every == 0:
             Path(args.out).parent.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), args.out)
+            _save_opt_sidecar(opt, args, epoch)
             print(f"[ckpt] epoch {epoch}: 覆盖存盘 {args.out}")
         if epoch % args.log_every == 0 or epoch == args.epochs:
             print(
@@ -166,6 +197,7 @@ def main() -> None:
     print(f"[done] 最后 20 步平均 total = {final:.4f}")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), args.out)
+    _save_opt_sidecar(opt, args, args.epochs)
     print(f"[save] {args.out}")
     if args.frames > 1:
         return  # 多帧训练无过拟合判据(损失收敛量级看 D 阶段 AP)
