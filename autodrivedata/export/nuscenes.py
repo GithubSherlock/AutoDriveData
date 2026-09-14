@@ -6,6 +6,8 @@
   instance 需 category_token、sample_data 需 calibrated_sensor/sensor/modality/channel
 - sample['data']/['anns'] 由 devkit 从 sample_data 的 is_key_frame 记录反查,勿手填
 - LIDAR 文件 = (N,5) float32 raw(x,y,z,intensity,elongation),filename 相对 dataroot
+- 雷达文件 = 18 字段 .pcd(devkit RadarPointCloud 契约),filename 相对 dataroot;
+  sample_annotation 带 num_radar_pts(默认 0,无雷达的旧数据兼容)
 - 坐标系:入表数据一律 nuScenes 全局系(x 前/y 左/z 上)——CARLA 数据入表前
   经 geometry.CARLA_TO_NUS 翻转(y 符号)
 - 场景名必须 ∈ devkit create_splits_scenes()['mini_val'](auto3dlabel
@@ -15,7 +17,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -31,6 +33,41 @@ NUS_CAMERAS = (
     "CAM_BACK_LEFT",
     "CAM_BACK_RIGHT",
 )
+
+# 官方 nuScenes 5 雷达通道(与 nuScenes 官方一致;mini 集只有 5 雷达无 RADAR_BACK)
+NUS_RADAR_CHANNELS = (
+    "RADAR_FRONT",
+    "RADAR_FRONT_LEFT",
+    "RADAR_FRONT_RIGHT",
+    "RADAR_BACK_LEFT",
+    "RADAR_BACK_RIGHT",
+)
+
+# 官方 6 相机 calibrated_sensor(translation 米, rotation 四元数 w,x,y,z)——照
+# nuscenes_mini 实测(每通道取第一条记录)。**rotation 是 6DoF quat,不是 yaw**:
+# 展开后光轴 = R @ (0,0,1),CAM_FRONT 朝 x +0.3°、FRONT_LEFT 朝 y-左 +55°…… 与
+# devkit map_pointcloud_to_image 的深度解释一致(把相机深度当光轴方向)。若写 yaw 型
+# quat(绕 z 转、z 轴钉朝上),光轴被判为 +z=朝上 → 深度 ≈ 垂直偏移 → 0 投影点
+# (identity 态实测 [2/4] 全灭;官方 quat 实测 305/330 点投影,见 Plan §radar)。
+NUS_CAMERA_CALIBS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float, float]]] = {
+    "CAM_FRONT": ((1.7008, 0.0159, 1.5110), (0.4998, -0.5030, 0.4998, -0.4974)),
+    "CAM_FRONT_LEFT": ((1.5239, 0.4946, 1.5093), (0.6757, -0.6736, 0.2121, -0.2112)),
+    "CAM_FRONT_RIGHT": ((1.5508, -0.4934, 1.4957), (0.2060, -0.2027, 0.6825, -0.6714)),
+    "CAM_BACK": ((0.0283, 0.0035, 1.5791), (0.5038, -0.4974, -0.4942, 0.5045)),
+    "CAM_BACK_LEFT": ((1.0357, 0.4848, 1.5910), (0.6924, -0.7032, -0.1165, 0.1120)),
+    "CAM_BACK_RIGHT": ((1.0149, -0.4806, 1.5624), (0.1228, -0.1324, -0.7004, 0.6905)),
+}
+
+# 官方 5 雷达安装位姿(translation 米, yaw_nus 弧度)——照 nuscenes_mini 实测
+# calibrated_sensor(nus 系,y 左)。采集器 CARLA spawn 用其 CARLA 镜像
+# (y 取负、yaw 用同名相机同号),这里直接进 calib 表零转换。
+NUS_RADAR_OFFSETS: dict[str, tuple[tuple[float, float, float], float]] = {
+    "RADAR_FRONT": ((3.412, 0.0, 0.5), 0.0),
+    "RADAR_FRONT_LEFT": ((2.422, 0.8, 0.78), 0.7853981633974483),  # +45°
+    "RADAR_FRONT_RIGHT": ((2.422, -0.8, 0.77), -0.7853981633974483),  # -45°
+    "RADAR_BACK_LEFT": ((-0.562, 0.628, 0.53), 1.5707963267948966),  # +90°
+    "RADAR_BACK_RIGHT": ((-0.562, -0.618, 0.53), -1.5707963267948966),  # -90°
+}
 
 # 检测类名 → devkit category_name(入 sample_annotation 经 instance→category 链)
 NUS_NAME_TO_CATEGORY = {
@@ -51,9 +88,13 @@ class NusSample:
     lidar_filename: str  # 相对 dataroot
     camera_filenames: dict[str, str]  # 6 通道 → 相对 dataroot
     calib_lidar: tuple[tuple[float, float, float], float]  # (translation, yaw_nus) 传感器→ego
-    calib_cameras: dict[str, tuple[tuple[float, float, float], float]]
+    # 官方 6DoF camera calib(translation, quat wxyz)——只作溯源;落盘吃 NUS_CAMERA_CALIBS 常量
+    calib_cameras: dict[str, tuple[tuple[float, float, float], tuple[float, float, float, float]]]
     annotations: list[dict]  # {'category','translation','size','yaw_nus','num_lidar_pts','instance_token'}
     timestamp: int
+    # 5 雷达(2026-09-14 扩展;缺省空 dict,向后兼容旧构造)
+    radar_filenames: dict[str, str] = field(default_factory=dict)  # 5 通道 → 相对 dataroot(.pcd)
+    calib_radars: dict[str, tuple[tuple[float, float, float], float]] = field(default_factory=dict)
 
 
 def points_sensor_to_global_nus(
@@ -200,31 +241,55 @@ def write_mini_dataset(
         for it in inst_tokens
     ]
 
-    # 5) sensor:LIDAR_TOP + 6 相机
-    sensor_table = [{"token": _tok("sens", 0), "channel": "LIDAR_TOP", "modality": "lidar"}] + [
-        {"token": _tok("sens", i + 1), "channel": cam, "modality": "camera"}
-        for i, cam in enumerate(NUS_CAMERAS)
-    ]
+    # 5) sensor:LIDAR_TOP + 5 雷达 + 6 相机
+    # 固定索引布局(sensor/calib/sample_data 三表共用):0 LiDAR、1..5 雷达、6..11 相机
+    sensor_table = (
+        [{"token": _tok("sens", 0), "channel": "LIDAR_TOP", "modality": "lidar"}]
+        + [
+            {"token": _tok("sens", i + 1), "channel": ch, "modality": "radar"}
+            for i, ch in enumerate(NUS_RADAR_CHANNELS)
+        ]
+        + [
+            {"token": _tok("sens", i + 6), "channel": cam, "modality": "camera"}
+            for i, cam in enumerate(NUS_CAMERAS)
+        ]
+    )
 
-    # 6) calibrated_sensor(LIDAR_TOP + 6 相机)
-    calib_table = [
-        {
-            "token": _tok("calib", 0),
-            "sensor_token": _tok("sens", 0),
-            "translation": list(all_samples[0].calib_lidar[0]),
-            "rotation": _quat(all_samples[0].calib_lidar[1]),
-            "camera_intrinsic": [[0.0] * 3] * 3,
-        }
-    ] + [
-        {
-            "token": _tok("calib", i + 1),
-            "sensor_token": _tok("sens", i + 1),
-            "translation": list(all_samples[0].calib_cameras[cam][0]),
-            "rotation": _quat(all_samples[0].calib_cameras[cam][1]),
-            "camera_intrinsic": _intrinsics_1600x900_fov90(),
-        }
-        for i, cam in enumerate(NUS_CAMERAS)
-    ]
+    # 6) calibrated_sensor(LIDAR_TOP + 5 雷达 + 6 相机)
+    # 雷达平移/旋转 = NUS_RADAR_OFFSETS 原值(nus 系,y 左)——与 CARLA 采集侧
+    # 的镜像(y 取负、yaw 同名相机同号)是同一物理挂点的两套表达,devkit 变换链
+    # p_g = R_ego(R_rad·p_s + t) + t_ego 直接吃 nus 原值。
+    calib_table = (
+        [
+            {
+                "token": _tok("calib", 0),
+                "sensor_token": _tok("sens", 0),
+                "translation": list(all_samples[0].calib_lidar[0]),
+                "rotation": _quat(all_samples[0].calib_lidar[1]),
+                "camera_intrinsic": [[0.0] * 3] * 3,
+            }
+        ]
+        + [
+            {
+                "token": _tok("calib", i + 1),
+                "sensor_token": _tok("sens", i + 1),
+                "translation": list(NUS_RADAR_OFFSETS[ch][0]),
+                "rotation": _quat(NUS_RADAR_OFFSETS[ch][1]),
+                "camera_intrinsic": [[0.0] * 3] * 3,
+            }
+            for i, ch in enumerate(NUS_RADAR_CHANNELS)
+        ]
+        + [
+            {
+                "token": _tok("calib", i + 6),
+                "sensor_token": _tok("sens", i + 6),
+                "translation": list(NUS_CAMERA_CALIBS[cam][0]),
+                "rotation": list(NUS_CAMERA_CALIBS[cam][1]),
+                "camera_intrinsic": _intrinsics_1600x900_fov90(),
+            }
+            for i, cam in enumerate(NUS_CAMERAS)
+        ]
+    )
 
     # 7) ego_pose
     ego_table = [
@@ -274,12 +339,13 @@ def write_mini_dataset(
         for i in range(n)
     ]
 
-    # 11) sample_data:每 sample 7 条 keyframe(LIDAR_TOP + 6 相机)
+    # 11) sample_data:每 sample 12 条 keyframe(1 LIDAR + 5 雷达 + 6 相机)
+    # token 布局 i*12+j:j=0 LiDAR、j=1..5 雷达、j=6..11 相机(与 sensor/calib 对齐)
     sample_data_table: list[dict] = []
     for i, s in enumerate(all_samples):
         sample_data_table.append(
             {
-                "token": _tok("sd", i * 7),
+                "token": _tok("sd", i * 12),
                 "sample_token": sample_tokens[i],
                 "ego_pose_token": ego_tokens[i],
                 "calibrated_sensor_token": _tok("calib", 0),
@@ -296,13 +362,33 @@ def write_mini_dataset(
                 "modality": "lidar",
             }
         )
-        for j, cam in enumerate(NUS_CAMERAS):
+        for j, ch in enumerate(NUS_RADAR_CHANNELS):
             sample_data_table.append(
                 {
-                    "token": _tok("sd", i * 7 + j + 1),
+                    "token": _tok("sd", i * 12 + j + 1),
                     "sample_token": sample_tokens[i],
                     "ego_pose_token": ego_tokens[i],
                     "calibrated_sensor_token": _tok("calib", j + 1),
+                    "timestamp": s.timestamp,
+                    "fileformat": "pcd",
+                    "is_key_frame": True,
+                    "height": 0,
+                    "width": 0,
+                    "filename": s.radar_filenames.get(ch, ""),
+                    "prev": "",
+                    "next": "",
+                    "sensor_token": _tok("sens", j + 1),
+                    "channel": ch,
+                    "modality": "radar",
+                }
+            )
+        for j, cam in enumerate(NUS_CAMERAS):
+            sample_data_table.append(
+                {
+                    "token": _tok("sd", i * 12 + j + 6),
+                    "sample_token": sample_tokens[i],
+                    "ego_pose_token": ego_tokens[i],
+                    "calibrated_sensor_token": _tok("calib", j + 6),
                     "timestamp": s.timestamp,
                     "fileformat": "png",
                     "is_key_frame": True,
@@ -311,7 +397,7 @@ def write_mini_dataset(
                     "filename": s.camera_filenames[cam],
                     "prev": "",
                     "next": "",
-                    "sensor_token": _tok("sens", j + 1),
+                    "sensor_token": _tok("sens", j + 6),
                     "channel": cam,
                     "modality": "camera",
                 }
@@ -329,6 +415,7 @@ def write_mini_dataset(
                     "visibility_token": vis_token,
                     "attribute_tokens": [],
                     "num_lidar_pts": a["num_lidar_pts"],
+                    "num_radar_pts": a.get("num_radar_pts", 0),
                     "translation": list(a["translation"]),
                     "size": list(a["size"]),
                     "rotation": _quat(a["yaw_nus"]),

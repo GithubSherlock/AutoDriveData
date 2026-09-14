@@ -13,6 +13,11 @@
 用法:
   python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \
       --root outputs/surround_train --ckpt outputs/maptr.pt --frames 300
+
+接 AutoLabel(逐帧契约,见 autodrivedata/mapvec_schema.py):
+  python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \
+      --root outputs/surround_train --ckpt outputs/maptr_ep512.pt \
+      --start 200 --out-frames outputs/surround_pred      # → outputs/surround_pred/{token}.json
 """
 
 from __future__ import annotations
@@ -26,6 +31,14 @@ import numpy as np
 import torch
 
 from autodrivedata.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
+from autodrivedata.mapvec_schema import (
+    MapVecFramePred,
+    MapVecInstance,
+    dump_frame,
+    gt_out_of_window,
+    make_instance,
+    out_of_window,
+)
 from autodrivedata.paths import project_path
 from maptr_impl.chamfer_gpu import chamfer_cost_matrix_cuda
 from maptr_impl.dataset import MAPTR_CLASSES, MapTRDataset
@@ -93,9 +106,15 @@ def main() -> None:
     ap.add_argument("--match", choices=("auto", "cpu", "gpu"), default="auto", help="代价矩阵后端(默认 auto)")
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用;GPU 被占用时可 --device cpu)")
     ap.add_argument("--out-pred", default=None, help="预测落盘基路径:写 <path>.json + <path>.png(BEV 目检)")
+    ap.add_argument(
+        "--out-frames",
+        default=None,
+        help="逐帧预测落盘目录:<DIR>/{token}.json(mapvec_pred/1 契约,GT 同文件携带;供 AutoLabel 消费)",
+    )
     args = ap.parse_args()
-    if args.out_pred:
-        args.out_pred = str(project_path(args.out_pred))  # 产物锚定项目根(相对路径不随 cwd 漂移)
+    for name in ("out_pred", "out_frames"):
+        if getattr(args, name):
+            setattr(args, name, str(project_path(getattr(args, name))))  # 产物锚定项目根(不随 cwd 漂移)
 
     if args.match == "cpu":
         cost_fn, backend = chamfer_cost_matrix, "cpu"
@@ -123,6 +142,7 @@ def main() -> None:
     inst_by_class: list[list[tuple[float, np.ndarray]]] = [[] for _ in MAPTR_CLASSES]
     gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
     t0 = time.perf_counter()
+    n_frame_files = oow_pred = oow_gt = 0
     with torch.no_grad():
         for i, item in enumerate(ds):
             images = {n: t[None].to(dev) for n, t in item["images"].items()}
@@ -130,12 +150,37 @@ def main() -> None:
             logits = out["pred_logits"][0].float()  # (Nq, C+1)
             pts = out["pred_points"][0].float().cpu().numpy()  # (Nq, P, 2)
             scores = torch.sigmoid(logits).cpu().numpy()
+            frame_preds: list[MapVecInstance] = []
             for c in range(len(MAPTR_CLASSES)):
                 idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
                 sc_c = scores[idx, c + 1]
                 keep = sc_c > floor
                 inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
                 gts_by_class[c].extend(item["gt"][c])
+                if args.out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
+                    sel = sc_c > args.score_thr
+                    frame_preds.extend(
+                        make_instance(MAPTR_CLASSES[c], p, s)
+                        for s, p in zip(sc_c[sel].tolist(), pts[idx][sel], strict=True)
+                    )
+            if args.out_frames:
+                info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
+                rec = MapVecFramePred(
+                    frame=int(info["frame"]),
+                    token=str(info["token"]),
+                    score_thr=args.score_thr,
+                    ckpt=args.ckpt,
+                    preds=tuple(frame_preds),
+                    gts=tuple(
+                        make_instance(MAPTR_CLASSES[c], g)
+                        for c in range(len(MAPTR_CLASSES))
+                        for g in item["gt"][c]
+                    ),
+                )
+                dump_frame(rec, args.out_frames)
+                n_frame_files += 1
+                oow_pred += out_of_window(rec)
+                oow_gt += gt_out_of_window(rec)
             if (i + 1) % 50 == 0:
                 print(f"[infer] {i + 1}/{len(frames)} 帧 ({time.perf_counter() - t0:.1f}s)")
 
@@ -173,6 +218,12 @@ def main() -> None:
             gts_by_class,
         )
         print(f"[out] 预测落盘 {args.out_pred}.json / {args.out_pred}.png")
+
+    if args.out_frames:
+        print(
+            f"[out] 逐帧契约落盘 {n_frame_files} 个文件 → {args.out_frames}/{{token}}.json"
+            f"(越窗点 pred {oow_pred} / gt {oow_gt})"
+        )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from autodrivedata.chamfer_ap import (
     chamfer_ap,
@@ -71,6 +72,16 @@ def test_chamfer_ap_per_class() -> None:
     assert aps[0] == 1.0 and aps[1] == 0.0 and aps[3] == 0.0
     assert abs(aps[2] - 2 / 3) < 1e-9
     assert abs(mean - (1.0 + 0.0 + 2 / 3 + 0.0) / 4) < 1e-9
+
+
+def test_chamfer_ap_per_class_class_count_mismatch() -> None:
+    """类数不符必须炸 —— 取代 py3.8 跑不了的 `zip(strict=True)`(见函数 docstring)。
+
+    跨 env 工具(`bin/eval_official_metric.py` 在官方栈 py3.8 里算对照)依赖本模块可导入,
+    故长度自查从 `strict=` 换成显式判断;静默截断会把"少算一类"伪装成正常结果。
+    """
+    with pytest.raises(ValueError, match="类数不一致"):
+        chamfer_ap_per_class([[_line()], [_line()]], [[_line()]])
 
 
 def _rnd_poly(rng: np.random.Generator, n_pts: int) -> np.ndarray:

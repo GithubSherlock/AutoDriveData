@@ -64,7 +64,7 @@ def _sample(i: int) -> ne.NusSample:
         lidar_filename=f"samples/LIDAR_TOP/{i:06d}.bin",
         camera_filenames={c: f"samples/{c}/{i:06d}.png" for c in ne.NUS_CAMERAS},
         calib_lidar=((1.2, 0.0, 1.65), 0.0),
-        calib_cameras={c: ((1.2, 0.0, 1.65), 0.0) for c in ne.NUS_CAMERAS},
+        calib_cameras={c: ((1.2, 0.0, 1.65), (1.0, 0.0, 0.0, 0.0)) for c in ne.NUS_CAMERAS},
         annotations=[
             {
                 "category": "car",
@@ -130,10 +130,35 @@ class TestMiniDataset:
     def test_sample_data_keyframes(self, tmp_path):
         ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0), _sample(1)]})
         sd = json.loads((tmp_path / "v1.0-mini" / "sample_data.json").read_text())
-        assert len(sd) == 14  # 2 samples × (1 lidar + 6 cams)
+        assert len(sd) == 24  # 2 samples × (1 lidar + 5 radar + 6 cams)
         assert all(r["is_key_frame"] for r in sd)
         lidar_rec = next(r for r in sd if r["channel"] == "LIDAR_TOP")
         assert lidar_rec["filename"].endswith("000000.bin")
+
+    def test_radar_rows(self, tmp_path):
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0)]})
+        sd = json.loads((tmp_path / "v1.0-mini" / "sample_data.json").read_text())
+        radar_recs = [r for r in sd if r["modality"] == "radar"]
+        assert len(radar_recs) == 5
+        assert {r["channel"] for r in radar_recs} == set(ne.NUS_RADAR_CHANNELS)
+        assert all(r["fileformat"] == "pcd" for r in radar_recs)
+        # 旧 sample 未传 radar_filenames → filename 空串(向后兼容)
+        assert all(r["filename"] == "" for r in radar_recs)
+        # sensor/calib 链
+        sens = json.loads((tmp_path / "v1.0-mini" / "sensor.json").read_text())
+        calib = json.loads((tmp_path / "v1.0-mini" / "calibrated_sensor.json").read_text())
+        assert {s["channel"] for s in sens if s["modality"] == "radar"} == set(ne.NUS_RADAR_CHANNELS)
+        front = next(
+            c
+            for c in calib
+            if c["sensor_token"] == next(s["token"] for s in sens if s["channel"] == "RADAR_FRONT")
+        )
+        assert front["translation"] == list(ne.NUS_RADAR_OFFSETS["RADAR_FRONT"][0])
+
+    def test_num_radar_pts_default(self, tmp_path):
+        ne.write_mini_dataset(tmp_path, "v1.0-mini", {"scene-0103": [_sample(0)]})
+        anns = json.loads((tmp_path / "v1.0-mini" / "sample_annotation.json").read_text())
+        assert anns[0]["num_radar_pts"] == 0  # 旧 annotation 无此键 → 默认 0
 
     def test_two_scenes_chain_not_crossing(self, tmp_path):
         ne.write_mini_dataset(

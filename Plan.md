@@ -653,6 +653,7 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   生产环境
 - **老栈降级 optional**:`maptr` env(py3.8 + torch1.9 + mmcv-full1.4)不再作为 C 阶段
   前置;**若后续需要官方权重对标**(绝对性能数字),再启动官方对照(工作记录在案)
+  → **已于 2026-09-13 启动**(见 §5.12;实测官方权重不可得,口径修正为"官方代码对标")
 - **正确性口径**:无官方权重对照 → 实现正确性靠**单帧过拟合测试**(小数据上 loss
   必须压到 ~0)锚定;性能数字只做**内部对比**(场景/天气间)
 - 结构:新建顶层包 `maptr_impl/`(torch 依赖,不进 autodrivedata 纯值包),评估
@@ -852,6 +853,374 @@ MapTR 实现不反向依赖 AutoLabel;④不改 A/B 采集纪律。
   → 图落在项目内、`/tmp/outputs` 不存在;`tests/test_paths.py` 6 例(含 chdir 锚定回归 + 包纯度)
 
 未提交清单(用户手动提交):见对话末尾提醒。
+
+### 5.11h 预测的逐帧契约 `mapvec_pred/1`(2026-09-13 ✅,接 AutoLabel 前置)
+
+**缘起(接入缺口)**:`--out-pred` 的单一 json 是**跨帧汇聚**产物——100 帧的实例堆成
+按类的池子,实例里**没有帧归属**。消费方(AutoLabel)无法把一条预测对应到哪一帧/
+哪张图,作不了帧级对账。补的不是字段,是接口形态。
+
+**做法**:
+- 新纯值模块 `autodrivedata/mapvec_schema.py`(不 import carla/torch,纪律同 mapvec):
+  `MapVecInstance` / `MapVecFramePred` + `validate_frame` + `dump_frame`/`load_frame`,
+  逐帧一文件 `<DIR>/{token}.json`;**GT 与 pred 同文件携带**(消费方不必解析
+  `map_infos.json` 就能对账;要对回图像按 token 去 `<root>/cam_*/{token}.png`)
+- 头部字段即契约:`schema`(固定 `mapvec_pred/1`,不匹配拒收)/`frame`/`token`/
+  `classes`(类序取 `mapvec.MAPTR_CLASSES`,**不另立一份**)/`coord`(固定 `ego`)/
+  `bev_range`(取 `mapvec.BEV_RANGE`)/`num_points`/`score_thr`(绝对数字必须带阈值)/
+  `ckpt`(溯源)
+- 入口:`bin/eval_maptr.py --out-frames DIR`(复用同一次推理,`--score-thr` 决定落盘阈值;
+  `floor` 只服务内部 `--sweep`);写盘路径过 `project_path`(产出纪律)
+- **设计判据(实测反推)**:越窗**不算错误**。GT 经 `clip_to_bev` 恒在窗内(实测越窗 0),
+  而 pred **无裁剪** x 达 19.75 / y 达 32.35(窗口 15/30)→ 越窗是模型行为,只计数
+  (`out_of_window`)供诊断。硬校验只覆盖结构性不变量(类序/点数/score 域/有限数)
+
+**验收(ep512,留出集 200–299,score_thr 0.2)**:
+- 100 个文件落 `outputs/surround_pred/`,**逐帧实例数与跨帧汇聚逐位相等**
+  (pred 11508 / gt 7160)——逐帧化没有丢任何实例
+- 每帧 `frame` 与 `map_infos.json` 同 token 的帧号一致(帧归属连通性)
+- mAP **0.0674** 与 §5.11f 记录一致 → 汇聚口径未被改坏(回归)
+- 越窗点 pred 14045 / gt 0(≈6% 的 pred 点;佐证"pred 不裁窗"的平台事实)
+- `tests/test_mapvec_schema.py` 20 例(往返/头部拒收/类序守卫/点数/score 域/
+  越窗计数/落盘前校验/`NUM_POINTS` 与模型默认值锚定)
+
+**边界与下一步**:本项目只负责"产出 + 契约";消费方(AutoLabel 侧只读 loader /
+benchmark / agent 数据集登记)**未接**,按依赖单向纪律在其侧实现,不得反向 import。
+
+**消费侧已接通 ✅(2026-09-15,AutoLabel `mapvec-report`)**:
+- AutoLabel 新增对账 CLI(独立工具,零 Web 前端改动):`schema/mapvec.py`(契约消费方
+  硬校验副本)+ `schema/mapvec_proj.py`(CAM_FRONT 投影链,复制 mapviz 纯值)+
+  `tools/mapvec_compare.py`(chamfer 比对,复制 chamfer_ap)+ `export/mapvec_report.py`
+  + `cli.py` 子命令 `mapvec-report`。产物:overlay(品红 pred/青绿 GT)+ BEV 面板 +
+  `mapvec_report.md/json`(逐类 AP/CD 中位/最差 5 帧,强制带 score_thr)+
+  `{token}_review.json` 复核队列(REVIEW3D_DIR 即见,`review-save` 空 annotations 无副作用)
+- 交叉验证测试锁定复制代码不漂移(同一输入 → 与原版逐元素一致);28 例单测全绿
+- **验收(ep512 留出集 200–299,score_thr 0.2)**:100 帧比对,渲染段 pred 3589 / gt 2637;
+  CD 中位 **0.37m**(p25 0.30 / p75 0.43,418 对);AP divider 0.054 / ped_crossing 0.006 /
+  boundary 0.076 / centerline 0.132(与官方口径数量级一致);100 个 review 队列文件
+- 复制纪律:AutoLabel 不 import AutoDriveData,纯值逻辑复制(版本锁定注释 +
+  `test_mapvec_crosscheck` 对照),依赖仍单向
+
+### 5.12 官方 MapTR/MapQR 栈对照(2026-09-13 定案 → **2026-09-14 终止**,见文末"终止记录")
+
+**缘起**:§5.11d 把老栈降级 optional,条件是"若后续需要官方权重对标再启动"。2026-09-13
+用户裁决启动,范围 = **A′(口径复算)+ B(同数据复线)**,三个实现都跑(MapTRv2 4 类 /
+MapQR / MapTR v1 3 类),**重训权重必须落项目内**。
+
+**资源实况(2026-09-13 实测,定义了方案边界)**:
+
+| 依赖 | 实况 |
+|---|---|
+| GitHub / HuggingFace 直连 | ✗ 超时;`ghfast.top` 代理 ✓(`git ls-remote` 两仓库均通) |
+| 官方仓库 | **已在项目内** `hdMapGitHub/{MapTR,MapQR}`(`.gitignore:64`,外部资产)。MapTR main `a6872d8` + `origin/maptrv2` `e03f097`;MapQR `d1d9f38` |
+| 官方权重 | **不可得**——MapTR 挂 Google Drive(✗)、MapQR 挂 CUHK SharePoint(链接 404);两仓库内均无 ckpt |
+| nuScenes | `datasets/nuscenes_mini` 完整(404 关键帧 ×6 相机 @1600×900 + sweeps + v1.0-mini + 4 张地图 png) |
+| **map expansion** | **缺** `<mini>/maps/expansion/*.json`(maps/ 只有 png)→ 官方 GT 生成(`NuScenesMap`,nuscenes_map_dataset.py:527)走不通。**已解**:v1 构造期的地图库只需"能构造"(其 `__init__` 硬访问 15 个列表层 + 2 个字典层 + `version>=1.3` + `canvas_edge` 二元列表),352B 空桩即可;运行时该空地图**从不被查询**(v1 用 bridge 换掉 `self.vector_map`)。A0 完整(mini 训练/评测)仍阻塞 |
+| 老栈 wheel | torch 1.9.1+cu111 / torchvision 0.10.1 走 **阿里云 pytorch-wheels 镜像**(~4MB/s);**不要用 download.pytorch.org 直链**——实测下到 1.1G/2.04G 后静默停滞(20 分钟 0 字节,不发 EOF);mmcv-full 1.4.0 **预编译** wheel(cu111/torch1.9.0 ✓,免源码编译,0.3MB/s);mmdet 2.14.0 / mmseg 0.14.1 走 aliyun ✓ |
+| 编译链 | 系统 CUDA 11.8 ✓(torch cu111 只校验 major 版本)、gcc-9 可 apt(huaweicloud 源)✓、R50 ImageNet 预训练已在 torch hub 缓存 ✓ |
+
+**口径修正(本次探查的重要发现)**:官方 AP 是**按 score 排序 → 累加 tp/fp → PR 曲线积分**
+(`map_utils/mean_ap.py:287-306`,chamfer 阈值 [0.5, 1.0, 1.5]),**含 recall 项**;我们的
+`chamfer_ap` 是 3 阈值 precision 均值、**无 recall 项** → §5.11f 那条"高阈值天然占优、
+0.2→0.4 翻 2.6×"是**我们实现的口径特性,不是官方口径**。A′ 必须量化两者差值并归因
+(recall 项 / `pc_range` 裁剪 / score 排序),据此修正本文件内所有 mAP 数字的口径声明。
+
+**阶段 0/数据面踩坑(2026-09-13 实测,都已修入 `bin/setup_maptr_official.sh` / 转换器)**:
+
+1. **`pip install -r mmdet3d/requirements/runtime.txt` 不能整份照装**:里面 `numba==0.48.0`
+   + `numpy<1.20.0` 是 mmdet3d 0.x 遗留 pin(该文件自己写着 "we may unlock the verion of numba
+   in the future")→ 会把 numpy 降到 1.19.5,而 opencv-python-headless 5.x/shapely 1.8.5 都是
+   新 ABI 轮子,静默降级后导入即炸。改为逐项装(lyft_dataset_sdk 是 `mmdet3d/datasets/__init__.py`
+   的**导入期硬依赖**;numba 用与 numpy 1.23.5 相容的 0.56.4)
+2. **infos pkl 必须是 `{"infos": [...], "metadata": {"version": …}}`** —— 官方
+   `NuScenesDataset.load_annotations` 是 `data['infos']` + `data['metadata']['version']`;
+   直接 dump 一个 list 会在**数据集构造期**就 TypeError(转换器已改,`--train-frames` 划分照旧)
+3. **v1 的 detection GT 是空数组也必须类型正确**:v1 pipeline 有 `LoadAnnotations3D`
+   + `ObjectNameFilter` + `use_valid_flag=True`,官方 `get_ann_info` 走
+   `gt_boxes[valid_flag]` 掩码索引 → `gt_boxes/gt_names/valid_flag` 必须是**等长 ndarray**
+   (我们的转换器已按 (0,7)/(0,)/(0,) bool 写)。真正的 GT 在 `vectormap_pipeline` 里被
+   **整体覆写**成地图矢量(`example['gt_labels_3d'] = DC(gt_vecs_label)`),所以
+   `filter_empty_gt` 检查的是"本帧有没有地图矢量"——我们有,不会被滤掉
+4. **v2/MapQR 侧无需改代码**:离线数据集 `get_data_info` 直吃 `info['annotation']`,
+   `map_ann_file` 存在时 `_format_bbox` 跳过 `_format_gt`(即不碰 map expansion)
+
+**阶段与判据**:
+- **0 环境**:`/root/autodl-tmp/envs/maptr_official`(py3.8;系统盘仅 8.2G,env 必须落数据盘)。
+  判据 = `import mmdet3d` + GKT op 前向跑通 + `outputs/maptr_official/env_check.json`
+- **A0 数据链(mini)**:官方 `tools/create_data.py nuscenes --version v1.0-mini` 生成
+  `nuscenes_infos_*.pkl`。A0-lite = 作为**我们转换器的格式黄金基准**(逐字段比对);
+  A0 完整(含 mini 训练/评测)= 阻塞于 map expansion
+- **A′ 口径复算**:ep512 的 100 帧 preds/GT → 官方 `{'GTs':…}` + result json,
+  用官方 `eval_map` 复算 → 报出差值与归因
+- **B 同数据复线**:三个实现在同样 200 帧训练、留出 100 帧评估;**预算 = 等预算**
+  (2026-09-14 定为 **256 ep / 51,200 样本 / 10,240 优化步** = 自实现基线**第一轮**的完整
+  口径,样本与步数双等;原定的 512 ep × 200 帧 = 102,400 样本是基线**两轮之和**,已裁,
+  理由见下"预算裁剪");v1 只比共享 3 类;`work_dir` 落 `outputs/maptr_official/<impl>/`。
+  → **2026-09-14 用户裁决整条中止,本项未执行完**(见文末"终止记录")
+- **C 归档**:结论 + 三仓库 commit 号 + `environment.yml` 进项目,复现命令一条不漏
+
+**A′ 执行记录(2026-09-13 ✅)**:`bin/eval_official_metric.py`(项目侧,官方代码只读引用)。
+同一份 ep512 逐帧产物(`outputs/surround_pred`,100 留出帧)分别喂我们的口径与官方 `eval_map`:
+
+| 口径 | 20 点 raw | 100 点重采样 | 说明 |
+|---|---|---|---|
+| 我们 `chamfer_ap`(4 类) | 0.0672 | — | 基线口径 |
+| 官方 `eval_map`(4 类) | 0.0586 | **0.0699** | 官方 config 是 `eval_use_same_gt_sample_num_flag=True` → **0.0699 才是参照值** |
+
+- 3 类子集(与 v1/MapQR 可比的口径,`--classes divider,ped_crossing,boundary`):
+  我们 0.0456 / 官方 raw 0.0485 / 官方 100 点 0.0557(ped_crossing 三类口径下 AP≈0.0006,
+  仅 118 条 GT → 该类的三方对照**不具区分度**,不据此下结论)
+- 归因:**差异几乎全部来自 GT 重采样点数**(官方把 GT 插成 100 点,chamfer 距离因此变小),
+  而非 recall 项或 score 排序——两口径在同一数据上的类序(centerline 最高、ped 最低)一致
+- 复算脚本在 autodrivedata env 可跑:官方 `mean_ap.py` 只依赖 mmcv 的 Timer/dump/print_log
+  (已 stub)+ shapely **1.x 语义**(`STRtree.query` 返回几何对象;2.x 返回索引 → 已补 shim)
+
+**补口径说明**:§5.11f 那条"高阈值天然占优、0.2→0.4 翻 2.6×"是**我们实现的口径特性**
+(无 recall 项),不是官方口径;跨权重比较仍固定 `--score-thr`,但对外报数须写明口径与点数。
+
+**阶段 B 执行记录(2026-09-13/14 → 2026-09-14 **中止**;保留为"若重启该从哪继续"的完整记录)**:
+
+*账本更正(经产物核实)*:原记"自实现 ep512 × 200 帧 × bs2 = 51,200 步"**为错**。
+`outputs/maptr_ep512.pt.opt` 里 AdamW 的 `step` 计数 = **10,242** ⇒ 末轮(256 ep)是
+**batch 5**(200/5 = 40 步/epoch × 256 = 10,240,余 2 为自适应探针步),与 §5.11 的
+"batch 5,~34s/ep" 互证。可跨轮次对账的量是**样本数** 512 × 200 = **102,400**(与 batch
+无关);步数随 batch 变(基线末轮 10,240 步)。三天后仍可核对的判据:每个 checkpoint 里
+AdamW 的 step。
+
+*显存边界(实测;卡 12GB,可用 11.63 GiB)*:bs2@1242×375 需 ~13 GiB → **OOM**;
+bs1@1242×375 峰值 **8,147 MiB** ✓;bs2@0.5 分配 8,906 / 峰值 11,497 MiB(贴边,不用)。
+**并证伪"降分辨率换吞吐"**:0.5 缩放 1.98 s/iter vs 1.0 的 1.75 s/iter —— 成本在 BEV
+transformer 不在主干(MSDeformableAttention3D 每 query 每 level 固定采 8 点,与特征图大小
+无关;20k query × 6 层 × 6 相机才是主项)→ 账本里"0.5 换 4× 加速"的假设**错误**。
+
+*等有效 batch 的实现(纯配置,官方代码一行未改)*:`samples_per_gpu=1` +
+`GradientCumulativeFp16OptimizerHook(cumulative_iters=5)` —— mmcv 的累积 hook 每步先
+`loss = loss / loss_factor` 再 backward → 梯度 = 5 个微批的**均值**,与真 bs5 同式(非求和)。
+写 `fp16 = None` 仅为绕开官方 train 脚本把 hook 类型**硬编码**成 `Fp16OptimizerHook` 的那条
+分支(`fp16_cfg is not None`);fp16 包装仍由 `Fp16OptimizerHook.before_run` 完成。两处已知
+偏差:①fp16 后端 torch GradScaler → mmcv LossScaler(同为 static 512 + 溢出跳过);②BN 统计
+按微批而非有效批(每通道空间样本 2.4 万+,可忽略)。**自证**:1 epoch 后 checkpoint 里 AdamW
+的 step 必须恰为 200/5 = **40**(实测 ✓)。口径 = 512 ep × 200 帧 ÷ 5 = **20,480 步**
+(= 基线末轮 10,240 步 × 2 轮)。
+
+*吞吐与预算(bs1,原生 1242×375,实测)*:
+
+| 线 | s/iter | 512 ep(200 帧) |
+|---|---|---|
+| MapTR v1(3 类) | 0.30–0.36 | ≈ 9.4 h |
+| MapQR(3 类,SGQ + GKT-h) | 1.0–1.2 | ≈ 31 h |
+| MapTRv2(4 类) | 1.55–2.13 | ≈ 50 h |
+
+合计 ≈ 90 h(3.8 天),单卡串行;**链式顺序 = 便宜的先跑**(v1 → mapqr → maptrv2)。
+
+*链式阻断缺陷(两个,都属"开了在线评测才会炸"型,已在挂链前修掉)*:
+
+1. **v1 桥的同位姿帧**(`maptr_official/bridge.py`):留出集末尾 16 帧采集车停在同一位姿
+   → 位姿键完全相同,原守卫一见重复即抛 `ValueError` ⇒ **开验证连数据集都构造不出来**。
+   准则改为"位姿查表无歧义的充要条件是**查出来的 GT 一样**":同键帧只要 `annotation` 与
+   `map_location` 全等就放行(实测这 16 帧 GT 1e-9 全等;同位姿帧图像不同,但 GT 只由位姿
+   决定),有一帧不同才报错
+2. **RGBA 图读成 4 通道**(三份 config 的 `LoadMultiViewImageFromFiles`):本 env 的 mmdet3d
+   其实是 **MapQR 自带的 vendored 副本**(`hdMapGitHub/MapQR/mmdetection3d`),其 loader 默认
+   `color_type='unchanged'`(IMREAD_UNCHANGED),而我们的导出图是 **RGBA PNG** → 读成 4 通道;
+   `NormalizeMultiviewImage` 的 mean 只有 3 通道 → `cv2.subtract` 尺寸不匹配。**train 侥幸能跑**
+   只因 `PhotoMetricDistortion` 在前(其 `bgr2hsv` 静默吞掉 alpha);`test_pipeline` 没有它 →
+   **在线评测一开就炸**(若不修,epoch 64 才发现,白等 63 轮)。修法 = 三份 config 显式钉
+   `color_type="color"`:官方 nuScenes 图是 3 通道 JPEG → **3 通道才是官方契约**,且与自实现
+   基线(`cv2.imread` 默认口径)**逐像素同源**,alpha 本无信息
+
+*链路脚本*:`bin/run_official.sh` 补齐三件 —— `--resume`(有 `latest.pth` 就接着训)、
+`--bg`(`setsid nohup` 自重入,SSH 断线不死)、`chain`(三线串行,**失败即停**;`<impl>.done`
+标记让重跑自动跳过已完成的线;每线训完自动补 best/final 两次官方评测 → 链跑完时所有记账
+数字都已在盘上)。
+
+*在线评测路径已端到端验证(2026-09-14)*:三条线各跑 1 epoch + `evaluation.interval=1` 探针,
+全部 `EXIT=0` —— val 走满 100 帧、`NuscMap_chamfer/mAP` 键存在、`best_NuscMap_chamfer/
+mAP_epoch_1.pth` 落盘、官方评测 json 落 `<work_dir>/<时间戳>/pts_bbox/nuscmap_results.json`
+(v1 0.0048 / v2 0.0019 / mapqr 0.0003,均为 1 epoch 随机权重,量级合理);显存峰值
+v1 5077 / v2 8149 / mapqr 7743 MiB(bs1)。
+
+*独立评测(`tools/test.py`)另有四个坑,已全部封进 `bin/run_official.sh test`*:
+
+1. **单卡分支被官方写死 `assert False`**(三仓库 test.py:225)→ 只能走分布式路径
+2. **分布式初始化强制 `spawn`**(`mmcv/runner/dist_utils.py:16`:`init_dist` 在 start method
+   未设时 `mp.set_start_method('spawn')`)→ DataLoader 要 pickle 整个 dataset,而官方 dataset
+   挂着 `eval_detection_configs`(nuScenes `DetectionConfig`,内含 `dict_keys`)→
+   `TypeError: cannot pickle 'dict_keys' object`。**训练期 EvalHook 走 fork,从不暴露**。
+   绕法 = `--cfg-options data.workers_per_gpu=0`(不开 worker 进程就不 pickle dataset;
+   100 帧顺序读图代价可忽略)+ `RANK/WORLD_SIZE/MASTER_*` 环境变量自举单进程分布式
+3. **`jsonfile_prefix='test/...'` 与 `args.tmpdir` 都是相对 cwd** → 从仓库根跑会把 `test/`、
+   `.dist_test/` 写进 **pristine 的官方仓库** → cwd 刻意设 work_dir(插件导入靠 PYTHONPATH,
+   与 cwd 无关)
+4. 官方 `tools/dist_test.sh` 尾巴**硬编码 `--eval bbox`**(argparse 同名参数取最后一次)→
+   会把我们要的 chamfer 覆盖掉,故不经它启动
+
+*两条路数字对账*:同一 ckpt(v1 探针的 best)分别走训练期 EvalHook 与独立 `test`,
+mAP **逐位一致**(`0.004777971396429671`)→ 独立评测可信,阶段 C 可用它复核任一 ckpt。
+
+*预算裁剪(2026-09-14,用户质疑"90 小时会不会太长"后重算)*:原定每条线 512 ep;实测吞吐
+0.303 / 1.07 / 1.44 s/iter ⇒ 三线合计 ≈ **81 h**(比先前估的 90 h 略短 —— 先前按 v2 最坏
+2.13 s/iter 估)。裁到 **256 ep**:v1 ≈ 4.3 h + mapqr ≈ 15.2 h + maptrv2 ≈ 20.4 h ≈
+**40 h(−50%)**,且**对照强度不降** —— 可比的基线记录本来就是**两轮各 256 ep**(见上文
+"账本更正":第一轮 → `maptr_ep256.pt`,留出集 @0.2 **0.0510** / @0.3 0.0952 / @0.4 0.1350
+三档齐全;第二轮是 **lr 2e-5** 每 128 ep 减半的**低 lr 续训** → @0.2 0.0674)。官方线
+256 ep 与基线**第一轮**在**样本数(51,200)与优化步数(10,240)上双双相等**;而拿 512 ep
+对齐恰是拿"低 lr 续训"当参照,平白多一个 schedule 形状(lr 2e-5 vs base 6e-4)的混淆项。
+**且基线自身的结论就是"ep256→ep512 只在保守操作点 +32%、高阈值持平略降 → 下轮收益靠
+扩数据而非继续长训"**(§5.11f)⇒ 256 ep 已足以给三条官方线定序,512 ep 的边际信息不值
+40 h 的 GPU 独占(这 40 h 正是 CARLA 采数据要用的)。**延长路径留着**:每 64 ep 一次的
+在线评测会显示曲线,若 256 ep 处仍在陡升,再对**三条线同时**补第二轮 +256(与基线第二轮
+同型:低 lr 续训、从 `latest.pth` 续,不重跑),届时才付第二段。
+
+*启动/中断记录(2026-09-14)*:①**00:29:55** 首挂 `MAPTR_EPOCHS=512` 的链,跑 13 min
+(9 epoch、**未落任何 checkpoint**)后因上述裁剪手动停,该次 text log 已删(零产物损失);
+②**停训练必须连 DataLoader worker 一起收** —— `workers_per_gpu=4` 的 worker 是 fork 出来的,
+而 fork 发生在 CUDA 初始化**之后** ⇒ 它们**继承 CUDA 上下文**,父进程被杀后变成 PPID=1 的
+孤儿**继续占显存**(nvidia-smi 仍把 5068 MiB 挂在已死的父 PID 名下,`/proc` 里早就没有它了)
+→ 显式收掉那 4 个孤儿后才回到 **0 MiB**。**判据:`nvidia-smi` 归零才算停干净,不是"父进程
+没了"**;③**01:34:30** 以 256 ep 重挂:`MAPTR_EPOCHS=256 MAPTR_IMG_SCALE=1.0
+bash bin/run_official.sh chain --bg`(三份 config 的默认 `MAPTR_EPOCHS` 同步改成 256,
+免得日后手跑时静默偏离账本)。顺序仍 **v1 → mapqr → maptrv2**(便宜的先跑),每 64 ep 一次
+在线评测 + 存盘,每线训完自动补 best/final 两次独立评测,**任一失败即停**并留 `.done`
+标记(重跑 chain 自动跳过已完成的线,当前线靠 `latest.pth` 续训)。进度总览
+`outputs/maptr_official/logs/chain_chain_boot_<TS>.log`,各线明细 `<impl>_{train,test}_*_<TS>.log`。
+
+**纪律**:`hdMapGitHub/` 保持 pristine(在 .gitignore 内,改了什么 git 也看不见)——转换器/
+配置/脚本一律写项目内受版本控制的位置,配置用绝对路径写 `_base_` / `plugin_dir`,不往仓库塞文件;
+官方仓库不改逻辑。产出(权重/日志/评测 json/可视化)一律 `outputs/maptr_official/`。
+
+**终止记录(2026-09-14 02:10,用户裁决)**:
+
+- **决策**:用户裁定 41 h 仍过长 → **整条官方复线中止**。既不做 256 ep、也不做第二轮延长;
+  停顿点 = 重挂后跑到 **epoch 29 / 256**(02:05:59),`checkpoint_config.interval=64`
+  ⇒ **未落任何 checkpoint**,不存在"半成品权重"需要处置
+- **已删**(共回收 **15 GB**,磁盘 `30G → 45G` 可用):
+  ① 官方环境 `/root/autodl-tmp/envs/maptr_official`(5.8 G);
+  ② 官方栈产物 `outputs/maptr_official/` 整目录(11 G:探针 work_dir 的 432 MB×N 权重
+  ≈7.5 G、`wheels/` 2.0 G、`pip-cache/` 0.44 G、`ckpts/` 98 M、A′ 复算产物 332 M、
+  infos 数据集 20 M、日志 1.1 M)。**数据目录是零风险删除**:其 20 M 全是 infos/map 桩,
+  图像按路径引用 `outputs/surround_train`(符号链接 0 个、拷贝 0 份)
+- **未删(刻意保留)**:① 自实现线全部资产(`outputs/surround_train` 1800 图、
+  `surround_pred`、`maptr_ep256.pt`、`maptr_ep512.pt` + `.opt` 侧车)——本次删除**不触碰**
+  自实现任何产物;② `hdMapGitHub/` 三个官方仓库(583 M,§5.11 起的既有外部资产);
+  ③ 项目源码层:`maptr_official/`(configs + bridge)、`bin/run_official.sh`、
+  `bin/setup_maptr_official.sh`、`bin/prepare_official_dataset.py`、
+  `bin/eval_official_metric.py`;**待用户裁决**(见下)
+- **残留(未处理,刻意不动系统层)**:搭建时 `apt-get install gcc-9 g++-9`(与保留项
+  CUDA 11.8 配套,重装一条命令即可:`apt-get install -y gcc-9 g++-9`);conda 包缓存
+  `/root/miniconda3/pkgs` 2.2 G 为**各 env 共享**,未清(如需回收用 `conda clean`)。
+  `/etc/pip.conf`(8 月 4 日,先于本项目)、base env 的 torch 2.13/mmdet 3.2/nuscenes-devkit
+  **均非本次所装**(搭建脚本只写 `ENV=...` 与 env 内 site-packages),不动
+- **知识不随产物消失**:本次两个真 bug(RGBA→4 通道炸在线评测、v1 同位姿帧)与其修法都已在
+  项目源码与本文档内;A′ 口径复算结论(0.0586 raw / **0.0699** 100 点、差异来自 GT 重采样
+  点数而非 recall 项)在 §5.12 上表;重建路径 = `bin/setup_maptr_official.sh all` + 本节各条
+- **对结论的影响**:表 C 的"官方实现 vs 自实现"三方对照**不存在**,A′ 的**口径**结论
+  (两套 mAP 口径的关系)仍成立且已固化。**自实现线不受影响**——§5.11 的 ep512 权重、
+  逐帧契约 `mapvec_pred/1`、实时 overlay 全部照旧可用
+
+**终止后探针:实现对齐验证(2026-09-14 ✅,用户裁决重启,非整条复线)**:
+
+终止后重开一条**轻量 v1 探针**,目的 = 验证我们的数据/转换/评测链与官方实现**对齐**,
+不重启完整对照。协议仍钉 §5.12 四钉子(config `color_type="color"`、bridge 同位姿放行、
+独立评测四坑、产物落 `outputs/maptr_official/`)。口径:**128 ep / bs2×accum2(有效 bs4)/
+online eval / seed 0 / IMG_SCALE 1.0**。起点 2026-09-14 16:37,18:41 训完(≈2 h)。
+
+在线评测曲线(官方 `NuscMap_chamfer/mAP`,3 类 = divider/ped_crossing/boundary):
+
+| epoch | divider_AP | ped_crossing_AP | boundary_AP | mAP |
+|---|---|---|---|---|
+| 32 | 0.0701 | 0.0010 | 0.0397 | 0.0370 |
+| 64 | 0.0537 | 0.0581 | 0.0694 | 0.0604 |
+| 96 | 0.0594 | 0.0537 | 0.0854 | **0.0662**(best) |
+| 128 | 0.0574 | 0.0591 | 0.0785 | 0.0650(final) |
+
+- **判定(±2× 锚点)**:A′ 锚点 = 官方 eval_map 3 类 100 点 **0.0557**(§5.12 A′ 表)。best
+  0.0662 / final 0.0650 均在锚点 ±2× 范围内(比值 1.19 / 1.17)→ **实现对齐成立**。
+  绝对值低 = 200 帧数据规模限制(§5.11e 同款信号),不是链路缺陷
+- **收敛形状**:96 见顶、128 小幅回落(0.0662 → 0.0650,~0.065 处饱和);尾部 lr 已衰减到
+  ~7e-7(128 ep),不涨反微落 —— 与 §5.11 基线"ep256→ep512 只 +32% 且高阈值持平"同一信号:
+  **下轮收益靠扩数据,不靠长训**
+- **账本闭合(AdamW step 从 ckpt 直读)**:epoch 64 = 3200 / 96 = 4800 / 128 = 6400,恰为
+  50 步/epoch × epoch(200 帧 ÷ 有效 bs4 = 50 iter/ep)→ bs2×accum2 协议与记账一致;
+  与基线 `maptr_ep512.pt.opt`(step=10,242)"step 才是可对账量"互证(§5.12 账本更正)
+- **产物**:权重 `outputs/maptr_official/maptr_v1/epoch_{64,96,128}.pth`(432 M 各一)+
+  `latest.pth → epoch_128.pth`;训练日志 `outputs/maptr_official/logs/maptr_v1_train_20260914_163751.log`
+
+### 5.13 CARLA 雷达 → 真实 ars408 口径(L3 物理合理性,2026-09-14 ✅)
+
+**目标**:5 雷达(sensor.other.radar)接入 nuScenes 输出的点分布要像真实大陆 ars408
+(水平 FOV 77° / 垂直 14.2° / range 250m / ~3300pps),L0(格式)与 L1(devkit 直读)
+已过,本小节补 L3。
+
+**核心发现:CARLA 0.9.16 两 FOV 属性交叉使用**(prebuilt 编译行为,无源码可改)。
+12 组属性扫描自洽,一行映射:
+
+```
+azi 半角(水平) = vertical_fov / 2
+alt 半角(垂直) = horizontal_fov / 2
+```
+
+设 `hf=77, vf=14.2` → 实测 azi±7° / alt±38°(与 ars408 完全反了);对调设
+`hf=14.2, vf=77` → 实测 azi±38.1° / alt±7.0° = 真实 ars408 ✓。
+
+**12 组属性扫描证据**(实测 `azi/alt` 半角,`hf`/`vf` 为蓝图属性值,度):
+
+| hf | vf | azi 半角 | alt 半角 | 解读 |
+|---|---|---|---|---|
+| 77 | 14.2 | ±7.0 | ±38.4 | 当前参数,**交叉使用,完全反了** |
+| 77 | 77 | ±38.1 | ±38.4 | 双维同值时"交叉"不可见(hf 生效) |
+| 60 | 60 | ±29.6 | ±29.9 | 同上,线性缩放 |
+| 90 | 90 | ±44.5 | ±44.9 | 同上 |
+| 120 | 120 | ±59.5 | ±59.9 | 同上,线性可达 ±60° 以上 |
+| 100 | 100 | ±49.5 | ±49.9 | 同上 |
+| 100 | 14.2 | ±7.0 | ±49.9 | hf 越大 alt 越大,vf 锁死 azi |
+| 77 | 40 | ±19.7 | ±38.4 | vf 越大 azi 越大(hf 锁定 alt) |
+| 40 | 14.2 | ±7.0 | ±19.9 | hf 线性控制 alt |
+| 77 | 14 | ±6.9 | ±38.4 | vf 控制 azi 线性成立 |
+| 80 | 14.2 | ±7.0 | ±39.9 | hf 线性控制 alt 成立 |
+| 70 | 14.2 | ±7.0 | ±34.9 | 同上 |
+| **14.2** | **77** | **±38.1** | **±7.0** | **对调后 = 真实 ars408 ✓** |
+
+全部 12 组 + 换向验证组(13 组)都满足一条映射 `azi=vf/2、alt=hf/2`,无一例外;
+`hf/hf` 对角组合线性放大到 ±60° 也成立 → 不是"hf 不生效",是 **hf 与 vf 交叉**。
+
+**解法(零源码、零后处理)**:`bin/collect_nus.py` RADAR_ATTRS 两值对调 +
+垂直锥裁剪(见下)。prebuilt 无法重编译 `ARadar::SendLineTraces`,故不改源码;
+Explore 代理确认本机 prebuilt-only。
+
+**垂直锥裁剪**:换向后 CARLA 布点 alt ∈ ±7.1°(物理对),但实测偶发跑出锥外的
+干净点(不触发 |alt|>90 野值剥离判据)→ 写 pcd 前统一按 ars408 锥角裁剪。
+判据 = 锥角而非绝对 z:**18 字段无 alt 列,用 |z| ≤ sin(7.1°)·depth**(等价
+|sin(alt)| ≤ sin(7.1°));反体素化成绝对 z 阈值会在远距放宽(250m 处 ±31m,几乎
+全放行)= 错误。实现 = `autodrivedata/radar.py`:`ARS408_VFOV_HALF_DEG=7.1`、
+`mask_in_ars408_vfov`(别名到 `_impl`)、组合 `mask_radar_points` = devkit 默认
+过滤器(`valid_mask_nus`) ∩ 垂直锥。空点云(全 NaN)两掩码都 False → 空 pcd 正确。
+
+**L3 探针**(`bin/probe_radar_l3.py`,一次性)实测 20 帧 vs ars408 规格:
+
+| 指标 | ars408 | 实测 | 通过 |
+|---|---|---|---|
+| 水平半角(°) | ±38.5 | ±38.4(极值) | ✓ |
+| 垂直半角(°) | ±7.1 | ±7.1(极值) | ✓ |
+| range(m) | 250 | ≤229 | ✓ |
+| 帧点数 | 3300pps/10Hz≈330 | 两档 330/265 | ✓ |
+| 深度 p5/p50/p95(m) | - | 1/6/74 | ✓ |
+| 地面/天空占比 | ≈0 | 0.00% | ✓ |
+| 前方 12m 车框内点 | >0 | 153 | ✓ |
+
+探针口径修正三处(记录以避复踩):① 锥角用**极值**而非 99.5 分位——稀疏布点
+令分位系统性偏低,曾把 ±38.1° 测成 ±36.5° 误报;② 帧点数判据放宽到 200–340
+(CARLA 每 tick 射线预算在两档 330/265 间抖动,与场景负载相关),只拦异常稀疏/
+超量;③ 18 字段锥角判据与 raw alt 判据逐点一致率 100% = 反体素化没引入偏差。
+
+**冒烟复跑**(`bin/smoke_radar_collect.sh outputs/nus_mini_l3`):四判据全过。
+裁剪后各通道单帧 249–330 点、方向自证 1.00/1.00/1.00、GT 关联 186 注解中 2 框有
+radar 命中(近前车框,框内点更纯)。回归 `python -m pytest tests/ -q` = 330 passed /
+3 skipped(radar 单测 13 项含锥内/锥外/边界/远距不放宽/空云/组合掩码)。
+
+**遗留**:帧 0 偶发相位空 tick 写空 pcd(同步 sensor_tick=0.1 与 tick 同周期,
+drain 已丢弃,`collect_nus.py` C22 既有行为,不影响 devkit 消费)。水平方向未做
+±38.5° 裁剪(实测干净数据从不越界,0 个锥外点)。
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 

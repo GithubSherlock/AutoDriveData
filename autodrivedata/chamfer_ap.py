@@ -139,9 +139,16 @@ def chamfer_ap_per_class(
     thresholds: tuple[float, ...] = CHAMFER_THRESHOLDS,
     cost_fn: Callable[[list[np.ndarray], list[np.ndarray]], np.ndarray] = chamfer_cost_matrix,
 ) -> tuple[list[float], float]:
-    """逐类 AP + 类均值。输入与 head.match_assign 的 gt_by_class 同构(类序一致)。"""
+    """逐类 AP + 类均值。输入与 head.match_assign 的 gt_by_class 同构(类序一致)。
+
+    **不要用 `zip(..., strict=True)`**:本模块被跨 env 工具引用(`bin/eval_official_metric.py`
+    要在官方栈的 py3.8 里算这条对照),而 `strict=` 是 py3.10 才有的运行期参数
+    → py3.8 直接 `TypeError: zip() takes no keyword arguments`。长度在此显式自查。
+    """
+    if len(preds_by_class) != len(gts_by_class):
+        raise ValueError(f"类数不一致:preds {len(preds_by_class)} vs gts {len(gts_by_class)}")
     aps = [
         chamfer_ap(p, g, thresholds, cost_fn=cost_fn)
-        for p, g in zip(preds_by_class, gts_by_class, strict=True)
+        for p, g in zip(preds_by_class, gts_by_class)  # noqa: B905 —— strict= 是 py3.10+(见 docstring)
     ]
     return aps, float(np.mean(aps))
