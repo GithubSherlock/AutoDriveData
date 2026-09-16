@@ -7,8 +7,10 @@ MapTR 端到端训练的输入侧:6 视角图像 + sensor2ego 外参 + 相机内
 采集纪律与 collect_drive 相同(同步模式/预热/清场/场景天气档);**不改动
 A/B 采集器**(P1 复现性红线)。NPC 布置复用 collect_drive 的既有函数。
 
-nuScenes 相机布局(全部挂 SENSOR_OFFSET,仅 yaw 不同,pitch=0):
-  CAM_FRONT yaw=0 / FRONT_RIGHT -55 / FRONT_LEFT +55 / BACK 180 / BACK_LEFT 235 / BACK_RIGHT 125
+nuScenes 相机布局(角度 = 官方 calibrated_sensor 光轴方位角;挂点 = 官方
+translation;pitch/roll 恒 0):
+  CAM_FRONT yaw≈0 / FRONT_RIGHT -55 / FRONT_LEFT +55 / BACK 180
+  / BACK_LEFT 108.6 / BACK_RIGHT -110.8
 
 落盘:
   outputs/surround_<scene>/cam_front/000000.png ...(6 视角)
@@ -28,20 +30,23 @@ import time
 from typing import cast
 
 import carla
-from carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, spawn_ego, sync_mode
+from carla_common import CAM_ATTRS, SENSOR_MOUNTS, loc, spawn_ego, sync_mode
 from collect_drive import spawn_route_walkers, spawn_traffic
 
 from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
 
-# nuScenes 6 相机布局:名 → 相对 ego 的 yaw(度);pitch/roll 恒 0,挂点共用 SENSOR_OFFSET
+# nuScenes 6 相机布局:名 → 相对 ego 的 yaw(度);pitch/roll 恒 0。
+# **角度 = 官方 calibrated_sensor 光轴方位角**(每相机独立,见 export/nuscenes.py
+# NUS_CAMERA_CALIBS)。CARLA yaw 左转正;官方 quat 光轴 = R@(0,0,1),与 CAM_FRONT
+# yaw 0 对齐。挂点用官方 translation(经 carla_common.SENSOR_MOUNTS,_x/y/z)。
 SURROUND_CAMS = {
     "CAM_FRONT": 0.0,
     "CAM_FRONT_RIGHT": -55.0,
     "CAM_FRONT_LEFT": 55.0,
     "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 235.0,
-    "CAM_BACK_RIGHT": 125.0,
+    "CAM_BACK_LEFT": 108.6,
+    "CAM_BACK_RIGHT": -110.8,
 }
 
 
@@ -79,7 +84,10 @@ def main() -> None:
     ego = spawn_ego(world)
     ego.set_autopilot(True, tm.get_port())
     tm.vehicle_percentage_speed_difference(ego, 30.0)
-    print("[ego] autopilot on (TM 8000, 70% speed)")
+    # 采集多样性:红绿灯等待在环视数据里是重复帧(250+ 帧原地,占比拉满),
+    # 训练多样性被稀释——采集侧按百分比忽略红灯(不影响 TM 其他车与车道保持)
+    tm.ignore_lights_percentage(ego, 100.0)
+    print("[ego] autopilot on (TM 8000, 70% speed, 忽略红绿灯)")
 
     ego_t = ego.get_transform()
     spawn_traffic(world, tm, args.npc_vehicles, args.npc_walkers, args.seed)
@@ -93,12 +101,13 @@ def main() -> None:
     cams: dict[str, carla.Sensor] = {}
     qs: dict[str, queue.Queue] = {}
     for name, yaw in SURROUND_CAMS.items():
-        tf = carla.Transform(SENSOR_OFFSET.location, carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0))
+        x, y, z = SENSOR_MOUNTS[name]
+        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0))
         s = cast(carla.Sensor, world.spawn_actor(cam_bp, tf, attach_to=ego))
         q: queue.Queue = queue.Queue()
         s.listen(q.put)
         cams[name], qs[name] = s, q
-    print(f"[cams] {len(cams)} 环视相机挂载(共用挂点 {SENSOR_OFFSET.location})")
+    print(f"[cams] {len(cams)} 环视相机挂载(官方独立挂点)")
 
     for _ in range(5):  # 预热
         world.tick()
@@ -115,9 +124,9 @@ def main() -> None:
     calib = {
         name: {
             "sensor2ego": [
-                SENSOR_OFFSET.location.x,
-                SENSOR_OFFSET.location.y,
-                SENSOR_OFFSET.location.z,
+                SENSOR_MOUNTS[name][0],
+                SENSOR_MOUNTS[name][1],
+                SENSOR_MOUNTS[name][2],
                 yaw,
                 0.0,
                 0.0,

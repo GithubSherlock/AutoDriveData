@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 # 显存预算安全系数:留 15% 余量给缓存碎片与其他进程(与 AutoLabel 同口径)
-SAFETY_FACTOR = 0.85
+SAFETY_FACTOR = 0.95 # 原 0.85
 
 
 def get_gpu_free_memory_gb() -> float | None:
