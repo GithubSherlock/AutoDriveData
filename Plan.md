@@ -937,6 +937,48 @@ boundary **0.1888**(4615/2912)/ centerline **0.2740**(4989/5698)。
 
 **环境变更**:GPU 已从 RTX 3080 Ti 12GB 换到 **RTX 4080 SUPER 32GB**(无卡模式换卡机)。
 
+### 5.11j 1000 帧跨图扩数据轮(2026-09-17 ✅,多图验证)
+
+**链路**:布局微对照(官方 108.6/-110.8 vs 旧 235/125,10 帧同镜头 GT 投影段数:
+后左 45→29 / 后右 19→57 / 前三无差 → 后向覆盖从"后左偏重"改"后右为主",两布局
+360° 无盲区)→ 重采官方布局 400 帧(`surround_p3`)→ merge 旧 0-199 + 新 200-599
+(`bin/merge_train_infos.py`:帧号平移只动 meta,data_path 不随帧号重写)→ 图像集中
+`maptr_600/images`(600×6 帧)→ 续训。
+
+**Town13 跨图接入**(§5.14 Phase 2 第一枪):
+- `collect_surround.py` 加 `--map Town13`(运行时 `load_world` 切图,零副作用)——多图采集基础设施
+- Town13 采集 400 帧(@官方布局,0.8 fps)→ `assemble_maptr`(Town13 xodr → infos)
+- **切图采集坑**:服务器已在 Target 图时 `load_world` 重复切换 → 60s 超时;改用"缺省
+  `--map` = 用当前图"避免。Town13 无 NPC 车流(§5.7d TM 降级纪律)
+- **Town13 xodr lane 边界坑**:lane 集合在相邻 lane_section 间变化(road 3279 lane-4
+  在 s=2.24 处消失)→ `_sample_boundary` 加 ValueError 截断(标线在 lane 消失处折断),
+  不抛异常(§5.11b 同类坑,Town13 触发)
+- **crop_to_ego 粗筛优化**:全图 3.3 万矢量 × 400 帧暴力裁剪 23min → 加包围盒粗筛
+  `_rough_in_window` → **90s**(窗口外实例直接滤掉,量级 ~15×)
+- 组装 1000 帧 infos(600 Town10 + 400 Town13 → 帧号 0-999,data_path 全指
+  `maptr_1000/images`,6000 图集中,逐张存在性断言)
+
+**训练**:1000 帧 × 256 epochs,从 `maptr_600.pt` 续训,lr 2e-5/128ep 减半,warmup 3,
+**batch 12**(4080 SUPER 自适应,空闲 24.7GiB×0.95)——600 帧时仅 5。epoch 256 完成
+**loss 3.02**(600 帧末轮 3.57 → 再降一档)。权重 `outputs/maptr_1000.pt`。
+
+**评估(score_thr 0.2,GPU 后端)**:
+
+| 集合 | ep512(200帧) | 600帧(Town10) | **1000帧(Town10+Town13)** | 变化 |
+|---|---|---|---|---|
+| 留出集(帧 200-299) | 0.0674 | 0.1607 | **0.1988** | **+24%** ✅ |
+
+留出集四类:divider **0.1941**(4203/2474)/ ped_crossing **0.0591**(541/175)/
+boundary **0.2169**(4650/2912)/ centerline **0.3252**(4996/5698)。
+
+**结论**:跨图扩数据(600→1000)继续收窄泛化(留出集 +24%),**ped_crossing 单类
++146%(0.024→0.059)**——Town13 补进稀疏类样本提升最显著。轨迹 0.0674→0.1607→
+**0.1988** = 数据量 + 多样性价值三连验证。§5.14 Phase 2"多图扩数据"判据成立,
+Town13/15 可采图池证实可用。
+
+**边界**:留出集仍是单图(Town10 帧 200-299),跨图泛化还没在"Town13 上出预测"验证
+——那是验收口径的分支,后续可加 Town13 留出集评估补全。
+
 ### 5.12 官方 MapTR/MapQR 栈对照(2026-09-13 定案 → **2026-09-14 终止**,见文末"终止记录")
 
 **缘起**:§5.11d 把老栈降级 optional,条件是"若后续需要官方权重对标再启动"。2026-09-13
@@ -1371,6 +1413,46 @@ drain 已丢弃,`collect_nus.py` C22 既有行为,不影响 devkit 消费)。水
 
 **一句话**:值得正式立项的只有一件——把 §5.14 Phase 2 提前成"难例挖掘原型"
 (探测引导为主、embedding 召回为辅、规则学习当边侧判定器);其余按上面三档各安其位。
+
+### 5.15 轨迹预测对标:HiVT 复现(2026-09-16 ✅,补"预测"能力面)
+
+**缘起**:§5.14a 缺口表里"预测+规划"为零——MapTR 是感知(地图矢量),AutoLabel 是
+检测(Box3D),缺**多智能体轨迹预测**这一能力面。选 HiVT(arxiv 2202.05882,CVPR2022)
+作为对标基线:层次化 Vector Transformer,argoverse-api 数据表示(agent-centric 局部
+坐标 / rotation 归一化 / HD map 车道向量化)与本项目 CARLA 环视链**同构可移植**。
+
+**目标**:官方代码 + 官方预训练权重 + 官方验证集,零改动跑通 Argoverse 1.1 验证集
+K=6 的 minADE / minFDE / MR,产出可审计日志。
+
+**实测结果**(`/logs/eval_hivt64.log` 行 10-12 / `eval_hivt128.log` 行 7-9):
+
+| 模型 | minADE | minFDE | MR | README 参考 | 偏差 |
+|---|---|---|---|---|---|
+| HiVT-64 | 0.6869 | 1.0301 | 0.1026 | 0.69/1.03/0.10 | ~0 |
+| HiVT-128 | 0.6611 | 0.9692 | 0.0920 | 0.66/0.97/0.09 | ~0 |
+
+**与论文报告在毫厘之间 → 复现成功**,环境/命令/依赖全部沉淀,可复跑。
+
+**环境沉淀**(独立 conda env `/root/autodl-tmp/envs/hivt`,py3.8,CPU 推理不占 GPU):
+torch1.8.0 / pl1.5.2 / pyg1.7.2(+scatter/sparse/cluster wheel)/ argoverse-api 1.1.0 /
+omegaconf 2.0.6(手动 wheel)。`/logs/hivt_environment.yml` + `requirements.txt` 可复现。
+
+**关键踩坑(全部已解,知识留存)**:
+1. **sm_89 架构**:4080 SUPER(Ada)跑 torch1.8.0+cu111 会撞 "no kernel image" → 评测
+   走 **CPU**(`CUDA_VISIBLE_DEVICES=""` + `--gpus 0`),HiVT 模型仅 66 万/253 万参数,
+   CPU 推理可接受(预处理 35min + 推理 12min)
+2. **argoverse-api 老依赖 2026 不可装**:`omegaconf==2.0.6` 被 PyPI yanked、`numpy==1.19`
+   等钉死版本已下架 → 手动下载 wheel 解包到 site-packages + `--no-deps` 逐项装其余
+3. **S3 数据下载两坑**:官方 bucket `argoai-argoverse` 404(正版在 `argoverse/datasets/av1.1/tars/`);
+   aria2 多线程拼出损坏 gzip(S3 Range 分段错位)→ 用户 scp 上传 660MB 完美解决
+4. **pl1.5.2 连带缺一堆**:fsspec/deprecate/utils(手写 void 桩)/tensorboard/protobuf/jinja2
+   /joblib/networkx...逐个 --no-deps 补
+
+**对项目的意义**:① 简历口径 = "复现官方权重在 Argoverse 验证集评测,minADE/minFDE/MR
+与论文一致"而非"我训练的模型";② 获得一个**已验证的预测评测基座**——下一步可把
+CARLA 采集的 ego/NPC 轨迹接进同类预测实验(agent-centric 局部坐标、rotation 归一化、
+HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),补齐 §5.14 缺口表的
+"预测"能力面;③ minADE/minFDE/MR/brier-minFDE、K=6 多模态口径的度量语义可面试讲清。
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 

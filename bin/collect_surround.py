@@ -19,6 +19,11 @@ translation;pitch/roll 恒 0):
 
 用法:
   python bin/collect_surround.py --frames 100 [--scene day_clear] [--npc-vehicles 15]
+  python bin/collect_surround.py --frames 400 --map Town13   # 多图扩数据:运行时切图
+
+多图切图(§5.14 Phase 2):`--map` 用 `client.load_world` 运行时切换(默认不动当前图,
+零副作用;每次切换 ~2 分钟加载)。**已采集数据的图标记**:default_map 写进 calib.json
+顶层 `"map"` 键,供 assemble/merge 溯源(旧产物无此键 = Town10HD_Opt)。
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
+    ap.add_argument("--map", default=None, help="目标地图(如 Town13/Town15;None = 当前服务器默认图)。运行时 load_world 切图,供多图扩数据")
     args = ap.parse_args()
 
     scene = SCENES[args.scene] if args.scene else None
@@ -71,8 +77,13 @@ def main() -> None:
         args.out = f"outputs/surround_{scene.name}" if scene else "outputs/surround_drive"
 
     client = carla.Client(args.host, args.port)
-    client.set_timeout(30.0)
+    client.set_timeout(60.0)
+    if args.map is not None:
+        print(f"[map] load_world {args.map}(运行时切图,~2min)...")
+        client.load_world(args.map)
+        client.set_timeout(60.0)
     world = client.get_world()
+    default_map = args.map or world.get_map().name
     sync_mode(world)
 
     if scene is not None:
@@ -139,6 +150,7 @@ def main() -> None:
     out = project_path(args.out)
     for name in SURROUND_CAMS:
         (out / name.lower()).mkdir(parents=True, exist_ok=True)
+    calib["map"] = default_map  # 数据溯源:该采集来自哪张图(旧产物无此键 = Town10HD_Opt)
     with open(out / "calib.json", "w", encoding="utf-8") as f:
         json.dump(calib, f, indent=1)
 

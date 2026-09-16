@@ -68,7 +68,10 @@ def main() -> None:
                         "sensor2ego": c["sensor2ego"],
                         "intrinsic": c["intrinsic"],
                     }
+                    # 过滤 meta 键(collect_surround 在 calib 顶层写 "map" 溯源;
+                    # 相机键统一 CAM_* 前缀,见 SURROUND_CAMS)
                     for name, c in calib.items()
+                    if name.startswith("CAM_")
                 },
                 "annotation": to_maptr_annotation(local),
             }
