@@ -62,3 +62,7 @@ Thumbs.db
 # ===== 其他 =====
 gitpush.sh
 hdMapGitHub/forecasting_val_v1.1.tar.gz
+hdMapGitHub/HiVT/
+hdMapGitHub/MapQR/
+hdMapGitHub/MapTR/
+hdMapGitHub/MapTR_maptrv2/
