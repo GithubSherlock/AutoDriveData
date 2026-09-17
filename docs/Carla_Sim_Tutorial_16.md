@@ -48,8 +48,6 @@ python example_train.py --sh_degree 3 -s carla_colmap_data -i images -m ./output
 
 参数说明：
 
-表格
-
 | 参数 | 含义 |
 | --- | --- |
 | --sh_degree 3 | 球谐系数阶数（3 阶，颜色随视角变化更丰富） |
@@ -90,12 +88,15 @@ python example_train.py --sh_degree 3 -s carla_colmap_data -i images -m ./output
 整体效果还可以，但有几个明显问题，也是下一步改进方向：
 
 有些角度效果不好
+
 — 说明采集视角还不够充分
 
 相机高度太低
+
 — 视角偏平，看到的场景信息有限
 
 只在一个平面上运动
+
 — 纯水平环绕，缺少俯仰视角
 
 改进方向：让相机在采集时上下俯仰移动（不只是水平绕圈），这样能覆盖更多视角，重建质量会明显提升。
