@@ -59,8 +59,6 @@ rosrun rviz rviz -d carla_sim_config.rviz
 
 关键点解释
 
-表格
-
 | 配置 | 说明 |
 | --- | --- |
 | x=2.3 / -2.3 | 前后相机装在车头 / 车尾前方 |
@@ -76,6 +74,7 @@ rosrun rviz rviz -d carla_sim_config.rviz
 跟之前一样的套路，终端启动基础环境，然后：
 
 终端 3: TCP Bridge Server（多相机版）
+
 终端 4: Python 3.10 接收图像
 
 ```bash
@@ -91,7 +90,7 @@ python tcp_bridge_client_py3.py
 
 ## 4 创建标定网格
 
-Carla 里面是没有标准的黑白的棋盘格，所以我这边是创建的网格来代替。
+Carla 里面是没有标准的黑白棋盘格，所以我这边是创建的网格来代替。
 
 ```python
 # 终端5：创建标定棋盘格
