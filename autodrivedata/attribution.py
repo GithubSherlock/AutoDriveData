@@ -173,6 +173,33 @@ def match_frame(
     return matched
 
 
+def match_dets_to_gt(
+    gt_boxes: Sequence[GtBox2D],
+    dets: Sequence[Detection],
+    iou_thr: float = 0.5,
+) -> dict[int, Detection]:
+    """逐帧贪心匹配 → {gt_idx: det}(与 match_frame 同匹配顺序,但返回命中的 det)。
+
+    P-D(教程 08)生产口径用:GT 投影框是匹配锚,命中的那条预测提供 YOLO 检测框。
+    每条检测先按 conf 降序,认领同类、IoU 最高的未占用 GT;IoU < iou_thr 不认领;
+    空 dets 返回 {}。与 match_frame 的唯一区别是返回映射而非 bool 列表。
+    """
+    out: dict[int, Detection] = {}
+    used: set[int] = set()
+    for det in sorted(dets, key=lambda d: -d.conf):
+        best_i, best_v = -1, 0.0
+        for j, g in enumerate(gt_boxes):
+            if j in used or g.cls != det.cls:
+                continue
+            v = box_iou2d(g.box, det.box)
+            if v > best_v:
+                best_i, best_v = j, v
+        if best_i >= 0 and best_v >= iou_thr:
+            out[best_i] = det
+            used.add(best_i)
+    return out
+
+
 def ttc_s(distance_m: float, speed_mps: float) -> float:
     """碰撞时间 = 纵向距离 / 本车速度(s);静止目标 + 定速直行下 TTC 单调于距离。
 

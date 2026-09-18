@@ -22,6 +22,8 @@ env/
 *.pth
 *.onnx
 *.safetensors
+*.ckpt
+lightning_logs/
 auto3dlabel/weights/
 
 # ===== 采集 / 数据产物 =====
@@ -61,4 +63,5 @@ Thumbs.db
 
 # ===== 其他 =====
 gitpush.sh
+clear_cache.sh
 hdMapGitHub/

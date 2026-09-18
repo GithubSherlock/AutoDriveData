@@ -16,7 +16,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover — 仅类型检查,避免几何层反向依赖 calib
+    from autodrivedata.calib import CameraIntrinsics
 
 # CARLA 系(x 前/y 右/z 上)→ KITTI 相机系(x 右/y 下/z 前)基变换。
 # 含手性翻转(det = −1),正交:CARLA_TO_CAMᵀ = CARLA_TO_CAM⁻¹。
@@ -188,3 +193,77 @@ def quat_to_matrix(quat: tuple[float, float, float, float]) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+# ── 单目测距(P-D,教程 08)───────────────────────────────────────────────────
+# 口径:相机系 z 向前(与 calib.world_to_img / KITTI 相机系一致);角度一律弧度。
+
+
+def ground_intersection(
+    world_cam: tuple[tuple[float, float, float], tuple[float, float, float]],
+    intrinsics: CameraIntrinsics,
+    u: float,
+    v: float,
+    ground_z: float,
+) -> tuple[float, float] | None:
+    """相机射线与地平面交点(纯值,零 carla 依赖)。
+
+    world_cam = (loc, rot_rad)(mapviz.cam_pose 口径:位置米 / 姿态弧度)。
+    像素 (u, v) → 归一化相机系方向 (x/z, y/z) → 世界系射线 → 与 z=ground_z
+    平面求交,返回世界系 (x, y)。射线上行 / 相机后 / 与平面平行时返回 None。
+    从 bin/sem_bev.py 上移,单一投影实现与采集/实时流共用。
+    """
+    loc, rot = world_cam
+    fx, fy, cx, cy = intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy
+    # 归一化平面坐标(相机系, z 向前的 pinhole)
+    xn = (u - cx) / fx
+    yn = (v - cy) / fy
+    # 相机系方向 → 世界系(R_camK_world 的转置 = 相机→世界;参考 world_to_cam 逆)
+    R_wc = camera_rotation_world_to_cam(rot)  # 世界→相机 旋转矩阵
+    R_cw = R_wc.T  # 相机→世界
+    dir_cam = np.array([xn, yn, 1.0])
+    dir_world = R_cw @ dir_cam
+    if dir_world[2] >= 0:  # 射线上行(看不到地面)
+        return None
+    t = (ground_z - loc[2]) / dir_world[2]
+    if t <= 0:
+        return None
+    p = np.array(loc) + t * dir_world
+    return float(p[0]), float(p[1])
+
+
+def mono_depth_from_box(
+    box_height_px: float,
+    real_height_m: float,
+    fy: float,
+) -> float:
+    """迭代深度法闭式解:已知真实尺寸 → 单目深度 z = real_height·fy / 框高。
+
+    P-D(教程 08)单目测距;框高法(尺度歧义:单目无法同时知尺寸与深度,假设
+    真实尺寸已知,如车高 H≈1.5m)。fy 为焦距像素(方形像素下即 fx)。
+    """
+    if box_height_px <= 0 or fy <= 0 or real_height_m <= 0:
+        return float("inf")
+    return float(real_height_m * fy / box_height_px)
+
+
+def box_2d_from_3d(
+    params3d: tuple[float, float, float, float, float, float, float],
+    intrinsics: CameraIntrinsics,
+) -> tuple[float, float, float, float] | None:
+    """KITTI 3D 框(底心 x,y,z + h,w,l,ry)→ 相机图像 2D 框 (x1,y1,x2,y2)。
+
+    与采集器 box_to_gt_line 同投影口径:corners_cam_from_bottom 8 角点 → p2
+    投影 → 取**前端**(z>0)角点的 u/v min/max。全在相机后 → None(剔除)。
+    P-D(教程 08)的诚实基线:已知 3D 框与位姿的投影,无 2D 模型误差。
+    """
+    x, y, z, h, w, l, ry = params3d
+    corners = corners_cam_from_bottom(x, y, z, h, w, l, ry)
+    img = (intrinsics.p2() @ np.hstack([corners, np.ones((8, 1))]).T).T
+    zc = img[:, 2]
+    front = zc > 0
+    if not front.any():
+        return None
+    u = img[front, 0] / zc[front]
+    v = img[front, 1] / zc[front]
+    return (float(u.min()), float(v.min()), float(u.max()), float(v.max()))

@@ -37,11 +37,15 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ## 项目结构
 
+> 📁 **文件级索引见 [docs/fileTree.md](docs/fileTree.md)**——每个文件/脚本/产物目录的职责、依赖方向、
+> 哪些是【未入库】产物。**新增或改名文件后回来补一行**(维护约定在该文档头部);下面是速览版。
+
 - `autodrivedata/` — 纯值库(geometry/calib/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios/paths/mapvec_schema),不 import carla
 - `bin/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `probe_vulkan.py`(Vulkan 设备枚举,CARLA 渲染停摆的一线判据)+ `carla_server.sh`(GPU 修复版启动 + **Vulkan 兼容层自愈**;宿主驱动升版致 `libnvidia-gpucomp.so.<ver>` 缺失时自动顶名,见 Plan.md §5.11f)
-- `tests/` — 单测(autodrivedata env,213 passed / 3 skipped)
+- `tests/` — 单测(autodrivedata env,353 passed / 3 skipped)
 - `outputs/` — **全部产物的唯一落点**(采集/权重/可视化/运行支撑物):kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签;`maptr_*.pt` = 权重;`carla/` = 服务器日志 + shim + Vulkan 兼容层
-- `docs/milestone.md` — 版本里程碑;`Plan.md` — **单一事实源**(方案定案/执行记录/待办全在此,改决策先读再改)
+- `docs/` — `fileTree.md`(**文件级索引,加/改文件后必须回来补一行**);`milestone.md` / `milestone2.md`(里程碑);`testLog.md`(测试日志);`Carla_Sim_Tutorial_01..16.md`(教程,Plan2.md 能力对照源);`PRD.md` / `TRD.md`(空占位)
+- 顶层文档 — `Plan.md` **方案定案 + 历史执行记录**(§1~§4 契约/架构、§5 里程碑归档、§6 骨架、§7 待办快照,**冻结不再新增**);`Plan2.md` **新计划的制定地**(2026-09-19 起,改决策先读 Plan2.md 再改)
 
 ## 常用命令
 
@@ -110,5 +114,5 @@ python -m pytest tests/ -q
 - **产出必须落在项目内**:写盘路径一律经 `autodrivedata/paths.project_path()`(**相对路径 = 相对项目根**,不随 cwd 漂移;绝对路径原样放行)。历史口径"相对 cwd 的 outputs/"在换 cwd/换会话时会把权重与可视化散到项目外(清盘时无从分辨)。运行支撑物同理:shim/兼容层/服务器日志在 `outputs/carla/`(原 /tmp 与 carla_home 副本已废弃)。**读路径不锚定**(输入沿用 cwd 口径,便于临时 `cd`)
 - **官方栈复线(§5.12)已终止**(2026-09-14 用户裁决;**不要主动重提**)。重启前先读 Plan.md §5.12:四个钉子(`bs1×累积5` 口径 / config 必须钉 `color_type="color"`、否则在线评测一开就炸 / v1 同位姿帧放行判据 / 预算对齐基线**第一轮** 256 ep)、独立评测的四个坑(单卡 `assert False`、`init_dist` 强制 spawn + `dict_keys`、产物路径相对 cwd、dist_test.sh 硬编码 `--eval bbox`)、A′ 口径结论(官方 eval_map 100 点 GT 重采样 = 0.0699 才是参照值)。**成本在 BEV transformer 不在主干**——降分辨率换不到吞吐(0.5 反而更慢)
 - **停训练必须连 DataLoader worker 一起收**:worker 是 fork 出来的,而 fork 发生在 CUDA 初始化**之后** ⇒ worker **继承 CUDA 上下文**,父进程被杀后变 PPID=1 的孤儿**继续占显存**(nvidia-smi 仍把额度挂在已死的父 PID 名下,实测 `kill` 父进程后仍占 5068 MiB)→ 收完所有相关 PID 后 GPU 才归零。**判据:`nvidia-smi` 归零才算停干净,不是"父进程没了"**
-- 提交:Conventional Commits;**提交信息不附 AI 署名**(不加 `Co-Authored-By: Claude` 等 trailer);改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 Plan.md
+- 提交:Conventional Commits;**提交信息不附 AI 署名**(不加 `Co-Authored-By: Claude` 等 trailer);改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 **Plan2.md**(教程能力线另同步 docs/milestone2.md);Plan.md 已冻结,只保留定案与历史记录
 - **格式口径已定死**:`[tool.ruff]` 在 pyproject(line-length 110 / select E,F,I,UP,B / ignore E501,E741),`ruff format` 是唯一 formatter;批量纯格式提交要追加到 `.git-blame-ignore-revs`

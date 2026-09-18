@@ -2,6 +2,12 @@
 
 > 定案日期:2026-09-06(v0.1 架构)→ 09-06(v0.2 M0+KITTI 契约)→ 09-07(v0.3 M1 编排)→ 09-07/08(v0.4-0.6 M1a/M1b/M2/M3 执行记录)。
 > 状态:**M0-M3 ✅ 工具链闭环;微调专项挂起;最终目标剩余三缺口拆 P1→P2→M4 三工作包推进中(§5.5,2026-09-08 用户拍板)**。
+>
+> **⚠️ 计划制定已迁移(2026-09-19 用户拍板)**:自即日起,**新项目计划一律在 [Plan2.md](Plan2.md) 中制定**,
+> 本文件转为**方案定案 + 历史执行记录**(§1~§4 契约/架构 + §5 里程碑归档 + §6 骨架 + §7 待办快照)。
+> 具体:① **CARLA 采集/场景/教程能力线**的后续规划(含教程 04 IPM 缺口、SLAM 阶段 2、多图扩数据等)
+> 全在 Plan2.md §3/§8;② Plan2.md 的里程碑记录落 docs/milestone2.md;③ 本文件 §5.x 记录**不再新增**,
+> 只在既有条目上补"已迁移"指针;④ 红线纪律、接口契约、环境表仍以本文件为准(Plan2.md §6 复述)。
 
 ## 1. 定位
 
@@ -101,6 +107,9 @@ su - carla -c "cd /root/autodl-tmp/CARLA_0.9.16 && ./CarlaUE4.sh -RenderOffScree
 - 验收:`outputs/smoke/` + `bin/smoke.py`(已参数化 --channels/--pps/--cam-offset/--pitch/--fov/--lidar-range)
 
 ## 5. 里程碑与编排
+
+> ⚠️ **本节为历史归档,不再新增条目**(2026-09-19 起计划制定移至 [Plan2.md](Plan2.md);
+> 后续里程碑记录见 Plan2.md §7 + docs/milestone2.md)。
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
@@ -1416,43 +1425,8 @@ drain 已丢弃,`collect_nus.py` C22 既有行为,不影响 devkit 消费)。水
 
 ### 5.15 轨迹预测对标:HiVT 复现(2026-09-16 ✅,补"预测"能力面)
 
-**缘起**:§5.14a 缺口表里"预测+规划"为零——MapTR 是感知(地图矢量),AutoLabel 是
-检测(Box3D),缺**多智能体轨迹预测**这一能力面。选 HiVT(arxiv 2202.05882,CVPR2022)
-作为对标基线:层次化 Vector Transformer,argoverse-api 数据表示(agent-centric 局部
-坐标 / rotation 归一化 / HD map 车道向量化)与本项目 CARLA 环视链**同构可移植**。
-
-**目标**:官方代码 + 官方预训练权重 + 官方验证集,零改动跑通 Argoverse 1.1 验证集
-K=6 的 minADE / minFDE / MR,产出可审计日志。
-
-**实测结果**(`/logs/eval_hivt64.log` 行 10-12 / `eval_hivt128.log` 行 7-9):
-
-| 模型 | minADE | minFDE | MR | README 参考 | 偏差 |
-|---|---|---|---|---|---|
-| HiVT-64 | 0.6869 | 1.0301 | 0.1026 | 0.69/1.03/0.10 | ~0 |
-| HiVT-128 | 0.6611 | 0.9692 | 0.0920 | 0.66/0.97/0.09 | ~0 |
-
-**与论文报告在毫厘之间 → 复现成功**,环境/命令/依赖全部沉淀,可复跑。
-
-**环境沉淀**(独立 conda env `/root/autodl-tmp/envs/hivt`,py3.8,CPU 推理不占 GPU):
-torch1.8.0 / pl1.5.2 / pyg1.7.2(+scatter/sparse/cluster wheel)/ argoverse-api 1.1.0 /
-omegaconf 2.0.6(手动 wheel)。`/logs/hivt_environment.yml` + `requirements.txt` 可复现。
-
-**关键踩坑(全部已解,知识留存)**:
-1. **sm_89 架构**:4080 SUPER(Ada)跑 torch1.8.0+cu111 会撞 "no kernel image" → 评测
-   走 **CPU**(`CUDA_VISIBLE_DEVICES=""` + `--gpus 0`),HiVT 模型仅 66 万/253 万参数,
-   CPU 推理可接受(预处理 35min + 推理 12min)
-2. **argoverse-api 老依赖 2026 不可装**:`omegaconf==2.0.6` 被 PyPI yanked、`numpy==1.19`
-   等钉死版本已下架 → 手动下载 wheel 解包到 site-packages + `--no-deps` 逐项装其余
-3. **S3 数据下载两坑**:官方 bucket `argoai-argoverse` 404(正版在 `argoverse/datasets/av1.1/tars/`);
-   aria2 多线程拼出损坏 gzip(S3 Range 分段错位)→ 用户 scp 上传 660MB 完美解决
-4. **pl1.5.2 连带缺一堆**:fsspec/deprecate/utils(手写 void 桩)/tensorboard/protobuf/jinja2
-   /joblib/networkx...逐个 --no-deps 补
-
-**对项目的意义**:① 简历口径 = "复现官方权重在 Argoverse 验证集评测,minADE/minFDE/MR
-与论文一致"而非"我训练的模型";② 获得一个**已验证的预测评测基座**——下一步可把
-CARLA 采集的 ego/NPC 轨迹接进同类预测实验(agent-centric 局部坐标、rotation 归一化、
-HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),补齐 §5.14 缺口表的
-"预测"能力面;③ minADE/minFDE/MR/brier-minFDE、K=6 多模态口径的度量语义可面试讲清。
+> **📦 已迁出(2026-09-19)**:完整执行记录(评测结果表 / 环境沉淀 / 四个踩坑 / 对项目的意义)
+> 见 **[Plan2.md](Plan2.md) §9.1**。此处仅留标题作历史索引,内容不再维护。
 
 ### 5.11a A1 执行记录(2026-09-10 ✅)
 
@@ -1558,7 +1532,7 @@ AutoDriveData/
 └── outputs/               # 数据落盘(不进 git)
 ```
 
-## 7. 待办/依赖(2026-09-07 更新)
+## 7. 待办/依赖(2026-09-07 更新;⚠️ **后续待办一律在 Plan2.md §3/§8 维护,本表冻结**)
 
 - [x] CARLA 版本选型 0.9.16;下载/安装/headless 适配/pycarla/隔离验证(M0 ✅)
 - [x] `resolve_frame`/frame_id 规则与 `KITTI_OBJECT_ROOT` 覆盖(§3.1)
@@ -1584,3 +1558,15 @@ AutoDriveData/
 - [~] **嘉定地图候选**(2026-09-16 调研,挂起):嘉定路网仅存在于 CARLA **0.10.0(UE5)** 附加资产包。升级 = 引擎迁移(UE4.26→UE5.5,Lumen/Nanite 默认开启)+ 采集栈重验证(雷达 FOV 交叉 bug/同步 tick 语义/相机 SENSOR_MOUNTS spawn)+ **Town10 被重新建模 → 600 帧已采数据语义不可沿用**。GPU 非硬门槛:官方 0.9 口径 6-8GB,0.10 headless 关 Lumen/Nanite 12GB 可试;真需求才上 4090/24GB。等 600 帧扩数据结论(泛化间隙是否收窄)再定值不值
 - [~] **长期工作目标:合成数据驱动的数据闭环**(§5.14 ✅ 2026-09-16,工业界对照定案):Phase 1 回归套件+场景库参数化 → Phase 2 探测器引导挖掘(数据告诉你该补什么场景)+ 边侧判定器原型 → Phase 3 flywheel 编排 + 伪标签回灌 + 真实性阶梯(嘉定/0.10 归此)。当前 600 帧扩数据 = flywheel 第一圈手动原型
 - [x] **600 帧扩数据轮**(§5.11i ✅ 2026-09-16):官方相机布局重采 400 帧 + 旧 200 帧合并续训 256ep(loss 6.0→3.57);留出集 AP **0.0674→0.1607(+138%)**,泛化间隙 **3.9×→1.32× 大幅收窄**;权重 `outputs/maptr_600.pt`。下一步 = AutoLabel mapvec-report 消费复核 + 多图扩数据(Phase 2)
+- [x] **教程能力 P-D~P-G 落地**(§9.3 ✅ 2026-09-18;原 §5.17 已迁出):单目(基线+生产口径)/双目/多雷达判据/累积建图/地面/聚类/3DGS 链路 7 项能力,采集器纯函数下沉(collect_rig.py)。剩教程 14(FAST-LIO2 外部 ROS 栈)列待办
+
+### 5.16 CARLA 轨迹 → HiVT 训练管线(2026-09-18 ✅,教程 02 升级)
+
+> **📦 已迁出(2026-09-19)**:完整执行记录(采集/组装/转换三段管线、train/val 数据口径、
+> 跨图泛化弃用原因、minADE 6.08 与模式退化诊断)见 **[Plan2.md](Plan2.md) §9.2**。
+
+### 5.17 教程能力 P-D~P-G 落地(2026-09-18 ✅,教程 08~16)
+
+> **📦 已迁出(2026-09-19)**:完整执行记录(P-D 单目 / P-E 多雷达 / P-F 双目 / P-G 3DGS 含多俯仰
+> 调优表 / 累积建图·地面·聚类 / 采集器纯函数下沉)见 **[Plan2.md](Plan2.md) §9.3**。
+> 教程能力线的**后续计划与缺口**(教程 04 IPM、教程 14 阶段 2、P2-A 分割 GT)在 Plan2.md §3/§8。

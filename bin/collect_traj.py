@@ -16,6 +16,7 @@
   python bin/collect_traj.py --frames 550 --out outputs/traj_town10 \
       --map Town10HD_Opt [--map Town13 运行时切图]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,7 +25,7 @@ import time
 from typing import cast
 
 import carla
-from carla_common import loc, spawn_ego, sync_mode
+from carla_common import loc, sync_mode
 
 from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
@@ -88,8 +89,10 @@ def main() -> None:
     ego.apply_control(carla.VehicleControl())  # 清残留(§5.10:brake 残留会打 0.82 折)
     ego_target_vel = ego_t.get_forward_vector() * args.ego_speed
     ego.set_target_velocity(ego_target_vel)
-    print(f"[ego] @ {tuple(round(v, 1) for v in loc(ego_t))} yaw={ego_t.rotation.yaw:.1f} "
-          f"target {args.ego_speed} m/s")
+    print(
+        f"[ego] @ {tuple(round(v, 1) for v in loc(ego_t))} yaw={ego_t.rotation.yaw:.1f} "
+        f"target {args.ego_speed} m/s"
+    )
 
     # NPC 固定布局:沿 ego 朝向布置(同向前车 + 对向车),定速
     bp_lib = world.get_blueprint_library()
@@ -137,9 +140,17 @@ def main() -> None:
     all_actors = [ego] + npcs
     frames: list[dict] = []
     t0 = time.monotonic()
+    # 上一 tick 的定速值(第 0 帧由 spawn 时的 set_target_velocity 建立;每 tick 重发,
+    # 防 §5.10 brake 残留 / 碰撞减速把 set_target_velocity 的初值冲掉——Town10 旧数据
+    # 550 帧后半程停车 262 帧的根因)。
+    last_vel = ego_target_vel
     try:
         for i in range(args.frames):
             world.tick()
+            # 每 tick 重发定速(清 brake 残留后速度指令就是纯目标速度);定速期间不读位姿
+            # (collision/碰撞检测留给训练自证,HiVT 只消费位姿序列)
+            ego.apply_control(carla.VehicleControl())
+            ego.set_target_velocity(last_vel)
             rec: dict = {"frame": i, "agents": []}
             for j, a in enumerate(all_actors):
                 t = a.get_transform()

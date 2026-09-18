@@ -22,20 +22,18 @@
       --out outputs/hivt_carla/val --steps 1 \
       --samples-per-map 250
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import os
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from autodrivedata.mapvec import BEV_RANGE, crop_to_ego, to_ego_frame, vecs_load
 from autodrivedata.opendrive import parse_xodr
-from autodrivedata.paths import project_path
 
 TOTAL_STEPS = 50  # HiVT 时间步:20 历史 + 30 未来
 HISTORY = 20
@@ -53,7 +51,9 @@ def load_map_centerlines(map_name: str) -> list[np.ndarray]:
     lane 集合沿 road 的 lane_section 可能变化(§5.11 已修同类坑):lane 在
     s 处消失则折断该段,不抛异常。
     """
-    xodr = sorted(Path("/root/autodl-tmp/CARLA_0.9.16/CarlaUE4/Content/Carla/Maps").glob(f"**/{map_name}.xodr"))
+    xodr = sorted(
+        Path("/root/autodl-tmp/CARLA_0.9.16/CarlaUE4/Content/Carla/Maps").glob(f"**/{map_name}.xodr")
+    )
     if not xodr:
         raise SystemExit(f"找不到 {map_name}.xodr")
     m = parse_xodr(str(xodr[0]))
@@ -77,6 +77,7 @@ def load_map_centerlines(map_name: str) -> list[np.ndarray]:
 
 def road_to_xy_ego(road, lane, s):
     from autodrivedata.opendrive import lane_centerline_t, road_to_xy
+
     return road_to_xy(road, s, lane_centerline_t(road, s, lane.id))
 
 
@@ -113,11 +114,15 @@ def build_scene(
         padding_mask[i] = ~valid
         x[i, 1:] = local[i, 1:] - local[i, :-1]  # 位移
         x[i, 0] = 0.0
-    # y = 未来绝对位移(相对当前位置)
+    # y = 未来绝对位移(相对当前位置)。官方(process_argoverse)y = x 的未来段 =
+    # positions[t] − positions[19];positions 以 AV(agent0)为中心 → **对每个 agent 都要
+    # 减自己的 positions[19]**(不是全局 origin——全局 origin 是 agent0 的当前位,对
+    # 远处 agent 不减 = 保留其距离量级,实测 200m+)。消失帧按 CARLA 无符号位姿
+    # (0,0) 判零("轨迹零点即消失",P1 起沿用)。
     y = np.zeros((n, FUTURE, 2), dtype=np.float32)
     for i in range(n):
-        valid_f = ~(np.abs(agents_xy[i][HISTORY:]).sum(axis=1) < 1e-6)
-        y[i] = np.where(valid_f[:, None], local[i, HISTORY:] - origin, 0.0)
+        zero = (agents_xy[i][HISTORY:][:, 0] == 0.0) & (agents_xy[i][HISTORY:][:, 1] == 0.0)
+        y[i] = np.where(zero[:, None], 0.0, local[i, HISTORY:] - local[i, HISTORY - 1])
     # padding_mask 未来:第 19 帧不可见 → 全不可预测
     for i in range(n):
         if padding_mask[i, HISTORY - 1]:
@@ -128,12 +133,14 @@ def build_scene(
     for cl in centerlines:
         cl2 = cl[:, :2] if cl.shape[1] >= 2 else cl
         for k in range(len(cl2) - 1):
-            p = rotate_pts(cl2[k:k + 2], origin, theta)
+            p = rotate_pts(cl2[k : k + 2], origin, theta)
             if np.linalg.norm(p[0] - local[av_idx][HISTORY - 1]) < LANE_RADIUS:
                 lane_vecs.append(p[1] - p[0])
                 lane_positions.append(p[0])
     lane_vectors = torch.tensor(lane_vecs, dtype=torch.float) if lane_vecs else torch.zeros((0, 2))
-    lane_positions_t = torch.tensor(lane_positions, dtype=torch.float) if lane_positions else torch.zeros((0, 2))
+    lane_positions_t = (
+        torch.tensor(lane_positions, dtype=torch.float) if lane_positions else torch.zeros((0, 2))
+    )
     # lane_actor_index/vectors:50m 内所有 agent↔lane
     node_positions = torch.tensor(positions[:, HISTORY - 1], dtype=torch.float)
     n_lane = lane_vectors.size(0)
@@ -145,7 +152,11 @@ def build_scene(
                 if v.norm() < LANE_RADIUS:
                     lai.append([j, i])
                     lav.append(v)
-        lane_actor_index = torch.tensor(lai, dtype=torch.long).t().contiguous() if lai else torch.zeros((2, 0), dtype=torch.long)
+        lane_actor_index = (
+            torch.tensor(lai, dtype=torch.long).t().contiguous()
+            if lai
+            else torch.zeros((2, 0), dtype=torch.long)
+        )
         lane_actor_vectors = torch.stack(lav) if lav else torch.zeros((0, 2))
     else:
         lane_actor_index = torch.zeros((2, 0), dtype=torch.long)
@@ -159,7 +170,7 @@ def build_scene(
     # bos_mask(与 HiVT 同构)
     bos_mask = torch.zeros(n, HISTORY, dtype=torch.bool)
     bos_mask[:, 0] = ~torch.tensor(padding_mask[:, 0])
-    bos_mask[:, 1:] = torch.tensor(padding_mask[:, :HISTORY - 1]) & ~torch.tensor(padding_mask[:, 1:HISTORY])
+    bos_mask[:, 1:] = torch.tensor(padding_mask[:, : HISTORY - 1]) & ~torch.tensor(padding_mask[:, 1:HISTORY])
 
     return {
         "x": torch.tensor(x),
@@ -213,8 +224,12 @@ def main() -> None:
         if n_scenes >= args.samples_per_map:
             break
         win = slice(s0, s0 + TOTAL_STEPS)
-        # 有效窗口:至少 ego 全程在位
+        # 有效窗口:至少 ego 全程在位,且未来 30 帧内 ego 仍有位移(≤2 有效 = 纯停车段,
+        # 训练学不到东西还引入全零目标;滑窗假设"窗口内车活着")
         if np.abs(agents_xy[0][win]).sum() < 1e-6:
+            continue
+        egof = agents_xy[0][s0 + HISTORY : s0 + TOTAL_STEPS]
+        if int(((egof[:, 0] == 0.0) & (egof[:, 1] == 0.0)).sum()) >= FUTURE - 2:
             continue
         scene = build_scene(
             [agents_xy[j][win] for j in range(n_agents)],

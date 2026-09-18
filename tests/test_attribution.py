@@ -100,6 +100,47 @@ class TestMatchFrame:
         assert attr.match_frame(gt, preds) == [True, False]
 
 
+class TestMatchDetsToGt:
+    def _gt(self, *boxes):
+        return [
+            attr.GtBox2D(cls="Car", x1=b[0], y1=b[1], x2=b[2], y2=b[3], truncation=0.0, distance_m=20.0)
+            for b in boxes
+        ]
+
+    def test_high_conf_wins_and_returns_det(self):
+        gt = self._gt((0, 0, 10, 10))
+        dets = [
+            attr.Detection("Car", 0, 0, 10, 10, conf=0.4),
+            attr.Detection("Car", 0, 0, 10, 10, conf=0.9),
+        ]
+        m = attr.match_dets_to_gt(gt, dets)
+        assert set(m) == {0}
+        assert m[0].conf == 0.9  # 返回命中的那条(conf 最高)
+
+    def test_class_mismatch_empty(self):
+        gt = self._gt((0, 0, 10, 10))
+        dets = [attr.Detection("Pedestrian", 0, 0, 10, 10, conf=0.9)]
+        assert attr.match_dets_to_gt(gt, dets) == {}
+
+    def test_low_iou_empty(self):
+        gt = self._gt((0, 0, 10, 10))
+        dets = [attr.Detection("Car", 20, 20, 30, 30, conf=0.9)]
+        assert attr.match_dets_to_gt(gt, dets) == {}
+
+    def test_two_gt_two_pred_and_index_map(self):
+        gt = self._gt((0, 0, 10, 10), (50, 50, 60, 60))
+        dets = [
+            attr.Detection("Car", 50, 50, 60, 60, conf=0.8),
+            attr.Detection("Car", 0, 0, 10, 10, conf=0.7),
+        ]
+        m = attr.match_dets_to_gt(gt, dets)
+        assert set(m) == {0, 1}
+        assert m[1].x1 == pytest.approx(50.0)  # 各 GT 拿到各自的 det(索引映射)
+
+    def test_empty_dets_empty(self):
+        assert attr.match_dets_to_gt(self._gt((0, 0, 10, 10)), []) == {}
+
+
 class TestTtc:
     def test_basic(self):
         assert attr.ttc_s(24.0, 12.0) == pytest.approx(2.0)
