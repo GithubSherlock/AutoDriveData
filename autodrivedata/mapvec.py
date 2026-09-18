@@ -407,9 +407,15 @@ def crop_to_ego(
 
 
 def _rough_in_window(pts, bounds: tuple[float, float, float, float]) -> bool:
-    """包围盒粗筛:折线任一点落在窗口内(含跨窗)才需精裁剪。"""
+    """包围盒粗筛:折线任一点在窗内,或任一条边穿窗(顶点全在窗外也保留)。
+
+    只查顶点会漏掉「边穿窗但端点都在窗外」的折线(测试 test_crop_splits_crossing_polyline
+    的跨窗折线),导致整条被静默丢弃。用 Liang-Barsky 线段求交兜底。
+    """
     x0, y0, x1, y1 = bounds
-    return any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in pts)
+    if any(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in pts):
+        return True
+    return any(_clip_segment_rect(a, b, bounds) is not None for a, b in zip(pts, pts[1:], strict=False))
 
 
 # MapTR 训练 BEV 窗口(x 前向 / y 左向,米;与 maptr_impl.gkt.BEVParams 默认一致)
