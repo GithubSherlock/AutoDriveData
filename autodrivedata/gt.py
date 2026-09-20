@@ -114,6 +114,18 @@ def box_heading_world(box: ActorBox) -> np.ndarray:
     return r[:, 0]
 
 
+def box_corners_world(box: ActorBox) -> np.ndarray:
+    """box 的 8 个世界系角点 (8,3):中心 + R ∘ (±extent) 的 8 种符号组合。
+
+    顺序为 x/y/z 的二进制的位序(bit0 = x),与 `box_to_gt_line` 内部展开同源 ——
+    供第三方视角自检"ego 框是否落在画面内"用(纯值,不依赖相机)。
+    """
+    r = g.carla_rotation_matrix(box.actor_rotation) @ g.carla_rotation_matrix(box.rotation)
+    e = np.asarray(box.extent, dtype=np.float64)
+    signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], dtype=np.float64)
+    return box_center_world(box) + (signs * e) @ r.T
+
+
 def box_to_gt_line(
     box: ActorBox,
     cam_location: tuple[float, float, float],

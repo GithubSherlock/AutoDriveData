@@ -966,6 +966,8 @@ boundary **0.1888**(4615/2912)/ centerline **0.2740**(4989/5698)。
   `_rough_in_window` → **90s**(窗口外实例直接滤掉,量级 ~15×)
 - 组装 1000 帧 infos(600 Town10 + 400 Town13 → 帧号 0-999,data_path 全指
   `maptr_1000/images`,6000 图集中,逐张存在性断言)
+  - ⚠️ **订正(2026-09-19)**:`outputs/maptr_1000/`(images 6000 图 + infos,5.5 G)已随磁盘
+    清理删除。**权重 `outputs/maptr_1000.pt` 保留**;复现训练需重跑组装链(源图在 `surround_train` 等)
 
 **训练**:1000 帧 × 256 epochs,从 `maptr_600.pt` 续训,lr 2e-5/128ep 减半,warmup 3,
 **batch 12**(4080 SUPER 自适应,空闲 24.7GiB×0.95)——600 帧时仅 5。epoch 256 完成
@@ -1187,6 +1189,10 @@ bash bin/run_official.sh chain --bg`(三份 config 的默认 `MAPTR_EPOCHS` 同�
   ≈7.5 G、`wheels/` 2.0 G、`pip-cache/` 0.44 G、`ckpts/` 98 M、A′ 复算产物 332 M、
   infos 数据集 20 M、日志 1.1 M)。**数据目录是零风险删除**:其 20 M 全是 infos/map 桩,
   图像按路径引用 `outputs/surround_train`(符号链接 0 个、拷贝 0 份)
+  - ⚠️ **订正(2026-09-19)**:上述 ① 当日**实际未执行**——`envs/maptr_official` 目录一直在
+    (5.8 G,py3.8 + torch1.9.1+cu111 + mmcv1.4.0 仍可运行),故当日真实回收为 **~9 GB 而非 15 GB**。
+    该目录已于 **2026-09-19 补删**(磁盘清理脚本阶段 3),至此 ①② 才全部落地。
+    教训:删除动作要**当场 `test -e` 复核**,不能只凭执行意图写归档
 - **未删(刻意保留)**:① 自实现线全部资产(`outputs/surround_train` 1800 图、
   `surround_pred`、`maptr_ep256.pt`、`maptr_ep512.pt` + `.opt` 侧车)——本次删除**不触碰**
   自实现任何产物;② `hdMapGitHub/` 三个官方仓库(583 M,§5.11 起的既有外部资产);

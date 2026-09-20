@@ -25,7 +25,9 @@ def main() -> None:
     ap.add_argument("--old", required=True, help="旧采集 infos")
     ap.add_argument("--old-n", type=int, default=-1, help="旧数据保留前 N 帧训练段(默认全量)")
     ap.add_argument("--new", required=True, help="新采集 infos(重排到新帧号)")
-    ap.add_argument("--new-img-root", default=None, help="新数据图像根目录(默认 = --new 所在目录,需含 cam_* 子目录)")
+    ap.add_argument(
+        "--new-img-root", default=None, help="新数据图像根目录(默认 = --new 所在目录,需含 cam_* 子目录)"
+    )
     ap.add_argument("--new-fbase", type=int, default=200, help="新数据起始帧号")
     ap.add_argument("--out", required=True, help="合并后 infos 输出(锚定项目根)")
     args = ap.parse_args()
@@ -60,7 +62,9 @@ def main() -> None:
             if not (img_root / c["data_path"]).is_file()
         ]
         if missing:
-            raise SystemExit(f"新数据图像缺失 {len(missing)} 条(如 {missing[:2]})——先跑 collect_surround 再合并")
+            raise SystemExit(
+                f"新数据图像缺失 {len(missing)} 条(如 {missing[:2]})——先跑 collect_surround 再合并"
+            )
 
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(infos, f, ensure_ascii=False, indent=1)

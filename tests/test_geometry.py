@@ -74,6 +74,33 @@ class TestCarlaRotationMatrix:
         assert abs(np.linalg.det(m) - 1.0) < 1e-9
 
 
+class TestRotationMatrixToCarla:
+    """逆分解回归锚点:曾把 pitch 写成 `asin(−R[2,0])`(静默反号,−12° → +12°)。"""
+
+    @pytest.mark.parametrize(
+        "deg",
+        [(0, 0, 0), (0, 90, 0), (-12, 0, 0), (5, -55, 3), (30, 45, 15), (-8.5, 179.3, 1.2)],
+    )
+    def test_round_trip_recovers_angles(self, deg):
+        pitch, yaw, roll = (np.radians(d) for d in deg)
+        assert g.rotation_matrix_to_carla(g.carla_rotation_matrix((pitch, yaw, roll))) == pytest.approx(
+            (pitch, yaw, roll), abs=1e-12
+        )
+
+    def test_negative_pitch_keeps_sign(self):
+        # 俯角 −12° 必须解出 −12°(写成 asin(−R[2,0]) 会得 +12°,第三方视角变仰视)
+        p, _, _ = g.rotation_matrix_to_carla(g.carla_rotation_matrix((np.radians(-12.0), 0.0, 0.0)))
+        assert np.degrees(p) == pytest.approx(-12.0, abs=1e-9)
+
+    def test_random_round_trip_elementwise(self):
+        rng = np.random.default_rng(0)
+        for _ in range(200):
+            ang = rng.uniform(-np.pi, np.pi, 3)
+            m = g.carla_rotation_matrix(tuple(ang))
+            back = g.carla_rotation_matrix(g.rotation_matrix_to_carla(m))
+            assert np.abs(back - m).max() < 1e-12
+
+
 class TestWorldToCam:
     def test_cam_at_origin_looking_forward(self):
         # 相机在 (0,0,1.65) 朝 +x_g:等高点 (10,0,1.65) → 相机系 (0,0,10)(正前 10m,无高度差)

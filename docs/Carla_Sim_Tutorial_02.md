@@ -45,9 +45,11 @@ def recv_all(sock, length):
     buf = b""
     while len(buf) < length:
         chunk = sock.recv(length - len(buf))
-        if not chunk: raise ConnectionError()
+        if not chunk:
+            raise ConnectionError()
         buf += chunk
     return buf
+
 
 # 主循环
 while True:

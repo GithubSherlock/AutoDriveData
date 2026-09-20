@@ -5,6 +5,12 @@
   {root}/training/velodyne/{id}.bin  # float32 (N,4) x,y,z,intensity
   {root}/training/calib/{id}.txt
   {root}/training/label_2/{id}.txt
+  {root}/training/pose/{id}.txt      # 可选:ego 真值位姿(KITTI 12 数 = 3×4 行主序)
+
+**pose 目录是本仓扩展**(KITTI 官方在数据集根放 `poses/{seq}.txt`;这里逐帧一文件,
+便于与四件套同帧号对齐)。存在的理由:SLAM 评估(ATE/RPE)必须有真值位姿,
+而 `collect_drive.py` 走 autopilot 无真值 → 旧 `kitti_drive` 序列的 `closure.drift_m`
+只能当"首末距离",冒充不了精度指标(见 Plan2.md P-H)。SLAM 序列采集器写此目录。
 """
 
 from __future__ import annotations
@@ -47,6 +53,37 @@ def frame_paths(root: str | Path, frame_id: str) -> FramePaths:
     )
 
 
+def pose_path(root: str | Path, frame_id: str) -> Path:
+    """帧 id → 真值位姿文件路径(`training/pose/{id}.txt`)。"""
+    return Path(root) / "training" / "pose" / f"{normalize_frame_id(frame_id)}.txt"
+
+
+def write_pose(root: str | Path, frame_id: str, T: np.ndarray) -> Path:
+    """ego 真值位姿落盘:3×4 行主序 12 个数,空格分隔,一行。
+
+    与 KITTI 官方 `poses/*.txt` 同格式(每行 12 数 = 3×4 相机→世界变换,行主序),
+    故任何吃 KITTI pose 的工具可直接读。T 须为 (4,4) 或 (3,4)。
+    """
+    T = np.asarray(T, dtype=np.float64)
+    if T.shape not in ((4, 4), (3, 4)):
+        raise ValueError(f"位姿须为 (4,4) 或 (3,4),got {T.shape}")
+    m = T[:3, :4]
+    p = pose_path(root, frame_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(" ".join(f"{v:.9f}" for v in m.reshape(-1)) + "\n", encoding="utf-8")
+    return p
+
+
+def read_pose(path: str | Path) -> np.ndarray:
+    """`write_pose` 的逆:12 数 → (4,4)。"""
+    vals = np.fromstring(Path(path).read_text(encoding="utf-8"), sep=" ", dtype=np.float64)
+    if vals.size != 12:
+        raise ValueError(f"位姿文件须含 12 个数,got {vals.size}: {path}")
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :4] = vals.reshape(3, 4)
+    return T
+
+
 def write_frame(
     root: str | Path,
     frame_id: str,
@@ -55,8 +92,12 @@ def write_frame(
     velodyne: np.ndarray,
     calib: KittiCalibOut,
     labels: list[str],
+    pose: np.ndarray | None = None,
 ) -> FramePaths:
-    """单帧四件套落盘(velodyne 必须已是 KITTI velodyne 约定,见 geometry.carla_lidar_to_velodyne)。"""
+    """单帧四件套落盘(velodyne 必须已是 KITTI velodyne 约定,见 geometry.carla_lidar_to_velodyne)。
+
+    `pose` 非 None 时额外写 `training/pose/{id}.txt`(ego 真值位姿,SLAM 评估用)。
+    """
     paths = frame_paths(root, frame_id)
     for p in (paths.image, paths.velodyne, paths.calib, paths.label):
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -64,4 +105,6 @@ def write_frame(
     np.asarray(velodyne, dtype=np.float32).reshape(-1, 4).tofile(paths.velodyne)
     calib.write(paths.calib)
     paths.label.write_text("\n".join(labels) + ("\n" if labels else ""), encoding="utf-8")
+    if pose is not None:
+        write_pose(root, frame_id, pose)
     return paths

@@ -1,15 +1,24 @@
 """S1.3 激光 SLAM 前端:逐帧 velodyne → 链式位姿(教程 14 两段式阶段 1)。
 
-对 kitti_drive 的 velodyne 序列做帧间点面 ICP(恒速先验初始化),输出:
-- `outputs/slam/traj_raw.json`:链式 T_0→k 位姿 + 每帧残差/重叠/收敛
+对 KITTI root 的 velodyne 序列做帧间点面 ICP(恒速先验初始化),输出:
+- `outputs/slam/traj_raw.json`:链式位姿 P_k + 每帧残差/重叠/收敛
 - `outputs/slam/icp_stats.json`:全程统计(平均 RMSE/重叠/失败帧数/耗时)
+
+**位姿口径(2026-09-19 修正)**:`T` = 位姿 P_k(帧 k 传感器系 → 帧 0 世界系)。
+旧实现出口是 `T_delta @ init_T`,即把**点映射**当位姿左乘 —— 纯平移时看着像在累加,
+一转弯就发散(206 m 真实序列 ATE 17.5 m vs 修正后 0.19 m,差 94×)。详见
+`autodrivedata/slam.py::icp_odometry` docstring 与 `tests/test_slam.py::TestIcpOdometry`。
 
 判据(阶段 1 验收):150 帧 <5min、零 NaN、漂移率(回环闭合时)>如实报告。
 纯值,不 import carla/torch;产物经 paths.project_path 落 outputs/。
 
+**精度评估**(有真值位姿时):`autodrivedata/slam_eval.eval_trajectory` 算 ATE/RPE。
+注意本条输出的 T 是 **LiDAR 系**位姿、且未补杆臂 → 与 ego GT 比前需
+`M·T·M·inv(L)`(M = diag(1,−1,1),L = LiDAR 在 ego 系下的挂点),见 Plan2.md。
+
 用法:
-  python bin/slam_odometry.py [--root outputs/kitti_drive] [--frames 0-149]
-                              [--voxel 0.5] [--out outputs/slam]
+  python bin/slam_odometry.py [--root outputs/kitti_slam] [--frames 0-399]
+                              [--voxel 0.5] [--out outputs/slam_gt]
 """
 
 from __future__ import annotations
@@ -78,11 +87,10 @@ def main() -> None:
             init = np.eye(4)
             res = _first_result(init)
         else:
-            # icp_odometry 契约:init_T = **上一帧链式位姿**(T_0→k−1),seed = 恒速增量 Δ。
-            # **不可再乘 delta_prev**——seed 已在 icp_odometry 内作为迭代起点
-            # (cur = seed·src)应用一次,init 里再乘一次 = 恒速先验被叠加两次:
-            # 实测 0.5m/帧 合成序列累计出 0.5/1.5/3.0/5.0/7.5(真值 0.5..2.5),
-            # 轨迹按 k² 发散 → 帧间重叠崩、nearest_batch 活跃集不收缩(单帧 20s+)。
+            # icp_odometry 契约:init_T = **上一帧链式位姿** P_{k−1},seed = 恒速先验的
+            # **位姿增量** ΔP = P_{k−2}⁻¹P_{k−1}(函数内部取逆换成点映射当迭代起点)。
+            # 返回值 T = P_{k−1}·inv(T_delta) = P_k。**不可再乘 delta_prev**——seed 已作为
+            # 迭代起点应用一次,init 里再乘一次 = 恒速先验被叠加两次(实测轨迹按 k² 发散)。
             init = poses[-1]
             t_a = time.time()
             assert prev_down is not None  # k>0 时必有前帧

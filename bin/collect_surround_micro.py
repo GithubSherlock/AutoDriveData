@@ -113,7 +113,14 @@ def main() -> None:
     intrinsic = [[fx, 0.0, w / 2], [0.0, fx, h / 2], [0.0, 0.0, 1.0]]
     calib = {
         name: {
-            "sensor2ego": [SENSOR_MOUNTS[name][0], SENSOR_MOUNTS[name][1], SENSOR_MOUNTS[name][2], yaw, 0.0, 0.0],
+            "sensor2ego": [
+                SENSOR_MOUNTS[name][0],
+                SENSOR_MOUNTS[name][1],
+                SENSOR_MOUNTS[name][2],
+                yaw,
+                0.0,
+                0.0,
+            ],
             "intrinsic": intrinsic,
         }
         for name, yaw in cams_spec.items()
@@ -146,7 +153,9 @@ def main() -> None:
                 }
             )
             if (i + 1) % 5 == 0 or i == args.frames - 1:
-                print(f"[frame {i + 1}/{args.frames}] ego @ {loc(egot)} | {(i + 1) / (time.monotonic() - t0):.1f} fps")
+                print(
+                    f"[frame {i + 1}/{args.frames}] ego @ {loc(egot)} | {(i + 1) / (time.monotonic() - t0):.1f} fps"
+                )
     finally:
         with open(out / "ego_pose.json", "w", encoding="utf-8") as f:
             json.dump(poses, f, indent=1)

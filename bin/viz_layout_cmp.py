@@ -62,7 +62,7 @@ def main() -> None:
     cam_names = sorted(rec["cams"])
 
     print(f"帧 {args.frame}  ego={tuple(round(v, 3) for v in ego[:4])}  GT {len(gt)} 条折线")
-    print(f'{"相机":<18}' + "".join(f"{t:>12}" for t, _, _ in tables))
+    print(f"{'相机':<18}" + "".join(f"{t:>12}" for t, _, _ in tables))
     for name in cam_names:
         row = []
         for _tag, infos, calib in tables:

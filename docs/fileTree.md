@@ -75,7 +75,9 @@ AutoDriveData/
 | `mono_depth.py` | 单目测距:检测框 → 地平面投影距离 + 迭代深度法 |
 | `stereo.py` | 双目立体视觉:三角测量 / SGBM 视差 / NCC 匹配 / 自监督损失 |
 | `multilidar.py` | 多雷达标定:point-to-plane ICP + overlap/plausible 判据 |
-| `slam.py` | 激光 SLAM 纯值两段式(帧间点面 ICP 前端 + ScanContext 回环/PGO 后端) |
+| `slam.py` | 激光 SLAM 纯值两段式(帧间点面 ICP 前端 + ScanContext 回环/PGO 后端);`icp_odometry` 双出口 = 位姿 `T` / 点映射 `T_delta` |
+| `slam_eval.py` | 轨迹精度评估纯值:Umeyama 对齐 / ATE / RPE(evo·KITTI 口径);**纯直行序列的绕轴旋转不可辨识**见模块 docstring |
+| `live_slam.py` | **在线 SLAM 会话**(纯值):`LiveSlam.push` 逐帧增量重建(链式约定逐字复用 `slam_odometry`)+ `map_in_ego_frame`/`traj_in_ego_frame` 换到当前 ego 系;**`SlamWorker` = 有界丢旧队列 + 帧间隙止损(`max_gap`,防"丢帧→间隙更大→ICP 更慢"正反馈),默认同步执行(worker 线程被 GIL 压到 eff 0.04–0.24)** —— 滞后有界的判据靠它单测 |
 | `accum.py` | 累积语义点云建图:多帧 velodyne 全局累积 + 语义着色 |
 | `ground.py` | 点云地面提取:RANSAC 平面拟合 + 网格法双路线 |
 | `cluster.py` | 点云聚类障碍物检测:欧氏聚类 + 3D 包围盒 |
@@ -113,6 +115,7 @@ AutoDriveData/
 | `collect_traj.py` | 多 agent 轨迹采集(HiVT 训练数据源) |
 | `collect_stereo.py` | 双目 rig 采集(基线 0.4m)+ 真值深度 |
 | `collect_3dgs.py` | 静态场景 360° 环绕采集(RGB + 真值深度,支持多俯仰) |
+| `collect_slam.py` | SLAM 数据集采集:ego 定速巡游 → `training/velodyne/` + **`training/pose/`(ego 真值位姿,ATe/RPE 评估的 GT)** |
 
 ### 4.2 组装 / 转换(采集产物 → 训练口径)
 
@@ -145,7 +148,10 @@ AutoDriveData/
 | `eval_official_metric.py` | A′ 口径复算:并排算"自实现 chamfer AP"与"官方 eval_map" |
 | `mono_distance.py` | 单目测距评估(检测框 → 距离,与 KITTI GT 真距对照) |
 | `calib_multilidar.py` | 多雷达标定判据评估(注入已知误差 → 判据数值) |
-| `slam_odometry.py` | SLAM 前端:逐帧 velodyne → 链式位姿 |
+| `slam_odometry.py` | SLAM 前端:逐帧 velodyne → 链式位姿 `T_k = P_{k-1}·inv(T_delta)`(双出口契约见 `slam.py`) |
+| `slam_backend.py` | SLAM 后端:关键帧 + ScanContext 回环候选 + 双 yaw ICP 验证 + PGO(边存点映射 `Z_ij`) |
+| `slam_diff_test.py` | 前端位对齐对拍:numpy vs `slam_cpp` 同一 `(prev,cur,init,seed)` 下比单次 ICP |
+| `eval_slam.py` | SLAM 精度评估:LiDAR 系位姿 → ego 系(手性共轭 `M·T·M` + 杆臂 `inv(L)`)→ ATE/RPE |
 | `build_accum_map.py` | 累积语义建图(多帧 velodyne → 全局语义地图) |
 | `extract_ground.py` | 地面提取(逐帧点云 → 地面/非地面分离 + 统计) |
 | `cluster_obstacles.py` | 聚类障碍物检测(地面分割 → 聚类 → 3D bbox) |
@@ -156,9 +162,11 @@ AutoDriveData/
 | 文件 | 职责 |
 |---|---|
 | `view_stream.py` | 场景实时流:真 UE 渲染 + GT/预测 overlay → 浏览器 MJPEG |
+| `live_common.py` | **实时可视化共享件**(从 view_stream 抽出):多槽 MJPEG 服务(单端口 `/stream/<name>` + `/` 索引页)/ 拼图 / GT overlay / **环视 rig(两代口径 `rig_spec`:`official` 逐相机 `SENSOR_MOUNTS` + 108.6/−110.8,`legacy` 共用 `SENSOR_OFFSET` + 235/125;`resolve_rig` 按权重名选)** / 第三方视角 / 键盘 —— view_stream 与 live_studio 共用 |
+| `live_studio.py` | **8 路 studio**:6 相机 + BEV + 第三方 + `grid` 拼图槽,各占一路;`--keyboard` 折进 tick 循环(WASD 开采集);第三方非 attach 每 tick 摆位。**`--slam` 接在线 SLAM**(挂语义 LiDAR → `SlamWorker`,BEV 槽画地图点/轨迹;`--slam-async` / `--slam-voxel` / `--slam-max-gap` / `--slam-report` 落验收 JSON) |
 | `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板 |
 | `viz_layout_cmp.py` | 相机布局对照数值化(同镜头两布局的可见性对比) |
-| `drive_ego.py` | live 手动驾驶(服务器终端 WASD 遥控) |
+| `drive_ego.py` | live 手动驾驶(服务器终端 WASD 遥控);薄封装 `live_common.KeyboardState`(studio 内置键盘是首选) |
 
 ### 4.6 探针 / 诊断(一次性验收与故障定位)
 
@@ -168,6 +176,9 @@ AutoDriveData/
 | `probe_mapvec_proj.py` | 矢量投影回 6 视角图像的路面性验收(数值诊断) |
 | `probe_radar_l3.py` | 雷达物理合理性探针(对照真实 ars408 规格) |
 | `probe_vulkan.py` | Vulkan 设备枚举——CARLA 渲染停摆的一线判据 |
+| `probe_imu.py` | **B1 实测**:CARLA IMU 能否支撑 FAST-LIO2 的 IESKF 预测(结论:直行段 IMU 预测比恒速先验更差 → B3 不投) |
+| `probe_scan_to_map.py` | **B2 实测**:oracle GT 局部地图下 scan-to-map vs scan-to-scan(结论:误差随地图深度 K 单调变差 1.05×→2.75×,重新体素化救不回 → 不建 ikd-Tree 前端;含代价/谱/地面占比三条机制证据) |
+| `probe_rig_mount.py` | **环视挂点口径 A/B 实测**:同一权重喂「它训练时见过的 rig」vs「另一代 rig」→ 品红像素/段数差 = 错配代价(结论见 Plan2.md §P-L.1) |
 | `smoke.py` | M0 smoke:CARLA headless 连接 → 同步模式 → 各取一帧落盘 |
 
 ### 4.7 共用件与运维脚本
@@ -189,6 +200,7 @@ AutoDriveData/
 | 纯值库单测 | `test_geometry.py` `test_calib.py` `test_gt.py` `test_compare.py` `test_paths.py` `test_scenarios.py` `test_static_gt.py` `test_traffic_light.py` `test_semantic.py` `test_radar.py` | 手算断言,不依赖 carla / AutoLabel |
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
 | 教程能力线 | `test_mono_depth.py` `test_stereo.py` `test_multilidar.py` `test_slam.py` `test_accum.py` `test_ground.py` `test_cluster.py` `test_collect_rig.py` | 各含手算锚点;`collect_rig` 兼作采集器回归先例 |
+| SLAM 精度/在线线 | `test_slam_eval.py` `test_live_slam.py` | `slam_eval`:ATE/RPE 手算锚点 + 杆臂方向(不补杆臂 ATE 2.44×);`live_slam`:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ `SlamWorker` 滞后有界/止损/同步模式 |
 | MapTR 自实现 | `test_gkt.py` `test_head.py` `test_device.py` | 单帧过拟合正确性锚定 |
 | 落盘契约 | `test_export_kitti.py` `test_export_nuscenes.py` | 路径/字段与消费方契约一致 |
 | oracle 对比 | `test_geometry_carla_oracle.py` `test_geometry_nus.py` `test_calib_oracle_autolabel.py` `test_gt_oracle_autolabel.py` `test_nuscenes_oracle_autolabel.py` | **需 autolabel env / CARLA 机器**,缺失时自动 skip |
@@ -216,7 +228,9 @@ AutoDriveData/
 | `kitti3d_ab_*` | 上列 A/B 的 3D 伪标签输出(AutoLabel 消费) | `auto3dlabel run` + `eval_kitti.py` |
 | `surround_*` | 环视 6 相机数据集(`surround_train` / `surround_p3` / `surround_town13` / `surround_pred` 逐帧契约) | `collect_surround.py` / `assemble_maptr.py` / `eval_maptr.py` |
 | `traj_town*` | 多 agent 轨迹数据集(HiVT 输入) | `collect_traj.py` / `assemble_traj_pt.py` |
-| `maptr_*.pt` / `maptr_*` | MapTR 权重与训练数据集(`maptr_600` / `maptr_1000` / `ep256` / `ep512` + `.opt` 优化器态) | `train_maptr.py` |
+| `maptr_*.pt` | MapTR 权重(`maptr_600` / `maptr_1000` / `ep256` / `ep512` + `.opt` 优化器态) | `train_maptr.py` |
+| `maptr_600` / `maptr_1000` | MapTR 训练数据集(infos + images)。**`maptr_1000` 已于 2026-09-19 清理删除**(5.5 G,权重 `.pt` 保留),复现需重跑组装链 | `assemble_maptr.py` / `merge_train_infos.py` |
+| `kitti_slam` / `slam_gt/` | SLAM 数据集(velodyne + **pose 真值**)与轨迹/精度产物(`traj_raw.json` / `icp_stats.json` / `eval_*.json` / **B 期验收 `accept_sync|accept_async|accept_parity_full.json`**) | `collect_slam.py` / `slam_odometry.py` / `eval_slam.py` / `live_studio.py --slam-report` |
 | `sem_bev/` `mono_distance/` `stereo/` `multilidar/` `accum_map/` `ground/` `cluster/` | 教程能力线各产物的图/点云/结果 json | 各自 `bin/*.py` |
 | `3dgs/` | 3DGS 环绕采集帧 + 真值深度位姿 + `.ply` 高斯 + 训练结果 json | `collect_3dgs.py` / `train_3dgs_mini.py` |
 | `hivt_carla/` | HiVT 训练用 TemporalData 与场景划分 | `convert_hivt_pt.py` |

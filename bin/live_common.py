@@ -1,0 +1,645 @@
+"""实时可视化的共享件:多路 MJPEG 服务 / 拼图 / 环视 rig / 第三方视角 / 键盘。
+
+从 `bin/view_stream.py` 抽出,供 `view_stream.py` 与 `bin/live_studio.py` 共用
+(对标已有 `bin/carla_common.py` 的先例:bin 只留 carla 编排,共享件单独成文件)。
+
+**多路服务的口径**:一个 HTTP 端口 + 路径分路(`/stream/<name>`),不是 N 个端口。
+理由:SSH 隧道只需转发一个端口,新增/删除一路流不改网络配置;`/` 出索引页把 N 路
+`<img>` 拼在一页,浏览器端仍是一个连接面。
+
+**rig 口径(两代,必须与权重的训练数据一致 —— 不是"越新越好")**:
+
+| rig | 平移 | 偏航(BACK_LEFT / BACK_RIGHT) | 训练数据 |
+|---|---|---|---|
+| `official`(当前) | `SENSOR_MOUNTS[name]` 逐相机 | 108.6 / −110.8 | `surround_p3` / `surround_town13` |
+| `legacy`(早期) | 6 路**共用** `SENSOR_OFFSET`(1.2, 0, 1.65) | 235 / 125 | `surround_train` / `surround_drive` |
+
+早期 `view_stream.build_maptr_rig` 给 6 路**共用** `SENSOR_OFFSET` 平移(与逐相机差最多 1.5 m),
+且 BACK_LEFT/BACK_RIGHT 偏航与官方布局**恰好互换**(镜像是最隐蔽的错位:`SURROUND_CAMS`
+的 108.6/−110.8 vs 早期 `CAM_YAW_OFFSET` 的 235/125)。它**不是无条件 bug**:`maptr_ep512.pt`
+就是在这套 rig 上训出来的,拿 official 喂它反而是错配。故本文件同时保留两套口径,
+由 `--rig {auto,official,legacy}` 选(`auto` 按权重文件名查 `LEGACY_CKPTS`)。
+
+**判据不看图**:`rig_mount_deviation()` 直接量"实挂位姿 vs **该 rig 规格**"的平移/偏航偏差,
+修正前预期 ~1.5 m(旧口径下偏差反而 ~0)。**必须先 tick 再读**(传感器 `get_transform()`
+在 tick 前是全 0 陈旧值,见 Plan.md 红线)。
+
+**第三方视角**:非 `attach_to` 相机,每 tick 由 `follow_spectator()` 显式 `set_transform`。
+不用 attach 的原因:attach 子 actor 的 `set_transform` 是**相对父位姿**的增量语义,
+"归位"极易写错(§5.11 3DGS 采集踩过:不归位会绕空场地)。
+"""
+
+from __future__ import annotations
+
+import io
+import math
+import queue
+import select
+import sys
+import termios
+import threading
+import time
+import tty
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+import carla
+import numpy as np
+from carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
+from collect_surround import SURROUND_CAMS
+from PIL import Image, ImageDraw
+
+from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
+from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
+from autodrivedata.mapviz import calib_from_fov
+
+if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --maptr 路径真需要
+    import torch
+
+    from maptr_impl.model import MapTR
+
+# ---------------------------------------------------------------- rig 口径表
+
+RIG_OFFICIAL = "official"
+RIG_LEGACY = "legacy"
+
+# 早期布局:6 路共用 SENSOR_OFFSET 平移 + 这套偏航(BACK_LEFT/RIGHT 与官方**互换**)
+LEGACY_CAM_YAW: dict[str, float] = {
+    "CAM_FRONT": 0.0,
+    "CAM_FRONT_RIGHT": -55.0,
+    "CAM_FRONT_LEFT": 55.0,
+    "CAM_BACK": 180.0,
+    "CAM_BACK_LEFT": 235.0,
+    "CAM_BACK_RIGHT": 125.0,
+}
+
+# 权重文件名 → 它的训练数据用的是 legacy rig(见 `outputs/maptr_600/map_infos.json`:
+# 帧 0-199 旧布局 / 200-599 官方布局)。新权重一律 official。
+LEGACY_CKPTS = ("maptr_ep256", "maptr_ep512")
+
+
+def rig_spec(rig: str) -> tuple[dict[str, tuple[float, float, float]], dict[str, float]]:
+    """rig 名 → (逐相机平移, 逐相机偏航度)。`official` = 训练侧采集器口径。"""
+    if rig == RIG_OFFICIAL:
+        return dict(SENSOR_MOUNTS), dict(SURROUND_CAMS)
+    shared = (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z)
+    return {name: shared for name in SURROUND_CAMS}, dict(LEGACY_CAM_YAW)
+
+
+def resolve_rig(choice: str, ckpt: str | None) -> str:
+    """`auto` 按权重文件名定 rig;显式给 `official`/`legacy` 时不猜。
+
+    **为什么要按权重选**:外参必须与权重**训练时见过的一致**,否则第 i 路图与它学过的
+    语义错位。实测 `maptr_ep512.pt` ← `surround_train`(legacy)、`maptr_600.pt` /
+    `maptr_1000.pt` ← `surround_p3` + `surround_town13`(official)。
+    """
+    if choice != "auto":
+        return choice
+    if ckpt and any(tag in Path(ckpt).stem for tag in LEGACY_CKPTS):
+        return RIG_LEGACY
+    return RIG_OFFICIAL
+
+
+# ---------------------------------------------------------------- 图像
+
+
+def image_to_pil(image: carla.Image) -> Image.Image:
+    """carla.Image(BGRA/BGR)→ PIL RGB(不落盘)。
+
+    通道数由 raw_data 长度反推:carla pyi 桩缺 image.channels(T 类坑)。
+    """
+    ch = len(image.raw_data) // (image.width * image.height)
+    arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, ch)
+    return Image.fromarray(arr[:, :, [2, 1, 0]])
+
+
+def encode_jpeg(img: Image.Image, quality: int = 80) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def draw_hud(img: Image.Image, text: str, warn: bool = False) -> Image.Image:
+    """左上角 HUD 条;`warn=True` 转红底(用于"滞后无界"这类必须看见的故障)。"""
+    d = ImageDraw.Draw(img)
+    bg = (140, 0, 0) if warn else (0, 0, 0)
+    d.rectangle([0, 0, 7 * len(text) + 8, 16], fill=bg)
+    d.text((4, 3), text, fill=(255, 255, 255))
+    return img
+
+
+def compose_grid(tiles: list[Image.Image], names: list[str], w: int, h: int, cols: int = 3) -> Image.Image:
+    """拼图:cols 列,行数由 tile 数决定(6 格 = 3×2,8 格 = 4×2 传 cols=4)。"""
+    rows = math.ceil(len(tiles) / cols)
+    grid = Image.new("RGB", (w * cols, h * rows), (0, 0, 0))
+    d = ImageDraw.Draw(grid)
+    for idx, (tile, name) in enumerate(zip(tiles, names, strict=True)):
+        row, col = divmod(idx, cols)
+        grid.paste(tile, (col * w, row * h))
+        d.text((col * w + 6, row * h + 6), name, fill=(255, 255, 0))
+    return grid
+
+
+def dump_pair(path: str, raw: Image.Image, over: Image.Image) -> None:
+    """落盘同一帧的 raw + overlay → 差集 = 真实绘制像素(数值诊断)。
+
+    场景自带绿色植被/黄色标线,直接数颜色会误判 overlay 是否画上;
+    两帧做差才排得掉干扰。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    raw.save(p.with_name(f"{p.stem}_raw{p.suffix}"))
+    over.save(p)
+    print(f"[dump] {p} + {p.stem}_raw{p.suffix}(差集诊断用)")
+
+
+# ---------------------------------------------------------------- 多路 MJPEG 服务
+
+
+class FrameSlot:
+    """最新帧槽:MJPEG 服务线程只读最新帧,不排队 → 客户端永远看最新画面。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jpeg: bytes | None = None
+        self._seq = 0
+
+    def publish(self, jpeg: bytes) -> None:
+        with self._lock:
+            self._jpeg = jpeg
+            self._seq += 1
+
+    def read(self, last_seq: int) -> tuple[bytes | None, int]:
+        with self._lock:
+            if self._seq == last_seq:
+                return None, last_seq
+            return self._jpeg, self._seq
+
+
+def index_page(names: list[str], port: int) -> bytes:
+    """索引页:N 路 `<img>` 网格(每路独立 `<img src='/stream/<name>'>`)。"""
+    cells = "".join(
+        f"<figure style='margin:0'><img src='/stream/{n}' style='width:100%;display:block'>"
+        f"<figcaption style='color:#888;font:11px monospace'>{n}</figcaption></figure>"
+        for n in names
+    )
+    return (
+        "<!doctype html><meta charset='utf-8'><title>AutoDriveData 实时视图</title>"
+        "<body style='margin:0;background:#111;color:#666;font:12px monospace'>"
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:2px'>"
+        f"{cells}</div>"
+        f"<p style='padding:4px'>共 {len(names)} 路 @ 127.0.0.1:{port}</p>"
+    ).encode()
+
+
+def start_server(slots: dict[str, FrameSlot], port: int, host: str = "127.0.0.1") -> ThreadingHTTPServer:
+    """单端口多路服务:`/` 索引页、`/stream/<name>` 取该路 MJPEG。"""
+    page = index_page(list(slots), port)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args  # 静音 access log(5fps × N 路刷屏);签名照基类(参数名 format)
+
+        def do_GET(self) -> None:
+            if self.path in ("/", "/index.html"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+                return
+            name = self.path[len("/stream/") :] if self.path.startswith("/stream/") else None
+            slot = slots.get(name) if name else None
+            if slot is None:
+                self.send_error(404, f"未知流;可选:{', '.join(slots)}")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            last = -1
+            while True:
+                jpeg, seq = slot.read(last)
+                if jpeg is None:
+                    time.sleep(0.02)
+                    continue
+                last = seq
+                try:
+                    self.wfile.write(
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(jpeg)).encode()
+                        + b"\r\n\r\n"
+                    )
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break  # 客户端断开
+
+    srv = ThreadingHTTPServer((host, port), Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def drain(q: queue.Queue) -> carla.Image:
+    """取最新一帧(丢弃积压),防渲染慢于 tick 时画面滞后。"""
+    img: carla.Image = q.get(timeout=10)
+    while not q.empty():
+        img = q.get_nowait()
+    return img
+
+
+# ---------------------------------------------------------------- GT overlay
+
+MAX_DISTANCE = 65.0  # 与采集器 GT 口径一致(Plan.md 红线:远距无点框剔除)
+
+CLASS_COLOR = {
+    "Car": (0, 255, 80),
+    "Pedestrian": (0, 220, 255),
+    "Cyclist": (255, 220, 0),
+    "Truck": (255, 140, 0),
+    "Van": (255, 140, 0),
+    "Misc": (170, 170, 170),
+}
+
+
+def actor_box(a: carla.Actor) -> ActorBox:
+    """单个 carla actor → 纯值 ActorBox(GT 框来源)。"""
+    bb = a.bounding_box
+    t = a.get_transform()
+    return ActorBox(
+        type_id=a.type_id,
+        extent=(bb.extent.x, bb.extent.y, bb.extent.z),
+        location=(bb.location.x, bb.location.y, bb.location.z),
+        rotation=rad(bb.rotation),
+        actor_location=loc(t),
+        actor_rotation=rad(t.rotation),
+    )
+
+
+def actor_boxes(world: carla.World) -> list[ActorBox]:
+    """世界内全部 vehicle/walker → 纯值 ActorBox 列表。"""
+    return [
+        actor_box(a)
+        for a in world.get_actors()
+        if a.type_id.startswith("vehicle") or a.type_id.startswith("walker")
+    ]
+
+
+def overlay_gt(
+    img: Image.Image,
+    boxes: list[ActorBox],
+    cam_loc: tuple[float, float, float],
+    cam_rot: tuple[float, float, float],
+    k: CameraIntrinsics,
+) -> Image.Image:
+    """GT 框:走 box_to_gt_line(label_2 同一口径)→ 所见即导出。"""
+    d = ImageDraw.Draw(img)
+    for box in boxes:
+        line = box_to_gt_line(box, cam_loc, cam_rot, k, max_distance=MAX_DISTANCE)
+        if not line:
+            continue
+        p = line.split()
+        cls = p[0]
+        x1, y1, x2, y2 = (float(v) for v in p[4:8])
+        dist = math.hypot(float(p[11]), float(p[13]))  # 相机系 (x, z)
+        col = CLASS_COLOR.get(cls, CLASS_COLOR["Misc"])
+        d.rectangle([x1, y1, x2, y2], outline=col, width=2)
+        d.text((x1 + 2, max(0.0, y1 - 11)), f"{cls} {dist:.0f}m", fill=col)
+    return img
+
+
+# ---------------------------------------------------------------- 环视 rig
+
+
+def build_surround_rig(
+    world: carla.World,
+    ego: carla.Vehicle,
+    width: int | None = None,
+    height: int | None = None,
+    fov: float | None = None,
+    rig: str = RIG_OFFICIAL,
+) -> dict[str, tuple[carla.Sensor, CameraIntrinsics]]:
+    """环视 rig:挂点/内参/分辨率与 `collect_surround.py` **逐字段**对齐。
+
+    模型是按"相机名 → 该名挂点"记语义的:name→挂点与训练不一致 = 第 i 路图与它学过的
+    第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:官方 BACK_LEFT/RIGHT 偏航
+    108.6/−110.8 与早期 235/125 恰好互换)。故这里只认 `rig_spec()` 的两处定义。
+
+    `rig` 选口径:默认 `official`(当前采集器);喂旧权重(`maptr_ep512.pt` 一类)必须传
+    `legacy`,否则图与权重错配(见模块头注的对照表)。
+
+    `width/height/fov` 缺省 = 训练口径(`CAM_ATTRS`,1242×375 fov90);纯显示路径
+    (`view_stream --view grid6` 不带 `--maptr`)可传小分辨率省带宽 —— 挂点与偏航不受影响。
+    """
+    w = int(width if width else CAM_ATTRS["image_size_x"])
+    h = int(height if height else CAM_ATTRS["image_size_y"])
+    f = float(fov if fov else CAM_ATTRS["fov"])
+    k = CameraIntrinsics(width=w, height=h, fov_h_deg=f)
+    mounts, yaws = rig_spec(rig)
+    bp_lib = world.get_blueprint_library()
+    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
+    for name, yaw_off in yaws.items():
+        x, y, z = mounts[name]
+        bp = bp_lib.find("sensor.camera.rgb")
+        bp.set_attribute("image_size_x", str(w))
+        bp.set_attribute("image_size_y", str(h))
+        bp.set_attribute("fov", str(f))
+        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0))
+        cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
+    return cams
+
+
+def surround_calibs(rig: str = RIG_OFFICIAL) -> dict[str, dict]:
+    """环视 rig 的 calib(与训练 infos 同结构:内参 3×3 + sensor2ego 6 元组)。
+
+    内参与采集器同式(单一来源 `carla_common.CAM_ATTRS`);sensor2ego = **该 rig** 的
+    挂点三点 + 相对偏航 —— 逐字段对齐权重训练数据里的那份,不是"最新那份"。
+    """
+    w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
+    intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
+    mounts, yaws = rig_spec(rig)
+    return {
+        name: {"sensor2ego": [*mounts[name], yaw, 0.0, 0.0], "intrinsic": intrinsic}
+        for name, yaw in yaws.items()
+    }
+
+
+def rig_mount_deviation(
+    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]],
+    ego: carla.Vehicle,
+    rig: str = RIG_OFFICIAL,
+) -> tuple[float, float]:
+    """实挂相机相对 ego 的平移/偏航 vs **该 rig 规格**的最大偏差 → (米, 度)。**调用前必须 tick**。
+
+    传感器 `get_transform()` 只在 tick 后刷新:tick 前读到的是全 0 陈旧值,
+    会假报 ~179.8°(= CAM_BACK 规格 180 − ego 固有 yaw 0.159,见 Plan.md 红线)。
+
+    **矩阵顺序是 ego⁻¹·cam**(把世界系的相机位姿换算到 ego 系);写成 `cam·ego⁻¹`
+    会把 ego 的**世界坐标**混进平移块,ego 离原点越远偏差越大(实测 138 m,偏航却
+    恰好仍为 0 —— 只看偏航自检会漏掉,故本函数同时报平移)。
+    """
+    mounts, yaws = rig_spec(rig)
+    inv_ego = np.array(ego.get_transform().get_inverse_matrix(), dtype=np.float64)
+    dev_t = dev_y = 0.0
+    for name, (cam, _) in cams.items():
+        T = inv_ego @ np.array(cam.get_transform().get_matrix(), dtype=np.float64)
+        spec = np.array(mounts[name], dtype=np.float64)
+        dev_t = max(dev_t, float(np.linalg.norm(T[:3, 3] - spec)))
+        yaw = math.degrees(math.atan2(T[1, 0], T[0, 0]))
+        dev_y = max(dev_y, abs((yaw - yaws[name] + 180.0) % 360.0 - 180.0))
+    return dev_t, dev_y
+
+
+def build_cameras(
+    world: carla.World, ego: carla.Vehicle, view: str, width: int, height: int
+) -> dict[str, tuple[carla.Sensor, CameraIntrinsics]]:
+    """单相机视角(`follow` 跟车 / `top` 俯视);`grid6` 走 `build_surround_rig`。"""
+    bp_lib = world.get_blueprint_library()
+    k = CameraIntrinsics(width=width, height=height, fov_h_deg=90.0)
+    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
+
+    def add(name: str, tf: carla.Transform) -> None:
+        bp = bp_lib.find("sensor.camera.rgb")
+        bp.set_attribute("image_size_x", str(width))
+        bp.set_attribute("image_size_y", str(height))
+        bp.set_attribute("fov", "90")
+        cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
+
+    if view == "top":
+        # 60m 高:覆盖 ±34m(纵向)× ±60m(横向),容得下 A/B 布局的 20~62m 静置车
+        add(
+            "TOP",
+            carla.Transform(carla.Location(x=0.0, y=0.0, z=60.0), carla.Rotation(pitch=-90.0)),
+        )
+    else:  # follow
+        add(
+            "FOLLOW",
+            carla.Transform(carla.Location(x=-9.0, y=0.0, z=4.5), carla.Rotation(pitch=-12.0)),
+        )
+    return cams
+
+
+def ego_box_pixels(
+    box: ActorBox,
+    cam_loc: tuple[float, float, float],
+    cam_rot: tuple[float, float, float],
+    k: CameraIntrinsics,
+) -> tuple[float, float, float, float] | None:
+    """box 的 8 角点投影到该相机 → 像素框 (x1,y1,x2,y2);无角点可见返回 None。
+
+    供第三方视角自检「ego 在画面内」用:`box_to_gt_line` 在"全落图外"时直接剔除、
+    拿不到中间量,而自检需要的就是**框在哪**(中心/宽度占比),故单开一个。
+    """
+    corners = box_corners_world(box)
+    uv = [world_to_img(tuple(p), cam_loc, cam_rot, k) for p in corners]
+    vis = [q for q in uv if q is not None]
+    if not vis:
+        return None
+    xs = [q[0] for q in vis]
+    ys = [q[1] for q in vis]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def ego_box_deviation(
+    box: ActorBox,
+    cam_loc: tuple[float, float, float],
+    cam_rot: tuple[float, float, float],
+    k: CameraIntrinsics,
+) -> tuple[float, float, float]:
+    """第三方视角自检量 → (框中心 u 相对画幅中心的偏移比, 框宽占画幅比, 框中心深度 m)。
+
+    判据不靠目检:中心偏移比 ∈ [0, 0.5] 且宽度占比 ∈ [0.05, 0.6] 才算"ego 在画面内
+    且不是贴脸/针尖"。全落图外时返回 (inf, 0, inf) —— 明确失败而非静默通过。
+    """
+    rect = ego_box_pixels(box, cam_loc, cam_rot, k)
+    if rect is None:
+        return float("inf"), 0.0, float("inf")
+    x1, _, x2, _ = rect
+    c = g_world_to_cam(box_center_world(box), cam_loc, cam_rot)
+    return abs((x1 + x2) / 2.0 - k.width / 2.0) / k.width, (x2 - x1) / k.width, float(c[2])
+
+
+def g_world_to_cam(
+    world_pt: np.ndarray, cam_loc: tuple[float, float, float], cam_rot: tuple[float, float, float]
+) -> np.ndarray:
+    """世界点 → 相机系(x 右 / y 下 / z 前);薄封装,免在 bin 里再 import geometry。"""
+    return world_to_cam(np.asarray(world_pt, dtype=np.float64)[None], cam_loc, cam_rot)[0]
+
+
+# ---------------------------------------------------------------- 第三方视角
+
+# 默认机位:ego 后 9 m / 高 5 m / 俯角 12°(与 follow 同构,但**不 attach**)
+SPECTATOR_OFFSET = carla.Transform(carla.Location(x=-9.0, y=0.0, z=5.0), carla.Rotation(pitch=-12.0))
+
+
+def build_spectator(
+    world: carla.World, offset: carla.Transform | None = None, width: int = 640, height: int = 360
+) -> tuple[carla.Sensor, CameraIntrinsics]:
+    """第三方视角相机:**不 attach**,由 `follow_spectator()` 每 tick 摆位。"""
+    bp = world.get_blueprint_library().find("sensor.camera.rgb")
+    bp.set_attribute("image_size_x", str(width))
+    bp.set_attribute("image_size_y", str(height))
+    bp.set_attribute("fov", "90")
+    cam = cast(carla.Sensor, world.spawn_actor(bp, offset or SPECTATOR_OFFSET))
+    return cam, CameraIntrinsics(width=width, height=height, fov_h_deg=90.0)
+
+
+def follow_spectator(
+    cam: carla.Sensor, ego: carla.Vehicle, offset: carla.Transform | None = None
+) -> carla.Transform:
+    """把第三方相机摆到 ego 位姿 ∘ 局部偏移处,返回实设位姿。
+
+    手算复合(不走 attach):世界位姿 = ego 位姿 @ 局部偏移。
+    旋转块走 `geometry.carla_rotation_matrix`(组合序 Rz·Ry·Rx,与 pycarla
+    `Transform.get_matrix()` 旋转块逐元素一致,有 oracle 单测锁定)——**不要**自己按
+    (roll,pitch,yaw) 拼矩阵:`carla_common.rad()` 的返回序是 (pitch, yaw, roll),正是
+    该函数要的序,两者配套;自拼极易错序。
+    """
+    off = offset or SPECTATOR_OFFSET
+    ego_t = ego.get_transform()
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = carla_rotation_matrix(rad(ego_t.rotation))
+    T[:3, 3] = loc(ego_t)
+    O = np.eye(4, dtype=np.float64)
+    O[:3, :3] = carla_rotation_matrix(rad(off.rotation))
+    O[:3, 3] = loc(off)
+    W = T @ O
+    tf = carla.Transform(
+        carla.Location(x=float(W[0, 3]), y=float(W[1, 3]), z=float(W[2, 3])),
+        carla.Rotation(*np.degrees(_rotation_from_matrix(W[:3, :3])).tolist()),
+    )
+    cam.set_transform(tf)
+    return tf
+
+
+def _rotation_from_matrix(R: np.ndarray) -> np.ndarray:
+    """Rz·Ry·Rx 分解 → (pitch, yaw, roll) 弧度(与 `carla_common.rad` 同序)。
+
+    实现落在 `geometry.rotation_matrix_to_carla`(纯值库,有往返单测);
+    这里只做 ndarray 包装,免 bin 里再拼一遍三角函数。
+    """
+    return np.array(rotation_matrix_to_carla(R), dtype=np.float64)
+
+
+# ---------------------------------------------------------------- MapTR(可选路径)
+
+
+def load_maptr(ckpt: str, device: str | None = None) -> tuple[MapTR, torch.device]:
+    """MapTR state_dict → eval 模式(与 `bin/eval_maptr.py` 同口径:num_vec/预处理都不改)。
+
+    `torch`/`maptr_impl` 在此**延迟 import**:`live_common` 被 `drive_ego.py` 这类
+    不用模型的路径 import,模块级拉 torch 会白等数秒。
+    """
+    import torch
+
+    from maptr_impl.model import MapTR
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model = MapTR().to(dev)
+    model.load_state_dict(torch.load(ckpt, map_location=dev))
+    model.eval()
+    print(f"[maptr] {ckpt} @ {dev}(num_vec={model.num_vec})")
+    return model, dev
+
+
+def maptr_predict(
+    model: MapTR,
+    dev: torch.device,
+    images: dict[str, Image.Image],
+    ego_g: list[float],
+    calibs: dict,
+    thr: float,
+) -> list[list[np.ndarray]]:
+    """单帧 6 路环视 → 逐类预测折线(ego 系)。解码口径与 `bin/eval_maptr.py` 逐行一致。"""
+    import torch
+    from torchvision.transforms.functional import normalize, to_tensor
+
+    from maptr_impl.dataset import IMAGENET_MEAN, IMAGENET_STD
+
+    imgs = {n: normalize(to_tensor(t), IMAGENET_MEAN, IMAGENET_STD)[None].to(dev) for n, t in images.items()}
+    pose = torch.tensor([ego_g], dtype=torch.float32, device=dev)
+    with torch.no_grad():
+        out, _ = model(imgs, pose, calibs)
+    scores = torch.sigmoid(out["pred_logits"][0].float()).cpu().numpy()
+    pts = out["pred_points"][0].float().cpu().numpy()
+    preds: list[list[np.ndarray]] = []
+    for c in range(model.num_classes):
+        idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
+        preds.append(list(pts[idx][scores[idx, c + 1] > thr]))
+    return preds
+
+
+# ---------------------------------------------------------------- 键盘
+
+
+class KeyboardState:
+    """非阻塞键盘 → ego 控制状态机(从 `bin/drive_ego.py` 抽出,行为不变)。
+
+    tty 下 cbreak 模式单键即响应;stdin 为管道/重定向时按行读(测试路径)。
+    `apply(ego)` 每 tick 调一次 —— sync 模式下控制命令在**下次 tick** 生效,必须持续喂。
+    """
+
+    KEYS = "w/s 油门刹车 · a/d 转向 · x 滑行 · 空格 手刹 · q 退出"
+
+    def __init__(self) -> None:
+        self.throttle = 0.0
+        self.brake = 0.0
+        self.steer = 0.0
+        self.handbrake = False
+        self.quit = False
+        self._is_tty = sys.stdin.isatty()
+        self._old = termios.tcgetattr(sys.stdin.fileno()) if self._is_tty else None
+        if self._is_tty:
+            tty.setcbreak(sys.stdin.fileno())
+
+    def close(self) -> None:
+        """还原终端属性(必须在 finally 里调,否则退出后终端不回显)。"""
+        if self._is_tty and self._old is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old)
+            self._old = None
+
+    def poll(self) -> None:
+        """非阻塞读一键并更新状态;`quit` 置位表示用户按了 q。"""
+        if self._is_tty:
+            if not select.select([sys.stdin], [], [], 0.0)[0]:
+                return
+            ch = sys.stdin.read(1)
+            ch = ch.lower() if ch else ""
+        else:
+            line = sys.stdin.readline()
+            if not line:  # 管道 EOF
+                self.quit = True
+                return
+            ch = line.strip().lower()[:1]
+        if ch == "w":
+            self.throttle, self.brake, self.handbrake = 0.8, 0.0, False
+        elif ch == "s":
+            self.throttle, self.brake, self.handbrake = 0.0, 0.8, False
+        elif ch == "a":
+            self.steer = -0.45
+        elif ch == "d":
+            self.steer = 0.45
+        elif ch == "x":
+            self.throttle, self.brake, self.steer, self.handbrake = 0.0, 0.0, 0.0, False
+        elif ch == " ":
+            self.brake, self.handbrake = 1.0, True
+        elif ch == "q":
+            self.quit = True
+
+    def apply(self, ego: carla.Vehicle) -> None:
+        ego.apply_control(
+            carla.VehicleControl(
+                throttle=self.throttle, steer=self.steer, brake=self.brake, hand_brake=self.handbrake
+            )
+        )
+
+    def hud(self, ego: carla.Vehicle) -> str:
+        v = ego.get_velocity()
+        kmh = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) * 3.6
+        return (
+            f"{kmh:5.1f}km/h 油门{self.throttle:.1f} 刹车{self.brake:.1f} "
+            f"转向{self.steer:+.2f} 手刹{int(self.handbrake)}"
+        )

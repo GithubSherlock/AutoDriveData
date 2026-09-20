@@ -542,12 +542,20 @@ def icp_odometry(
     seed: np.ndarray | None = None,
     max_iter: int = ICP_MAX_ITER,
 ) -> dict:
-    """帧间点面 ICP:src→ref,返回 {T, rmse_curve, delta_curve, converged, iters, overlap, rmse_final, failed}。
+    """帧间点面 ICP:src→ref,返回 {T, T_delta, rmse_curve, delta_curve, converged, iters, overlap, rmse_final, failed}。
 
-    - **init_T = 上一帧链式位姿**(T_0→k−1):返回 T = Δ_k @ init_T = T_0→k。
-    - **seed = 恒速先验增量 Δ_{k-2→k-1}**(帧0→1 用 None/恒等):首迭代
-      `cur = seed·src` 直接把 src 搬到 ref 附近 → 最近邻全落在 rad 0-1 壳,
-      稀疏/转弯段也不会触发全云扫描(快 ~5×);纯几何等价于无 seed(Δ = Δ_res·seed)。
+    **两个出口,语义不同,勿混用(曾因此把 ATE 算大 94×)**:
+    - `T_delta` = **点映射 src→ref**:把 src 系坐标搬到 ref 系(`p_ref = T_delta·p_src`)。
+      这是 ICP 直接解出的量,`estimate_transform_gn` 的增量就是它。
+    - `T` = **位姿**:`init_T` 视为上一帧位姿 P_{k-1},返回 `T = init_T @ inv(T_delta)` = P_k。
+      推导:src = 帧 k−1 的点云、ref = 帧 k 的点云 ⇒ T_delta = P_k⁻¹P_{k−1}
+      ⇒ P_k = P_{k−1}·(P_{k−1}⁻¹P_k) = P_{k−1}·inv(T_delta)。
+      **旧实现写的是 `T_delta @ init_T`,把点映射当位姿左乘** —— 平移无旋转时看着像在
+      累加,一转弯就发散(实测 206 m 序列 ATE 17.5 m vs 修正后 0.19 m,差 94×)。
+
+    - **seed = 恒速先验的位姿增量 ΔP = P_{k-2}⁻¹P_{k-1}**(帧0→1 用 None/恒等):函数内部
+      取逆得到点映射预测 `cur = inv(ΔP)·src`,把 src 搬到 ref 附近 → 最近邻落在
+      rad 0-1 壳,稀疏/转弯段不触发全云扫描(快 ~5×)。**只影响迭代起点,不改解**。
     - 法向对 ref 逐帧算一次(复用 estimate_normals)。
     - overlap < ICP_FAIL_OVERLAP → failed=True(链用恒速先验兜底,不污染)。
     """
@@ -556,14 +564,14 @@ def icp_odometry(
     if len(src_f) == 0 or len(ref_f) == 0:
         return _empty_icp_result(init_T, failed=True)
     ref_n = estimate_normals(ref_f)
-    # 累计增量 R_acc/t_acc 从 seed 起步(无 seed = 恒等);首迭代 cur = seed·src。
-    # src 保持自己的局部系(state = src),残差 = 相对邻居帧的增量 Δ。
+    # 累计**点映射** R_acc/t_acc 从 seed 起步(无 seed = 恒等);首迭代 cur = seed_map·src。
+    # **seed 是位姿增量 → 这里取逆换成点映射**(方向错会让迭代起点偏 2×,实测收敛到次优)。
     if seed is None:
         R_acc, t_acc = np.eye(3), np.zeros(3)
         cur = src_f.copy()
     else:
-        seed = np.asarray(seed, dtype=np.float64)
-        R_acc, t_acc = seed[:3, :3].copy(), seed[:3, 3].copy()
+        seed_map = np.linalg.inv(np.asarray(seed, dtype=np.float64))
+        R_acc, t_acc = seed_map[:3, :3].copy(), seed_map[:3, 3].copy()
         cur = (R_acc @ src_f.T).T + t_acc
     rmse_curve: list[float] = []
     delta_curve: list[float] = []
@@ -587,13 +595,15 @@ def icp_odometry(
     T_delta = np.eye(4)
     T_delta[:3, :3] = R_acc
     T_delta[:3, 3] = t_acc
-    T = T_delta @ init_T
+    # 位姿 = init_T @ inv(T_delta)(推导见 docstring;勿改回 T_delta @ init_T)
+    T = init_T @ np.linalg.inv(T_delta)
     # 重叠度:变换后点云在 ref 网格 0.3m 内的比例(批量最近邻,O(N) 内存)
     _, d = nearest_batch(ref_f, cur, GRID_CELL)
     overlap = float((d < ICP_OVERLAP_RADIUS**2).mean())
     failed = overlap < ICP_FAIL_OVERLAP
     return {
         "T": T,
+        "T_delta": T_delta,
         "rmse_curve": rmse_curve,
         "delta_curve": delta_curve,
         "converged": converged,
@@ -608,6 +618,7 @@ def icp_odometry(
 def _empty_icp_result(init_T: np.ndarray, *, failed: bool) -> dict:
     return {
         "T": np.array(init_T, dtype=np.float64).copy(),
+        "T_delta": np.eye(4),  # 空云 = 点映射恒等 → T = init_T
         "rmse_curve": [],
         "delta_curve": [],
         "converged": False,

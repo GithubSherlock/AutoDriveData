@@ -96,11 +96,15 @@ def main() -> None:
                 c_, s_ = np.cos(yaw), np.sin(yaw)
                 rot = np.eye(4)
                 rot[:3, :3] = np.array([[c_, -s_, 0.0], [s_, c_, 0.0], [0.0, 0.0, 1.0]])
-                # 初值 = 候选云 → 当前云的位姿差 × 右乘 yaw(绕**源云自身** z 轴预旋)。
-                # 口径:M_{a→b} = T_b·T_a⁻¹(链式 T_k 把帧 k 坐标映回帧 0;合成关系
-                # T_k = Δ_k·T_{k-1} ⇒ Δ_k = T_k·T_{k-1}⁻¹,与 icp_odometry 的 T = Δ·init 自洽)。
-                init = poses[i] @ np.linalg.inv(poses[j]) @ rot
-                res = icp_odometry(kf_clouds[c][:, :3], kf_clouds[n][:, :3], init)
+                # **期望点映射**:把候选帧 j 的点云搬进当前帧 i 的坐标系 = P_i⁻¹P_j,
+                # 右乘 rot 绕**源云自身** z 轴预旋(ScanContext 列滚动不变 → 180° 歧义)。
+                # 这个量正好是 PGO 边要的 Z_ij(= T_i⁻¹T_j),所以直接用 ICP 的 T_delta 出口。
+                guess_map = np.linalg.inv(poses[i]) @ poses[j] @ rot
+                # seed 契约 = **位姿增量**(icp_odometry 内部取逆换成点映射),故传其逆。
+                # **不能用 init_T 当迭代初值**:init_T 只参与出口合成,不影响 ICP 解。
+                res = icp_odometry(
+                    kf_clouds[c][:, :3], kf_clouds[n][:, :3], np.eye(4), seed=np.linalg.inv(guess_map)
+                )
                 if best is None or res["rmse_final"] < best["rmse_final"]:
                     best = res
                     best["yaw"] = float(np.degrees(yaw))
@@ -122,7 +126,9 @@ def main() -> None:
                     "icp_rmse": round(best["rmse_final"], 5),
                     "converged": bool(best["converged"]),
                     "accepted": bool(ok),
-                    "T": best["T"].tolist(),
+                    # 存 **点映射** T_delta(= Z_ij = P_i⁻¹P_j),PGO 边的口径;
+                    # best["T"] 是位姿(init=恒等时 = inv(T_delta)),不是边要的量。
+                    "T": best["T_delta"].tolist(),
                 }
             )
     accepted = [e for e in loops if e["accepted"]]

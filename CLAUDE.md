@@ -19,9 +19,14 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 - **P1 参数扫描 + 失效归因 ✅**(§5.10):[autodrivedata/attribution.py](autodrivedata/attribution.py) 纯值(逐帧匹配/分箱/逐帧速度自证)+ [bin/eval_attr.py](bin/eval_attr.py)(多跑 × 距离/框高/TTC 网格 + 漏检画像),与 AP 共用同一 `box_iou2d`。三结论:**尺度主导**(<32px 0.15–0.47 / ≥32px 0.78–1.00,断崖 ≈21–24px)、**CARLA 无运动模糊**(4/8/12 m/s 梯度能量 35.6/35.2/34.8,检出率 0.914/0.886/0.909 → 速度不改图像,退化只能人工注入)、**天气只前移断崖**(雨夜 40-50m 零检出→30-40m 0.32,雾最晚 0.91)
 - **MapTR 矢量管道 ✅**(§5.11):A 阶段矢量库(opendrive/mapvec + A6 oracle 0.00cm)→ B 阶段环视采集/组装/投影验收 → C 阶段**参考自实现**(`maptr_impl/`:GKT + 分层 query,单帧过拟合锚定正确性)→ D 阶段 chamfer AP。训练数据 200 帧(Town10HD_Opt@spawn0)
   - **第二轮 ep512 结果口径分化**:留出集 @0.2 **0.0674**(vs ep256 0.0510,+32%)、@0.3 0.0904、@0.4 0.1280(后两档持平略降)→ 保守操作点仍获益、高阈值已饱和;训练对照 0.2603 → **泛化间隙 3.9×**(ep256 时 2.1×)→ 下轮收益靠**扩数据**而非继续长训。权重 `outputs/maptr_ep512.pt`
-  - **实时 overlay ✅**(§5.11f):`view_stream.py --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev`(rig 只认 `collect_surround.SURROUND_CAMS` 一处定义;推理用实挂相机世界位姿);实况数值验证 overlay 品红 25553 px vs raw 0、地平线以上 0/18496、FPS 1.1–1.4
+  - **实时 overlay ✅**(§5.11f):`view_stream.py --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev`(rig 走 `live_common.rig_spec` 两处定义;推理用实挂相机世界位姿);实况数值验证 overlay 品红 25553 px vs raw 0、地平线以上 0/18496、FPS 1.1–1.4
+  - **rig 两代并存(2026-09-19,§P-L.1)**:`legacy`(共用 `SENSOR_OFFSET` + BACK_LEFT/RIGHT 235/125)对 `maptr_ep256/ep512`;`official`(逐相机 `SENSOR_MOUNTS` + 108.6/−110.8)对 `maptr_600/1000`。**rig 必须与权重训练数据一致,不是"越新越好"**;`--rig auto`(默认)按权重名选,拿 official 喂 ep512 是错配(品红 122711→135989 px)。A/B 探针 `bin/probe_rig_mount.py`
+- **8 路实时 studio ✅**(2026-09-19 A 期 / 2026-09-20 B 期,Plan2.md §P-L):`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页 / 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载)+ `bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 4×2;`--keyboard` 折进 tick 循环)。`view_stream.py`/`drive_ego.py` 改薄编排
+  - **B 期在线 SLAM ✅**(§P-L.2~P-L.4):`autodrivedata/live_slam.py`(`LiveSlam.push/snapshot` + 地图/轨迹换到当前 ego 系 + `SlamWorker`)+ `live_studio --slam`(语义 LiDAR → BEV 槽画地图点灰/轨迹青,HUD 显式报滞后)。**两条原前提都被实测推翻**:①离线 ICP 0.78 s/帧是 400 帧**含转弯的平均值**,在线逐帧只有 0.15–0.35 s;②**worker 线程被 GIL 饿死**(主线程 overlay/拼图/HUD 是纯 Python 字节码;同一对点云 worker eff 0.04–0.24 vs 主线程同步 0.90–1.00;钉 `OPENBLAS_NUM_THREADS=1` 不改结论 ⇒ 不是 BLAS 线程池)⇒ **默认同步执行**(~2.4 fps),`--slam-async` 留作对照
+  - **有界丢旧队列 ≠ 滞后有界**(关键机制):队列有界的是**深度**不是 `prev_down` 与当前帧的**间隙**,而 ICP 成本随间隙爆炸(0.8 m 0.2 s → 8 m 2.8 s → 32 m 39 s)⇒ 丢帧→间隙更大→更慢→更多丢帧**无界正反馈**(异步实测:259 tick 只处理 8 帧、滞后涨到 157 帧/45 s)。修复 = **按帧号差止损**(`--slam-max-gap` 默认 3,超阈帧不做 ICP 直接恒速外推,`prev_down` 照推进)。**滞后口径 = 已 tick 帧号 − 已处理帧号**,不是 `n_offered − n_processed`(后者随丢帧无界增长,是假故障)
+  - **验收数字**:400 帧在线 vs 离线链式位姿**逐元素差 0.0**、ATE **0.18768 m**(= 离线 = 参照);同步 136 tick **丢 0/止损 0/lag_max 0**;退出后 `nvidia-smi` 回基线、残留进程 0;BEV 画出 90611 点 / 轨迹 20 段 / **画出的点数 = 窗内点数**。产物 `outputs/slam_gt/{accept_sync,accept_async,accept_parity_full}.json`。**判据订正**:"地图点窗内占比 ≈100%"是误读 —— 地图覆盖 ~300 m 而窗口只有 30×60 m,占比 0.24 正常
   - **逐帧契约 ✅**(§5.11h):`eval_maptr.py --out-frames` → `outputs/surround_pred/{token}.json`(`mapvec_pred/1`:schema/帧归属/类序/坐标系/窗口/阈值/溯源,GT 同文件携带;旧 `--out-pred` 是跨帧汇聚、实例无帧归属,不可对外)。供 AutoLabel 消费——**消费方未接**
-- **官方栈对照已终止**(2026-09-14,§5.12):官方 MapTR/MapQR 复线(同数据重训对照)中止,env + 产物已删(回收 15 G,磁盘 45 G 可用);**自实现线全部资产不受影响**(ep512 权重/逐帧契约/实时 overlay 照旧)。A′ 的**口径**结论保留(两套 mAP 口径的关系),但"官方实现 vs 自实现"的对照表不存在
+- **官方栈对照已终止**(2026-09-14,§5.12):官方 MapTR/MapQR 复线(同数据重训对照)中止,官方栈产物 `outputs/maptr_official/` 已删(**env 当日漏删,2026-09-19 补删**,合计回收 15 G);**自实现线全部资产不受影响**(ep512 权重/逐帧契约/实时 overlay 照旧)。A′ 的**口径**结论保留(两套 mAP 口径的关系),但"官方实现 vs 自实现"的对照表不存在
 - **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 
 ## 环境(勿新建;direnv 进入目录自动激活 autodrivedata,首次需 `direnv allow`)
@@ -30,8 +35,21 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 |---|---|---|
 | **autodrivedata**(本项目) | 3.11.16 | pycarla + ultralytics;采集 `bin/collect_*.py`、2D 评估 eval_2d_ab.py、3D 比对 eval_kitti.py、全部单测 |
 | **autolabel** `/root/miniconda3/envs/autolabel` | 3.11.15 | mmdet3d;3D 检测 `auto3dlabel run`、oracle 对比 |
+| **hivt** `/root/autodl-tmp/envs/hivt` | 3.8.20 | HiVT 复现栈(torch1.8.0 / pl1.5.2 / pyg1.7.2 / argoverse-api),CPU 推理。**未注册进 conda envs_dirs** → `conda info --envs` 看不到、`activate hivt` 失败,**只能用绝对路径调** `envs/hivt/bin/python`(见 [bin/convert_hivt_pt.py](bin/convert_hivt_pt.py) 用法头)。数据盘 2.5 G,勿删 |
 | **base** | 3.10.8 | conda 底座 + direnv;pycarla/ultralytics 已于 2026-09-10 迁出,不承担项目职责 |
-| ~~**maptr_official**~~ **已删**(2026-09-13 建 → 2026-09-14 终止并删除,§5.12) | ~~3.8~~ | 官方 MapTR/MapQR 老栈(torch1.9.1+cu111 / mmcv-full1.4.0 / mmdet2.14.0)。**用户裁决整条官方复线中止**(41 h 训练预算仍过长)→ env 与产物已删、回收 15 G。**重建设路子**:`bin/setup_maptr_official.sh all` + Plan.md §5.12(含四个钉子/两处 bug/独立评测四坑/A′ 口径结论,知识都留在文档里) |
+| ~~**maptr_official**~~ **已删**(2026-09-13 建 → 2026-09-14 终止,env 于 **2026-09-19 补删**,§5.12) | ~~3.8~~ | 官方 MapTR/MapQR 老栈(torch1.9.1+cu111 / mmcv-full1.4.0 / mmdet2.14.0)。**用户裁决整条官方复线中止**(41 h 训练预算仍过长)→ env 与产物已删、回收 15 G。**重建设路子**:`bin/setup_maptr_official.sh all` + Plan.md §5.12(含四个钉子/两处 bug/独立评测四坑/A′ 口径结论,知识都留在文档里) |
+
+**env 落点与可见性(2026-09-19 核实,勿再困惑)**:`conda config --show envs_dirs` = `/root/miniconda3/envs` + `/root/.conda/envs`,
+即**只有这两个目录下的环境才被 conda 按名字发现**。而 `/root/autodl-tmp/envs/` 是数据盘上的**独立目录,不在 envs_dirs 里**:
+
+| 环境 | 物理落点 | conda 可见? | 机制 |
+|---|---|---|---|
+| autodrivedata | `/root/autodl-tmp/envs/autodrivedata`(7.5 G,**数据盘**) | ✅ 可见 | `/root/miniconda3/envs/autodrivedata` 是**符号链接**指向它(2026-09-10 建,把大 env 挪出 30 G 系统盘) |
+| hivt | `/root/autodl-tmp/envs/hivt`(2.5 G,数据盘) | ❌ 不可见 | 用 `conda create -p <路径>` 创建(见其 `conda-meta/history`),**从未建符号链接** → 只能绝对路径调用 |
+| autolabel | `/root/miniconda3/envs/autolabel`(8.0 G,系统盘) | ✅ 可见 | 常规 `-n` 创建,无副本、无链接 |
+
+⇒ **"为什么 autodrivedata 两处都有、autolabel 只有一处、hivt 一处却看不见"**:autodrivedata 是「真身 + 符号链接」两处(链接 0 字节,不占额外空间);
+autolabel 从未迁移故只有真身一处;hivt 有真身但**没有链接**故 conda 看不见。三者都不是"副本",不存在重复占盘。
 
 纪律:autodrivedata 包**不 import carla**(纯值,任何 env 可单测);依赖单向 AutoDriveData → AutoLabel(3D 检测消费方),禁止反向。
 
@@ -71,6 +89,11 @@ python bin/view_stream.py --scene rain_night --speed 8  # 天气 + 定速直行
 python bin/view_stream.py --view follow --dump outputs/dumps/f.png  # 落 raw+overlay 做差集诊断
 # MapTR 实时预测 overlay(需 --view grid6;投影链与离线 viz 共用 autodrivedata/mapviz)
 PYTHONPATH=$PWD python bin/view_stream.py --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev --dump outputs/dumps/m.png
+# 8 路 studio(6 相机 + BEV + 第三方 + 拼图;WASD 操控 + 在线 SLAM)
+python bin/live_studio.py                             # 8 路 + 键盘(stdin 是 tty 时默认开)
+python bin/live_studio.py --speed 8 --npcs            # 定速直行(键盘自动关;两者互斥会报错)
+python bin/live_studio.py --slam --speed 8 --duration 90 --slam-report outputs/slam_gt/accept.json
+python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8  # 感知 + SLAM 同屏
 PYTHONPATH=$PWD python bin/viz_maptr_pred.py --start 250 --frames 6   # 离线:预测回投 6 相机拼图 + BEV
 # 逐帧契约落盘(供 AutoLabel 消费;GT 同文件携带,见 autodrivedata/mapvec_schema.py)
 PYTHONPATH=$PWD python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \
@@ -114,5 +137,6 @@ python -m pytest tests/ -q
 - **产出必须落在项目内**:写盘路径一律经 `autodrivedata/paths.project_path()`(**相对路径 = 相对项目根**,不随 cwd 漂移;绝对路径原样放行)。历史口径"相对 cwd 的 outputs/"在换 cwd/换会话时会把权重与可视化散到项目外(清盘时无从分辨)。运行支撑物同理:shim/兼容层/服务器日志在 `outputs/carla/`(原 /tmp 与 carla_home 副本已废弃)。**读路径不锚定**(输入沿用 cwd 口径,便于临时 `cd`)
 - **官方栈复线(§5.12)已终止**(2026-09-14 用户裁决;**不要主动重提**)。重启前先读 Plan.md §5.12:四个钉子(`bs1×累积5` 口径 / config 必须钉 `color_type="color"`、否则在线评测一开就炸 / v1 同位姿帧放行判据 / 预算对齐基线**第一轮** 256 ep)、独立评测的四个坑(单卡 `assert False`、`init_dist` 强制 spawn + `dict_keys`、产物路径相对 cwd、dist_test.sh 硬编码 `--eval bbox`)、A′ 口径结论(官方 eval_map 100 点 GT 重采样 = 0.0699 才是参照值)。**成本在 BEV transformer 不在主干**——降分辨率换不到吞吐(0.5 反而更慢)
 - **停训练必须连 DataLoader worker 一起收**:worker 是 fork 出来的,而 fork 发生在 CUDA 初始化**之后** ⇒ worker **继承 CUDA 上下文**,父进程被杀后变 PPID=1 的孤儿**继续占显存**(nvidia-smi 仍把额度挂在已死的父 PID 名下,实测 `kill` 父进程后仍占 5068 MiB)→ 收完所有相关 PID 后 GPU 才归零。**判据:`nvidia-smi` 归零才算停干净,不是"父进程没了"**
+- **纯 Python 主循环里别指望 worker 线程**:studio 主线程每 tick 的 GT overlay / `compose_grid` / HUD / 灯态绘制全是**字节码**,持 GIL 不放 ⇒ 同一对点云 ICP 在 worker 线程 eff **0.04–0.24** vs 主线程同步 **0.90–1.00**(差 10–20×)。**判据看 `time.thread_time()/wall`(eff),不是 wall 单值**;`OPENBLAS_NUM_THREADS=1` 不改结论 ⇒ 与 BLAS 线程池无关。用 PIL/CARLA tick 施负载测不出(它们会释放 GIL)—— 必须用**纯 Python 小矩阵自旋**才能复现。同理:**有界队列有界的是深度不是"状态间隙"**,任何"上一帧 vs 当前帧"成本随间隙超线性的算法(ICP/配准/图优化),丢帧都会变成"丢帧→间隙更大→更慢→更多丢帧"的正反馈,**必须按帧号差止损**(`SlamWorker.max_gap`)
 - 提交:Conventional Commits;**提交信息不附 AI 署名**(不加 `Co-Authored-By: Claude` 等 trailer);改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 **Plan2.md**(教程能力线另同步 docs/milestone2.md);Plan.md 已冻结,只保留定案与历史记录
 - **格式口径已定死**:`[tool.ruff]` 在 pyproject(line-length 110 / select E,F,I,UP,B / ignore E501,E741),`ruff format` 是唯一 formatter;批量纯格式提交要追加到 `.git-blame-ignore-revs`

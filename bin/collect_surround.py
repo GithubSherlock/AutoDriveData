@@ -66,7 +66,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
-    ap.add_argument("--map", default=None, help="目标地图(如 Town13/Town15;None = 当前服务器默认图)。运行时 load_world 切图,供多图扩数据")
+    ap.add_argument(
+        "--map",
+        default=None,
+        help="目标地图(如 Town13/Town15;None = 当前服务器默认图)。运行时 load_world 切图,供多图扩数据",
+    )
     args = ap.parse_args()
 
     scene = SCENES[args.scene] if args.scene else None

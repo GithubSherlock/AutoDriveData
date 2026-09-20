@@ -30,6 +30,8 @@ from autodrivedata.calib import CameraIntrinsics, world_to_img
 
 PRED_COLOR = (255, 0, 255)  # 品红:路面场景罕见
 GT_COLOR = (0, 255, 255)  # 青绿:同罕见(植被绿与其可区分)
+MAP_COLOR = (200, 200, 200)  # 浅灰:SLAM 累积点云(与 pred 品红 / GT 青绿都不撞)
+TRAJ_COLOR = (0, 255, 255)  # 青绿:轨迹(与 GT_COLOR 同色系但语义独立,同图不同现)
 BEV_X = (-15.0, 15.0)  # BEV 窗口 x(前向,米)——与模型输出系同口径
 BEV_Y = (-30.0, 30.0)  # BEV 窗口 y(左向,米)
 
@@ -125,29 +127,126 @@ def draw_projected_lines(
     return len(segs)
 
 
+def bev_px(x: float, y: float, size: tuple[int, int]) -> tuple[float, float]:
+    """ego 系 (x 前 / y 左) → BEV 面板像素。**BEV 窗口的唯一换算处**(bev_panel 也用它)。"""
+    w, h = size
+    return (x - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w, (BEV_Y[1] - y) / (BEV_Y[1] - BEV_Y[0]) * h
+
+
+def bev_window_mask(pts: np.ndarray) -> np.ndarray:
+    """点 (N,2|3) 是否落在 BEV 窗口内 `(N,) bool`。
+
+    **单一来源**:`bev_points`(画点)、`bev_trajectory`(只连窗内相邻点)与调用方
+    的"窗内点占比"诊断共用它 —— 三处各写一遍窗口判据迟早漂。
+    """
+    arr = np.asarray(pts, dtype=np.float64)
+    if arr.size == 0:
+        return np.zeros(0, dtype=bool)
+    arr = arr.reshape(-1, arr.shape[-1])
+    return (
+        (arr[:, 0] >= BEV_X[0]) & (arr[:, 0] <= BEV_X[1]) & (arr[:, 1] >= BEV_Y[0]) & (arr[:, 1] <= BEV_Y[1])
+    )
+
+
+def bev_points(
+    draw: ImageDraw.ImageDraw,
+    pts: np.ndarray,
+    color: tuple[int, int, int] = MAP_COLOR,
+    size: tuple[int, int] = (420, 420),
+) -> int:
+    """点散布到 BEV 窗口,返回**画出的点数**(0 = 没画上:数值自证,不靠目检)。
+
+    为什么单开一个函数而不是复用 `bev_panel`:`bev_panel` 走 `draw.line` 折线口径
+    (每条 ≥2 点),而 SLAM 累积点云 / 原始 LiDAR 是**散点** —— 拿它当折线画会把
+    相邻两点连成假线。窗口与 `bev_panel` 共用 `BEV_X`/`BEV_Y` 与 `bev_px`,保证两图可比。
+
+    **逐点 Python 循环改批量**:SLAM 累积地图可达 40 万点,逐点 `draw.point` 单帧要
+    几百毫秒(实时流 5 fps 的预算只有 200 ms)。改成 numpy 算像素 + 一次
+    `draw.point(list)` 提交;窗口外的点先被 `bev_window_mask` 滤掉(窗内只占少数)。
+    """
+    arr = np.asarray(pts, dtype=np.float64)
+    if arr.size == 0:
+        return 0
+    arr = arr.reshape(-1, arr.shape[-1])[:, :2]
+    arr = arr[bev_window_mask(arr)]
+    if len(arr) == 0:
+        return 0
+    w, h = size
+    px = (arr[:, 0] - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w
+    py = (BEV_Y[1] - arr[:, 1]) / (BEV_Y[1] - BEV_Y[0]) * h
+    draw.point([(float(a), float(b)) for a, b in zip(px, py, strict=True)], fill=color)
+    return len(arr)
+
+
+def bev_trajectory(
+    draw: ImageDraw.ImageDraw,
+    poses_ego: np.ndarray,
+    color: tuple[int, int, int] = TRAJ_COLOR,
+    width: int = 1,
+    size: tuple[int, int] = (420, 420),
+) -> int:
+    """轨迹折线(ego 系 (N,2|3))画到 BEV 窗口,返回**画出的段数**。
+
+    **只画窗口内的连续段**:跨窗口的相邻点若直接连线,会在面板上拉出一条穿越全图的
+    假边(§5.11 B2 GT 粗筛踩过同类"跨窗折线"坑)。
+    """
+    arr = np.asarray(poses_ego, dtype=np.float64)
+    if arr.ndim != 2 or len(arr) < 2:
+        return 0
+    arr = arr[:, :2]
+    inside = bev_window_mask(arr)
+    n = 0
+    for (x0, y0), (x1, y1), ok0, ok1 in zip(arr[:-1], arr[1:], inside[:-1], inside[1:], strict=True):
+        if not (ok0 and ok1):
+            continue
+        draw.line(
+            [bev_px(float(x0), float(y0), size), bev_px(float(x1), float(y1), size)], fill=color, width=width
+        )
+        n += 1
+    return n
+
+
 def bev_panel(
     preds: list[list[np.ndarray]],
     gts: list[list[np.ndarray]] | None = None,
     title: str = "",
     size: tuple[int, int] = (420, 420),
+    points: np.ndarray | None = None,
+    traj: np.ndarray | None = None,
+    stats: dict[str, int] | None = None,
 ) -> Image.Image:
-    """BEV 面板:pred 品红 / GT 青绿;窗口 BEV_X × BEV_Y(与模型输出系同口径)。
+    """BEV 面板:pred 品红 / GT 青绿 / SLAM 地图点浅灰 / 轨迹青绿;窗口 BEV_X × BEV_Y。
 
     `gts=None` 供实时流用(线上无地图 GT:GT 来自 A 阶段矢量库,不在 CARLA 里)。
+    `points`/`traj` 供在线 SLAM 重建叠加(ego 系,窗口外的点不画)。
+
+    `stats` 给定时**就地填入绘制计数**(`n_points` / `n_traj_seg` / `n_points_total`),
+    供调用方做**数值自证**(画上没画上不靠目检)。做成 out-param 而非改返回值:
+    现有调用方(`view_stream` / 测试)不必跟着改签名。
     """
     w, h = size
     img = Image.new("RGB", (w, h), (20, 20, 20))
     draw = ImageDraw.Draw(img)
 
     def px(x: float, y: float) -> tuple[float, float]:
-        return (x - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w, (BEV_Y[1] - y) / (BEV_Y[1] - BEV_Y[0]) * h
+        return bev_px(x, y, size)
 
+    if points is not None:
+        n_drawn = bev_points(draw, points, MAP_COLOR, size)
+        if stats is not None:
+            arr = np.asarray(points, dtype=np.float64)
+            stats["n_points"] = n_drawn
+            stats["n_points_total"] = 0 if arr.size == 0 else int(arr.reshape(-1, arr.shape[-1]).shape[0])
     for gc in gts or []:
         for g in gc:
             draw.line([q for p in g for q in px(p[0], p[1])], fill=GT_COLOR, width=1)
     for pc in preds:
         for p in pc:
             draw.line([q for pt in p for q in px(pt[0], pt[1])], fill=PRED_COLOR, width=1)
+    if traj is not None:
+        n_seg = bev_trajectory(draw, traj, TRAJ_COLOR, 1, size)
+        if stats is not None:
+            stats["n_traj_seg"] = n_seg
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline=(120, 120, 120))
     if title:
         draw.text((4, 2), title, fill=(255, 255, 255))

@@ -143,6 +143,157 @@ class TestBevPanel:
         assert mapviz.bev_panel(line, line, "", (64, 64)).size == (64, 64)
 
 
+class TestBevPoints:
+    """在线 SLAM 重建的点散布(散点口径,与 bev_panel 的折线口径不同)。"""
+
+    def test_inside_points_drawn_outside_dropped(self):
+        img = Image.new("RGB", (200, 200), (0, 0, 0))
+        pts = np.array(
+            [
+                [0.0, 0.0],  # 窗口中心
+                [10.0, 10.0],  # 窗口内
+                [100.0, 0.0],  # x 超窗(前向 ±15m)
+                [0.0, 100.0],  # y 超窗(左向 ±30m)
+            ]
+        )
+        n = mapviz.bev_points(ImageDraw.Draw(img), pts, (255, 255, 255), (200, 200))
+        assert n == 2, "只应画窗口内的 2 个点"
+        arr = np.asarray(img)
+        ys, xs = np.nonzero((arr == 255).all(axis=2))
+        assert len(xs) == 2
+        # (0,0) → 面板几何中心;(10,10) → x 前 10m ⇒ px=(10+15)/30·200≈166.7,
+        #   y 左 10m ⇒ py=(30−10)/60·200≈66.7(**左为正方向** ⇒ y 越大像素行越小)
+        assert float(xs.min()) == pytest.approx(100.0, abs=1.0)
+        assert float(ys.max()) == pytest.approx(100.0, abs=1.0)
+        assert float(xs.max()) == pytest.approx(166.7, abs=1.5)
+        assert float(ys.min()) == pytest.approx(66.7, abs=1.5)
+
+    def test_empty_and_1d_inputs_are_safe(self):
+        img = Image.new("RGB", (64, 64), (0, 0, 0))
+        assert mapviz.bev_points(ImageDraw.Draw(img), np.zeros((0, 2)), (255, 255, 255), (64, 64)) == 0
+        # (N,3) 点云:只用前两列
+        assert mapviz.bev_points(ImageDraw.Draw(img), np.zeros((3, 3)), (255, 255, 255), (64, 64)) == 3
+
+
+class TestBevTrajectory:
+    def test_cross_window_segment_not_drawn(self):
+        """跨窗相邻点**不得**连线(否则会在面板上拉一条穿越全图的假边)。
+
+        序列 `[窗内, 窗内, 窗外, 窗外, 窗内, 窗内]` 的相邻对逐个数:
+        (0,1) 画、(1,2) 跳过、(2,3) 跳过、(3,4) 跳过、(4,5) 画 ⇒ **2 段**。
+        若跨窗段被画上会是 5 段,且像素会横穿整个面板。
+        """
+        img = Image.new("RGB", (200, 200), (0, 0, 0))
+        assert (
+            mapviz.bev_trajectory(
+                ImageDraw.Draw(img), np.array([[0.0, 0.0], [5.0, 0.0]]), (255, 255, 255), 1, (200, 200)
+            )
+            == 1
+        )
+        crossed = np.array([[0.0, 0.0], [5.0, 0.0], [500.0, 0.0], [500.0, 5.0], [0.0, 0.0], [5.0, 0.0]])
+        img2 = Image.new("RGB", (200, 200), (0, 0, 0))
+        n = mapviz.bev_trajectory(ImageDraw.Draw(img2), crossed, (255, 255, 255), 1, (200, 200))
+        assert n == 2, f"跨窗段被画了(实得 {n} 段,期望 2)"
+        # 画出的像素必须全在面板内(跨窗段若画了会出界)
+        arr = np.asarray(img2)
+        assert ((arr == 255).all(axis=2)).sum() > 0
+        assert ((arr == 255).all(axis=2)).sum() <= 200 * 200
+
+    def test_short_input_returns_zero(self):
+        img = Image.new("RGB", (64, 64), (0, 0, 0))
+        assert mapviz.bev_trajectory(ImageDraw.Draw(img), np.zeros((1, 2)), (255, 255, 255), 1, (64, 64)) == 0
+        assert mapviz.bev_trajectory(ImageDraw.Draw(img), np.zeros((0, 2)), (255, 255, 255), 1, (64, 64)) == 0
+
+
+class TestBevPanelSlamOverlay:
+    def test_points_and_traj_reach_the_panel(self):
+        img = mapviz.bev_panel(
+            [],
+            None,
+            "",
+            (200, 200),
+            points=np.array([[0.0, 0.0], [5.0, 5.0]]),
+            traj=np.array([[0.0, 0.0], [3.0, 0.0], [6.0, 0.0]]),
+        )
+        arr = np.asarray(img)
+        assert ((arr == np.array(mapviz.MAP_COLOR)).all(axis=2)).sum() > 0, "SLAM 地图点没画上"
+        assert ((arr == np.array(mapviz.TRAJ_COLOR)).all(axis=2)).sum() > 0, "轨迹没画上"
+
+    def test_stats_out_param_counts_draws(self):
+        """`stats` 就地填绘制计数 —— 在线流靠它做**数值自证**(不靠目检)。
+
+        关键:`n_points` 是**窗内**点数、`n_points_total` 是输入总数 ⇒ 两者之比就是
+        "窗内占比"诊断(计划 B4 第 4 项:窗外的点不该出现)。
+        """
+        stats: dict[str, int] = {}
+        pts = np.array([[0.0, 0.0], [5.0, 0.0], [100.0, 0.0], [0.0, 100.0]])  # 2 内 2 外
+        mapviz.bev_panel(
+            [],
+            None,
+            "",
+            (200, 200),
+            points=pts,
+            traj=np.array([[0.0, 0.0], [3.0, 0.0], [6.0, 0.0]]),
+            stats=stats,
+        )
+        assert stats["n_points"] == 2
+        assert stats["n_points_total"] == 4
+        assert stats["n_traj_seg"] == 2
+
+    def test_stats_absent_by_default(self):
+        """不给 `stats` 时行为不变(现有调用方不必跟着改)。"""
+        assert mapviz.bev_panel([], None, "", (64, 64)).size == (64, 64)
+
+
+class TestBevWindowMask:
+    """窗口判据的**单一来源**:画点 / 连轨迹 / 调用方诊断共用它。"""
+
+    def test_boundaries_are_inclusive(self):
+        m = mapviz.bev_window_mask(
+            np.array(
+                [
+                    [mapviz.BEV_X[0], mapviz.BEV_Y[0]],  # 角点(含)
+                    [mapviz.BEV_X[1], mapviz.BEV_Y[1]],  # 角点(含)
+                    [mapviz.BEV_X[1] + 1e-6, 0.0],  # 差一点出界
+                    [0.0, mapviz.BEV_Y[0] - 1e-6],
+                ]
+            )
+        )
+        assert m.tolist() == [True, True, False, False]
+
+    def test_empty_input_is_safe(self):
+        assert mapviz.bev_window_mask(np.zeros((0, 2))).tolist() == []
+        assert mapviz.bev_window_mask(np.zeros((0, 3))).tolist() == []
+
+    def test_agrees_with_bev_points_count(self):
+        """掩码与 `bev_points` 的实际绘制数必须一致(否则诊断会骗人)。"""
+        rng = np.random.default_rng(0)
+        pts = np.stack([rng.uniform(-40, 40, 500), rng.uniform(-60, 60, 500)], 1)
+        img = Image.new("RGB", (200, 200), (0, 0, 0))
+        n_draw = mapviz.bev_points(ImageDraw.Draw(img), pts, (255, 255, 255), (200, 200))
+        assert n_draw == int(mapviz.bev_window_mask(pts).sum())
+
+
+class TestBevPointsBatchPerf:
+    def test_large_cloud_draws_in_bounded_time(self):
+        """40 万点(累积地图上限量级)必须**批量**提交,不能逐点 `draw.point`。
+
+        判据是**返回计数正确** + 单次绘制耗时有界。逐点版在 40 万点上要数百毫秒
+        (实时流 5 fps 的整帧预算只有 200 ms),批量版是毫秒级 —— 阈值取 2 s 留足
+        慢机器余量,只拦"逐点 + 巨大点云"这种量级错,不做微基准。
+        """
+        import time as _time
+
+        rng = np.random.default_rng(0)
+        pts = np.stack([rng.uniform(-15, 15, 400_000), rng.uniform(-30, 30, 400_000)], 1)
+        img = Image.new("RGB", (420, 420), (0, 0, 0))
+        t0 = _time.perf_counter()
+        n = mapviz.bev_points(ImageDraw.Draw(img), pts, (255, 255, 255), (420, 420))
+        dt = _time.perf_counter() - t0
+        assert n == 400_000
+        assert dt < 2.0, f"40 万点绘制 {dt:.2f}s —— 疑似退回逐点 draw.point"
+
+
 class TestCalib:
     def test_calib_from_fov_matches_kitti_style(self):
         intrinsic = mapviz.calib_from_fov(1242, 375, 90.0)["intrinsic"]

@@ -8,8 +8,15 @@ docker,ROS2 路线要容器/VM/Mac 三系统联调。本脚本消费与采集器
 
 MapTR 实时预测 overlay(`--maptr-ckpt`):在同一 tick 的 6 路环视图上跑一次
 前向 → 预测折线(ego 系)按 mapviz 同一投影链回投到各相机(品红),可选角落贴
-BEV 面板。**rig 必须与训练逐字段对齐**(相机名→挂点 yaw / 内参 / 分辨率),
-故直接复用 B1 采集器的 `SURROUND_CAMS` + `carla_common.CAM_ATTRS`,并做启动自检。
+BEV 面板。**rig 必须与权重训练数据逐字段对齐**(相机名→挂点平移/偏航 / 内参 / 分辨率),
+故 rig 与 calib 一律走 `bin/live_common.py` 的 `build_surround_rig` / `surround_calibs`
+(只认 `live_common.rig_spec()` 的两处定义),并做启动自检 `rig_mount_deviation`(平移米 / 偏航度)。
+**两代 rig 并存**:`official`(逐相机 `SENSOR_MOUNTS` + 108.6/−110.8)对 `maptr_600`/`maptr_1000`;
+`legacy`(共用 `SENSOR_OFFSET` + 235/125)对 `maptr_ep256`/`maptr_ep512` —— `--rig auto` 按权重名选,
+**拿 official 喂 ep512 是错配**(见 `live_common` 头注对照表)。
+
+共享件(多槽 MJPEG / 拼图 / GT overlay / 环视 rig / 键盘)在 `bin/live_common.py`,
+8 路 studio 见 `bin/live_studio.py`。
 
 用法(CARLA 服务器运行中):
   python bin/view_stream.py --view follow                 # 跟车视角
@@ -26,20 +33,13 @@ BEV 面板。**rig 必须与训练逐字段对齐**(相机名→挂点 yaw / 内
 from __future__ import annotations
 
 import argparse
-import io
 import queue
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import cast
 
 import carla
 import numpy as np
-import torch
 from carla_common import (
     CAM_ATTRS,
-    SENSOR_OFFSET,
     draw_traffic_lights,
     loc,
     rad,
@@ -48,22 +48,37 @@ from carla_common import (
     sync_mode,
     traffic_light_frame,
 )
-from collect_surround import SURROUND_CAMS
+from live_common import (
+    FrameSlot,
+    actor_boxes,
+    build_cameras,
+    build_surround_rig,
+    compose_grid,
+    drain,
+    draw_hud,
+    dump_pair,
+    encode_jpeg,
+    image_to_pil,
+    load_maptr,
+    maptr_predict,
+    overlay_gt,
+    resolve_rig,
+    rig_mount_deviation,
+    start_server,
+    surround_calibs,
+)
 from PIL import Image, ImageDraw
-from torchvision.transforms.functional import normalize, to_tensor
 
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.gt import ActorBox, box_to_gt_line
-from autodrivedata.mapviz import PRED_COLOR, bev_panel, calib_from_fov, draw_projected_lines
+from autodrivedata.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
 from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
-from maptr_impl.dataset import IMAGENET_MEAN, IMAGENET_STD
-from maptr_impl.model import MapTR
 
 VIEWS = ("follow", "top", "grid6")
-MAX_DISTANCE = 65.0  # 与采集器 GT 口径一致(Plan.md 红线:远距无点框剔除)
 
-# nuScenes 6 视角(同 collect_nus;grid6 按 3×2 拼图)
+# 纯显示用的 6 视角偏航(度)。**注意与 `collect_surround.SURROUND_CAMS` 不同**:
+# BACK_LEFT/BACK_RIGHT 在训练口径是 108.6 / −110.8(官方独立挂点),这里 125 / −125 是
+# 早期显示口径。显示路径(不带 --maptr)沿用不变;带 --maptr 时 rig 与 calib 一律走
+# `live_common.build_surround_rig` / `surround_calibs`(只认 SURROUND_CAMS),不碰本表。
 CAM_YAW_OFFSET = {
     "CAM_FRONT": 0.0,
     "CAM_FRONT_LEFT": 55.0,
@@ -72,303 +87,6 @@ CAM_YAW_OFFSET = {
     "CAM_BACK_LEFT": 125.0,
     "CAM_BACK_RIGHT": -125.0,
 }
-CLASS_COLOR = {
-    "Car": (0, 255, 80),
-    "Pedestrian": (0, 220, 255),
-    "Cyclist": (255, 220, 0),
-    "Truck": (255, 140, 0),
-    "Van": (255, 140, 0),
-    "Misc": (170, 170, 170),
-}
-PAGE = (
-    "<!doctype html><meta charset='utf-8'><title>AutoDriveData 实时视图</title>"
-    "<body style='margin:0;background:#111;color:#666;font:12px monospace'>"
-    "<img src='/stream' style='width:100%;height:auto;display:block'>"
-)
-
-
-def image_to_pil(image: carla.Image) -> Image.Image:
-    """carla.Image(BGRA/BGR)→ PIL RGB(不落盘)。
-
-    通道数由 raw_data 长度反推:carla pyi 桩缺 image.channels(T 类坑)。
-    """
-    ch = len(image.raw_data) // (image.width * image.height)
-    arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, ch)
-    return Image.fromarray(arr[:, :, [2, 1, 0]])
-
-
-def encode_jpeg(img: Image.Image, quality: int = 80) -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return buf.getvalue()
-
-
-def actor_boxes(world: carla.World) -> list[ActorBox]:
-    """世界内全部 vehicle/walker → 纯值 ActorBox(GT 框来源)。"""
-    out: list[ActorBox] = []
-    for a in world.get_actors():
-        if not (a.type_id.startswith("vehicle") or a.type_id.startswith("walker")):
-            continue
-        bb = a.bounding_box
-        t = a.get_transform()
-        out.append(
-            ActorBox(
-                type_id=a.type_id,
-                extent=(bb.extent.x, bb.extent.y, bb.extent.z),
-                location=(bb.location.x, bb.location.y, bb.location.z),
-                rotation=rad(bb.rotation),
-                actor_location=loc(t),
-                actor_rotation=rad(t.rotation),
-            )
-        )
-    return out
-
-
-def overlay_gt(
-    img: Image.Image,
-    boxes: list[ActorBox],
-    cam_loc: tuple[float, float, float],
-    cam_rot: tuple[float, float, float],
-    k: CameraIntrinsics,
-) -> Image.Image:
-    """GT 框:走 box_to_gt_line(label_2 同一口径)→ 所见即导出。"""
-    d = ImageDraw.Draw(img)
-    for box in boxes:
-        line = box_to_gt_line(box, cam_loc, cam_rot, k, max_distance=MAX_DISTANCE)
-        if not line:
-            continue
-        p = line.split()
-        cls = p[0]
-        x1, y1, x2, y2 = (float(v) for v in p[4:8])
-        dist = float(np.hypot(float(p[11]), float(p[13])))  # 相机系 (x, z)
-        col = CLASS_COLOR.get(cls, CLASS_COLOR["Misc"])
-        d.rectangle([x1, y1, x2, y2], outline=col, width=2)
-        d.text((x1 + 2, max(0.0, y1 - 11)), f"{cls} {dist:.0f}m", fill=col)
-    return img
-
-
-def build_cameras(
-    world: carla.World, ego: carla.Vehicle, view: str, width: int, height: int
-) -> dict[str, tuple[carla.Sensor, CameraIntrinsics]]:
-    """视角 → {名称: (相机, 内参)};grid6 用 nuScenes 6 向。"""
-    bp_lib = world.get_blueprint_library()
-    k = CameraIntrinsics(width=width, height=height, fov_h_deg=90.0)
-    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
-
-    def add(name: str, tf: carla.Transform) -> None:
-        bp = bp_lib.find("sensor.camera.rgb")
-        bp.set_attribute("image_size_x", str(width))
-        bp.set_attribute("image_size_y", str(height))
-        bp.set_attribute("fov", "90")
-        cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
-
-    if view == "grid6":
-        for name, yaw_off in CAM_YAW_OFFSET.items():
-            add(
-                name,
-                carla.Transform(
-                    SENSOR_OFFSET.location,
-                    carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0),
-                ),
-            )
-    elif view == "top":
-        # 60m 高:覆盖 ±34m(纵向)× ±60m(横向),容得下 A/B 布局的 20~62m 静置车
-        add(
-            "TOP",
-            carla.Transform(carla.Location(x=0.0, y=0.0, z=60.0), carla.Rotation(pitch=-90.0)),
-        )
-    else:  # follow
-        add(
-            "FOLLOW",
-            carla.Transform(carla.Location(x=-9.0, y=0.0, z=4.5), carla.Rotation(pitch=-12.0)),
-        )
-    return cams
-
-
-def build_maptr_rig(
-    world: carla.World, ego: carla.Vehicle
-) -> dict[str, tuple[carla.Sensor, CameraIntrinsics]]:
-    """MapTR 环视 rig:B1 采集器(collect_surround)的布局/内参/挂点逐字段对齐。
-
-    模型是按"相机名 → 该名挂点 yaw"记语义的,rig 的 name→yaw 与训练不一致 =
-    第 i 路图与它学过的第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:
-    collect_surround 的 BACK_LEFT/BACK_RIGHT 与本文件显示用的 CAM_YAW_OFFSET
-    恰好互换)。故这里只认 SURROUND_CAMS 一处定义。
-    """
-    w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    fov = float(CAM_ATTRS["fov"])
-    k = CameraIntrinsics(width=w, height=h, fov_h_deg=fov)
-    bp_lib = world.get_blueprint_library()
-    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
-    for name, yaw_off in SURROUND_CAMS.items():
-        bp = bp_lib.find("sensor.camera.rgb")
-        bp.set_attribute("image_size_x", str(w))
-        bp.set_attribute("image_size_y", str(h))
-        bp.set_attribute("fov", str(fov))
-        tf = carla.Transform(SENSOR_OFFSET.location, carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0))
-        cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
-    return cams
-
-
-def maptr_calibs() -> dict[str, dict]:
-    """实时 rig 的 B2 口径 calib(与训练 infos 同结构:内参 3×3 + sensor2ego 6 元组)。
-
-    内参与 B1 采集器同式(唯一来源 = carla_common.CAM_ATTRS),sensor2ego 取自 rig 规格。
-    """
-    w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
-    off = SENSOR_OFFSET.location
-    return {
-        name: {
-            "sensor2ego": [off.x, off.y, off.z, yaw, 0.0, 0.0],
-            "intrinsic": intrinsic,
-        }
-        for name, yaw in SURROUND_CAMS.items()
-    }
-
-
-def rig_yaw_deviation(cams: dict, ego: carla.Vehicle) -> float:
-    """实挂相机相对 ego 的 yaw 与 rig 规格的最大偏差(度)——挂载漂移自检。"""
-    ey = ego.get_transform().rotation.yaw
-    return max(
-        abs((cam.get_transform().rotation.yaw - ey - SURROUND_CAMS[name] + 180.0) % 360.0 - 180.0)
-        for name, (cam, _) in cams.items()
-    )
-
-
-def load_maptr(ckpt: str, device: str | None) -> tuple[MapTR, torch.device]:
-    """MapTR state_dict → eval 模式(与 eval_maptr 同口径:num_vec/预处理都不改)。"""
-    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = MapTR().to(dev)
-    model.load_state_dict(torch.load(ckpt, map_location=dev))
-    model.eval()
-    print(f"[maptr] {ckpt} @ {dev}(num_vec={model.num_vec})")
-    return model, dev
-
-
-def maptr_predict(
-    model: MapTR,
-    dev: torch.device,
-    images: dict[str, Image.Image],
-    ego_g: list[float],
-    calibs: dict,
-    thr: float,
-) -> list[list[np.ndarray]]:
-    """单帧 6 路环视 → 逐类预测折线(ego 系)。解码口径与 bin/eval_maptr.py 逐行一致。"""
-    imgs = {n: normalize(to_tensor(t), IMAGENET_MEAN, IMAGENET_STD)[None].to(dev) for n, t in images.items()}
-    pose = torch.tensor([ego_g], dtype=torch.float32, device=dev)
-    with torch.no_grad():
-        out, _ = model(imgs, pose, calibs)
-    scores = torch.sigmoid(out["pred_logits"][0].float()).cpu().numpy()
-    pts = out["pred_points"][0].float().cpu().numpy()
-    preds: list[list[np.ndarray]] = []
-    for c in range(model.num_classes):
-        idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
-        preds.append(list(pts[idx][scores[idx, c + 1] > thr]))
-    return preds
-
-
-def drain(q: queue.Queue) -> carla.Image:
-    """取最新一帧(丢弃积压),防渲染慢于 tick 时画面滞后。"""
-    img: carla.Image = q.get(timeout=10)
-    while not q.empty():
-        img = q.get_nowait()
-    return img
-
-
-class FrameSlot:
-    """最新帧槽:MJPEG 服务线程只读最新帧,不排队 → 客户端永远看最新画面。"""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._jpeg: bytes | None = None
-        self._seq = 0
-
-    def publish(self, jpeg: bytes) -> None:
-        with self._lock:
-            self._jpeg = jpeg
-            self._seq += 1
-
-    def read(self, last_seq: int) -> tuple[bytes | None, int]:
-        with self._lock:
-            if self._seq == last_seq:
-                return None, last_seq
-            return self._jpeg, self._seq
-
-
-def start_server(slot: FrameSlot, port: int) -> ThreadingHTTPServer:
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
-            del format, args  # 静音 access log(5fps 刷屏);签名照基类(参数名 format)
-
-        def do_GET(self) -> None:
-            if self.path in ("/", "/index.html"):
-                body = PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if self.path != "/stream":
-                self.send_error(404)
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            last = -1
-            while True:
-                jpeg, seq = slot.read(last)
-                if jpeg is None:
-                    time.sleep(0.02)
-                    continue
-                last = seq
-                try:
-                    self.wfile.write(
-                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                        + str(len(jpeg)).encode()
-                        + b"\r\n\r\n"
-                    )
-                    self.wfile.write(jpeg)
-                    self.wfile.write(b"\r\n")
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break  # 客户端断开
-
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    srv.daemon_threads = True
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv
-
-
-def compose_grid(tiles: list[Image.Image], names: list[str], w: int, h: int) -> Image.Image:
-    grid = Image.new("RGB", (w * 3, h * 2), (0, 0, 0))
-    d = ImageDraw.Draw(grid)
-    for idx, (tile, name) in enumerate(zip(tiles, names, strict=True)):
-        row, col = divmod(idx, 3)
-        grid.paste(tile, (col * w, row * h))
-        d.text((col * w + 6, row * h + 6), name, fill=(255, 255, 0))
-    return grid
-
-
-def dump_pair(path: str, raw: Image.Image, over: Image.Image) -> None:
-    """落盘同一帧的 raw + overlay → 差集 = 真实绘制像素(数值诊断)。
-
-    场景自带绿色植被/黄色标线,直接数颜色会误判 overlay 是否画上;
-    两帧做差才排得掉干扰。
-    """
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    raw.save(p.with_name(f"{p.stem}_raw{p.suffix}"))
-    over.save(p)
-    print(f"[dump] {p} + {p.stem}_raw{p.suffix}(差集诊断用)")
-
-
-def draw_hud(img: Image.Image, text: str) -> Image.Image:
-    d = ImageDraw.Draw(img)
-    d.rectangle([0, 0, 8 * len(text) + 8, 16], fill=(0, 0, 0))
-    d.text((4, 3), text, fill=(255, 255, 255))
-    return img
 
 
 def main() -> None:
@@ -391,6 +109,12 @@ def main() -> None:
     )
     ap.add_argument("--maptr-bev", action="store_true", help="右下角贴 BEV 面板(线上无地图 GT,只画预测)")
     ap.add_argument("--maptr-device", default=None, help="推理设备(默认 cuda 若可用;与 CARLA 共享 GPU)")
+    ap.add_argument(
+        "--rig",
+        choices=("auto", "official", "legacy"),
+        default="auto",
+        help="环视挂点口径;auto 按权重名选(ep256/ep512=legacy,600/1000=official)",
+    )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sim-port", type=int, default=2000)
     args = ap.parse_args()
@@ -434,24 +158,33 @@ def main() -> None:
     vel = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
 
     maptr = load_maptr(args.maptr_ckpt, args.maptr_device) if args.maptr_ckpt else None
-    calibs = maptr_calibs() if maptr else {}
+    rig = resolve_rig(args.rig, args.maptr_ckpt)
+    calibs = surround_calibs(rig) if maptr else {}
     if maptr:
-        cams = build_maptr_rig(world, ego)  # rig 换 1242×375 fov90 环视(与训练逐字段对齐)
+        cams = build_surround_rig(world, ego, rig=rig)  # 1242×375 fov90 环视(与权重训练口径对齐)
+        print(f"[rig] {rig}(--rig {args.rig} → 权重 {args.maptr_ckpt})")
         disp_w = int(int(CAM_ATTRS["image_size_x"]) * args.maptr_scale)
         disp_h = int(int(CAM_ATTRS["image_size_y"]) * args.maptr_scale)
-        world.tick()  # 传感器 transform 只在 tick 后刷新(C19 同类):tick 前读=全 0 陈旧值,
-        #               自检会假报 ~179.8°(=CAM_BACK 规格 180 − ego 固有 yaw 0.159)
-        print(f"[rig] 实挂相机相对 yaw 与规格最大偏差 {rig_yaw_deviation(cams, ego):.3f}°")
+    elif args.view == "grid6":
+        # 纯显示环视:同一 rig 定义(只认 rig_spec 的两处),只降分辨率省带宽
+        cams = build_surround_rig(world, ego, args.width, args.height, rig=rig)
+        disp_w, disp_h = args.width, args.height
     else:
         cams = build_cameras(world, ego, args.view, args.width, args.height)
         disp_w, disp_h = args.width, args.height
     queues: dict[str, queue.Queue] = {name: queue.Queue() for name in cams}
     for name, (cam, _) in cams.items():
         cam.listen(queues[name].put)
+    if args.view == "grid6":
+        # 传感器 transform 只在 tick 后刷新(C19 同类):tick 前读=全 0 陈旧值,
+        # 自检会假报 ~179.8°(=CAM_BACK 规格 180 − ego 固有 yaw 0.159)
+        world.tick()
+        dev_t, dev_y = rig_mount_deviation(cams, ego, rig)
+        print(f"[rig] {rig}:实挂相机 vs 该口径规格 最大偏差:平移 {dev_t:.3f} m / 偏航 {dev_y:.3f}°")
     print(f"[sensor] {len(cams)} 相机 @ {disp_w}x{disp_h}")
 
-    slot = FrameSlot()
-    srv = start_server(slot, args.port)
+    slots = {"main": FrameSlot()}
+    srv = start_server(slots, args.port)
     print(f"[stream] http://127.0.0.1:{args.port}  (本地:ssh -L {args.port}:127.0.0.1:{args.port} <autodl>)")
 
     t_end = time.time() + args.duration if args.duration > 0 else float("inf")
@@ -517,7 +250,7 @@ def main() -> None:
                 f"{world.get_map().name} | {args.view} | actors={len(boxes)} | "
                 f"tl={len(tl_frame.lights)} | pred={len(all_preds)}/seg={n_seg} | {fps_now:.1f}fps",
             )
-            slot.publish(encode_jpeg(frame_img))
+            slots["main"].publish(encode_jpeg(frame_img))
             frames += 1
 
             if time.time() - t_report >= 5.0:

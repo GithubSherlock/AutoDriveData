@@ -52,6 +52,7 @@ MSG_TYPE = "sensor_msgs/Image"
 
 client = roslibpy.Ros(host=ROS_BRIDGE_HOST, port=ROS_BRIDGE_PORT)
 
+
 def image_callback(msg):
     h = msg["height"]
     w = msg["width"]
@@ -75,13 +76,15 @@ def image_callback(msg):
 
     cv2.imshow("Rosbridge Camera View", img)
     # 按下 q 退出程序
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         client.terminate()
+
 
 def on_connected():
     print("✅ Python3 成功连接 rosbridge server")
     topic = roslibpy.Topic(client, IMAGE_TOPIC, MSG_TYPE)
     topic.subscribe(image_callback)
+
 
 client.on_ready(on_connected)
 client.run()
@@ -120,6 +123,7 @@ TCP_PORT = 9999
 conn = None
 conn_lock = threading.Lock()
 
+
 def send_frame(img_np):
     global conn
     with conn_lock:
@@ -133,12 +137,14 @@ def send_frame(img_np):
                 print("client disconnected:", e)
                 conn = None
 
+
 def image_callback(msg):
     raw = np.frombuffer(msg.data, dtype=np.uint8)
     h = msg.height
     w = msg.width
     img = raw.reshape(h, w, 4)[:, :, :3]
     send_frame(img)
+
 
 def tcp_listener():
     global conn
@@ -152,6 +158,7 @@ def tcp_listener():
         print("Py3 client connected from", addr)
         with conn_lock:
             conn = new_conn
+
 
 if __name__ == "__main__":
     threading.Thread(target=tcp_listener).start()
@@ -174,6 +181,7 @@ HOST = "127.0.0.1"
 IMG_HEIGHT = 600
 IMG_WIDTH = 800
 
+
 def recv_all(sock, length):
     buffer = b""
     while len(buffer) < length:
@@ -183,11 +191,13 @@ def recv_all(sock, length):
         buffer += chunk
     return buffer
 
+
 def connect_socket():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((HOST, TCP_PORT))
     print("Connected to server at {}:{}".format(HOST, TCP_PORT))
     return sock
+
 
 def main():
     while True:
@@ -199,7 +209,7 @@ def main():
                 buffer = recv_all(sock, data_len)
                 img = np.frombuffer(buffer, dtype=np.uint8).reshape(IMG_HEIGHT, IMG_WIDTH, 3)
                 cv2.imshow("Carla RGB", img)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if cv2.waitKey(1) & 0xFF == ord("q"):
                     cv2.destroyAllWindows()
                     sock.close()
                     return
@@ -207,11 +217,13 @@ def main():
             print("Connection lost, reconnecting...")
             cv2.destroyAllWindows()
             import time
+
             time.sleep(1)
         except Exception as e:
             print("Error:", e)
             break
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

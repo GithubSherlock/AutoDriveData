@@ -204,43 +204,81 @@ class TestEstimateTransformGn:
 
 class TestIcpOdometry:
     def test_recovers_known_transform(self):
-        """源点云加已知 (R,t),ICP 应恢复该变换(链式 T 含初值)。"""
+        """src 加已知 (R,t) 得 ref ⇒ **点映射 T_delta** 恢复 (R_gt,t_gt),位姿 T = inv(T_delta)。
+
+        两个出口别混:ICP 直接解的是"把 src 点搬到 ref 系"的点映射;`T` 才是位姿
+        (= init @ inv(T_delta))。旧版把点映射当位姿返回,本测试曾按 T ≈ (R_gt,t_gt)
+        断言 —— 那个断言本身就在固化 bug。
+        """
         rng = np.random.default_rng(1)
         src = np.stack([rng.uniform(-8, 8, 300), rng.uniform(-8, 8, 300), rng.uniform(-1, 1, 300)], 1)
-        # 已知变换(绕 z 转 10° + 平移):ref = R_gt·src + t_gt
+        # 已知点映射:ref = R_gt·src + t_gt
         theta = np.radians(10.0)
         R_gt = np.array([[np.cos(theta), -np.sin(theta), 0], [np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
         t_gt = np.array([1.5, -0.8, 0.2])
         ref = (R_gt @ src.T).T + t_gt
-        # 恒等初值(帧0)
-        init = np.eye(4)
-        res = icp_odometry(src, ref, init)
-        T = res["T"]
-        # 链式 T = 帧间变换(sensor 系 base → ref);T 平移 ≈ t_gt
-        np.testing.assert_allclose(T[:3, :3], R_gt, atol=0.05)
-        np.testing.assert_allclose(T[:3, 3], t_gt, atol=0.05)
+        res = icp_odometry(src, ref, np.eye(4))
+        np.testing.assert_allclose(res["T_delta"][:3, :3], R_gt, atol=0.05)
+        np.testing.assert_allclose(res["T_delta"][:3, 3], t_gt, atol=0.05)
+        # init=恒等 ⇒ 位姿 = inv(点映射)
+        np.testing.assert_allclose(res["T"], np.linalg.inv(res["T_delta"]), atol=1e-12)
         assert res["overlap"] > 0.8
 
-    def test_constant_velocity_prior_chain(self):
-        """三级点云(每级平移 0.5m)恒速先验下链式累计 = 1.0(非"每步增量 0.5")。
+    def test_chain_of_turning_motion_matches_ground_truth(self):
+        """**回归(旧版 ATE 大 94× 的根因)**:带转向的链式位姿必须复现 GT。
 
-        链式 T_0→k 是全局累计:首帧 T_0→1 平移 0.5,次帧 T_0→2 平移 1.0。
-        icp_odometry 返回的 T = T_res @ init_T;真实世界位姿 = 传感器位姿 = −平移。
-        但 T 本身(传感器→场景变换)累计平移 = 0.5→1.0。
+        旧实现 `T = T_delta @ init_T` 把点映射当位姿左乘:纯平移时"看着像在累加",
+        一旦有旋转就发散(实测 206 m 真实序列 ATE 17.5 m vs 修正后 0.19 m)。
+        本测试用**每帧 6° 转向**的合成序列把该约定钉死 —— 旧实现下位置误差按帧数线性增长
+        (实测 k=7 时 6.35 m),修正后 <0.1 m。
+        """
+        rng = np.random.default_rng(3)
+        g = np.stack([rng.uniform(-6, 6, 300), rng.uniform(-6, 6, 300), np.zeros(300)], 1)
+        # 两堵垂直于运动方向的墙:点面残差只在法向有约束,纯地面测不出 x 平移
+        w1 = np.stack([rng.uniform(-6, 6, 200), np.full(200, -6.0), rng.uniform(0, 3, 200)], 1)
+        w2 = np.stack([rng.uniform(-6, 6, 200), np.full(200, 6.0), rng.uniform(0, 3, 200)], 1)
+        base = np.concatenate([g, w1, w2])
+
+        # GT 位姿:每帧前进 0.5 m + 左转 6°(点云 = 世界点投到该帧传感器系)
+        gt: list[np.ndarray] = []
+        frames: list[np.ndarray] = []
+        P = np.eye(4)
+        for _ in range(8):
+            gt.append(P.copy())
+            p = (P[:3, :3].T @ base.T).T + (P[:3, :3].T @ -P[:3, 3])
+            frames.append(voxel_downsample(np.hstack([p, np.ones((len(p), 1))]), 0.5)[:, :3])
+            c, s = np.cos(np.radians(6.0)), np.sin(np.radians(6.0))
+            A = np.eye(4)
+            A[:3, :3] = [[c, -s, 0], [s, c, 0], [0, 0, 1]]
+            A[:3, 3] = [0.5, 0.0, 0.0]
+            P = P @ A
+
+        poses = [np.eye(4)]
+        delta_prev = None  # 恒速先验 = 位姿增量(函数内部取逆)
+        for k in range(1, 8):
+            res = icp_odometry(frames[k - 1], frames[k], poses[-1], seed=delta_prev)
+            poses.append(res["T"])
+            delta_prev = relative_transform(poses[-2], poses[-1])
+
+        for k in range(1, 8):
+            assert np.linalg.norm(poses[k][:3, 3] - gt[k][:3, 3]) < 0.1
+            dR = poses[k][:3, :3].T @ gt[k][:3, :3]
+            ang = np.degrees(np.arccos(np.clip((np.trace(dR) - 1) / 2, -1, 1)))
+            assert ang < 0.2
+
+    def test_constant_velocity_prior_chain(self):
+        """三级点云(点集每级 +0.5x)链式**位姿**累计 = −1.0。
+
+        点云整体 +0.5x ⟺ 传感器相对世界 −0.5x ⇒ 位姿平移为负。首帧 |t| = 0.5、
+        两帧累计 |t| = 1.0(只断模长,方向由场景定义)。
         """
         rng = np.random.default_rng(2)
         base = np.stack([rng.uniform(-6, 6, 250), rng.uniform(-6, 6, 250), rng.uniform(-1, 1, 250)], 1)
         cam0 = base.copy()
         cam1 = base + np.array([0.5, 0.0, 0.0])
         cam2 = base + np.array([1.0, 0.0, 0.0])
-        init = np.eye(4)
-        r1 = icp_odometry(cam0, cam1, init)
-        Tm1 = r1["T"]
-        r2 = icp_odometry(cam1, cam2, Tm1)
-        T_chain = r2["T"]
-        # 累计平移:首帧 0.5(传感器相对场景 −0.5,但 T 是场景→传感器?口径):
-        # T 链 = 传感器位姿(世界系),即 ego 前进 +0.5/帧。
-        # 恒速先验 init 已把 cam1 精确搬到位 → T_chain 累计 1.0。
+        Tm1 = icp_odometry(cam0, cam1, np.eye(4))["T"]
+        T_chain = icp_odometry(cam1, cam2, Tm1)["T"]
         assert np.linalg.norm(Tm1[:3, 3]) == pytest.approx(0.5, abs=0.05)
         assert np.linalg.norm(T_chain[:3, 3]) == pytest.approx(1.0, abs=0.05)
 
@@ -380,12 +418,14 @@ class TestPoseGraph:
 # ---------------------------------------------------------------------------
 class TestSmoke:
     def test_straight_cloud_sequence_drift_near_zero(self):
-        """直线结构化点云序列(每帧平移 0.5m)→ 链式轨迹应直线、漂移率 <0.05。
+        """直线结构化点云序列(点集每帧 +0.5x)→ 链式**位姿**应为直线、横向/高度不漂。
 
         **场景必须对运动方向可观**:点面残差只在法向有约束。纯水平地面(法向全 =±z)
-        对平面内的 x 平移**零约束** → ICP 返回 t=0 才是正确的最小范数解,拿"累计 x=2.5"
-        当判据是错的前提(旧版纯地面场景曾靠数值巧合通过)。故此处加两堵**垂直于运动方向**
-        的墙,使 x 平移有观测量;地面保留作为 z/y 约束。
+        对平面内的 x 平移**零约束** → ICP 返回 t=0 才是正确的最小范数解。故此处加两堵
+        **垂直于运动方向**的墙,使 x 平移有观测量;地面保留作为 z/y 约束。
+
+        符号:点云整体 +0.5x ⟺ 传感器相对世界 −0.5x ⇒ 位姿 x 累计 **−2.5**(5 步)。
+        **开放路径不适用 closure_error**(首末位姿距离 = 弧长,非漂移)。
         """
         rng = np.random.default_rng(3)
         g = np.stack([rng.uniform(-6, 6, 300), rng.uniform(-6, 6, 300), np.zeros(300)], 1)
@@ -399,11 +439,8 @@ class TestSmoke:
         for k in range(1, len(frames)):
             res = icp_odometry(frames[k - 1], frames[k], poses[-1])
             poses.append(res["T"])
-        # 6 帧、每帧 +0.5m 平移;链式累计 = 5×0.5 = 2.5(m)。
-        # **开放路径不适用 closure_error**(首末位姿距离 = 弧长,非漂移);
-        # 判据 = 沿运动方向累计位移与期望一致(真值刚体平移,残差应为 0)。
-        x_along = poses[-1][0, 3]  # 累计 x(m)
-        assert x_along == pytest.approx(2.5, abs=0.05)
+        x_along = poses[-1][0, 3]  # 累计 x(m);点云 +x ⇒ 位姿 −x
+        assert x_along == pytest.approx(-2.5, abs=0.05)
         assert abs(poses[-1][1, 3]) < 0.05  # 横向不漂
         assert abs(poses[-1][2, 3]) < 0.05  # 高度不漂
 

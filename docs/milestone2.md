@@ -207,6 +207,103 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 **结论**:教程 14 两段式链路在本仓栈内闭环(未引 ROS);纯 numpy 环经 C++ 逐帧位对齐验证可作为
 原生栈的 oracle。ROS 原生 FAST-LIO2 + SC-PGO 移植按用户裁决不做。
 
+**精度口径修正 + 带 GT 的 400 帧基线(2026-09-19)**:此前数字建在**无 GT 位姿**的
+`outputs/kitti_drive` 上,只能看轨迹形状。重采带 GT 的 `outputs/kitti_slam`(400 帧 / 206.24 m)
+后第一次能算真 ATE:
+
+| 指标 | 值 |
+|---|---|
+| **ATE(对齐后)** | **0.1877 m**(尺度 1.00829);不带杆臂 0.4589 m(**2.44×**) |
+| RPE Δ=1 / 5 / 10 | 0.0216 / 0.0568 / 0.0948 m |
+| 相对误差 | 路径长的 **0.091%** |
+| 前端 wall / NaN / failed | 310.01 s / 0 / 0,平均 RMSE 0.1306 m、overlap 0.8177 |
+| 后端 | 40 关键帧、**候选 0 / 接受 0**(最近关键帧对相隔 58.69 m,折返但从未空间重访 ⇒ `n_loops=0` 正确) |
+| 阶段 2 对拍复核 | **99/99 PASS**(最差平移 2.2e-11 m) |
+
+- **位姿约定 bug(94×)**:`icp_odometry` 原出口 `T_delta @ init_T` 把**点映射当位姿左乘**,
+  纯平移看着像累加、一转弯就发散;正解 `T = init_T @ inv(T_delta)`(ATE 17.53 → 0.187 m)。
+- **坐标系换算**:`ego_pose = M·T_lidar·M @ inv(L)`(手性共轭 + 杆臂 `inv(L)`,方向写反差 2.44×)。
+- 评估工具:`bin/eval_slam.py` + `autodrivedata/slam_eval.py`;采集 `bin/collect_slam.py`。
+
+**路线 B 实测裁决 —— B1/B2 均不投(2026-09-19)**:
+
+- **B1 CARLA IMU 能否支撑 IESKF**(`bin/probe_imu.py`):IMU 陀螺读数就是物理引擎角速度,但 8 m/s
+  直行时 `gyro.z = −1.29°/s` 而旋转矩阵差分的真实 yaw 速率仅 −2e-5 rad/s(**差 1000×**,可复现,
+  只在 6/7/8 m/s 档出现)。单步预测 IMU 位置 0.326 mm vs 恒速 **0.120 mm**、姿态 0.0903° vs
+  **0.0041°**(只在绕圈时 IMU 才赢)。叠加"CARLA 不模拟帧内扫描延迟"⇒ FAST-LIO2 用 IMU 的
+  两个卖点一空一负 ⇒ **IESKF 不投**。
+- **B2 ikd-Tree + scan-to-map 前端**(`bin/probe_scan_to_map.py`):**oracle GT 位姿**构造局部地图
+  (= 收益上限),误差随地图深度 K **单调变差**——K=1 **1.05×** / K=3 **1.55×** / K=8 **2.75×**,
+  重新体素化更差(3.26×)。机制:残差下降 ≠ 位姿正确(ICP 净赚代价降幅仅 0.0012→0.0050 m 而
+  位姿误差 0.040→0.105 m)、约束方向塌陷(λ1 1.23e-1→9.80e-2,误差沿最软方向滑走)、
+  内点被地面稀释(地面占比 0.555→0.605 而地面法向在 x/y/yaw 零信息)、法向稳定性假设**被否证**
+  (一致性 0.849→0.954 反而上升)⇒ **帧间重叠 ~90% 时 scan-to-map 无收益,不建该前端**。
+  **边界**:单序列 / Town10HD_Opt / 体素 0.5 / oracle GT;低重叠场景(高速、稀疏扫描、大转弯)
+  可能翻转,脚本可直接复跑复核。
+
+## ✅ 8 路实时可视化 studio + 键盘操控 + 在线 SLAM(2026-09-19 A 期 / 2026-09-20 B 期)
+
+目标(用户原话):「输出 六相机视角 + BEV 视角 + 第三方视角 共 8 个终端可视化输出,
+我操控汽车便可采集动静态目标和道路特征,输出感知结果的同时也做 slam 重建。」
+
+**交付**:`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页、
+拼图、GT overlay、环视 rig、第三方视角、`KeyboardState`、MapTR 懒加载)+
+`bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 4×2 拼图;
+`--keyboard` 折进 tick 循环)。`view_stream.py` / `drive_ego.py` 改为薄编排。
+
+**验收(数值)**:挂点自检 `平移 0.000 m / 偏航 0.000°`;第三方 ego 框 `中心偏移 0.001 画幅 /
+宽 0.116 画幅 / 深度 9.71 m`(判据 偏移 ≤0.5、宽 ∈[0.05,0.6]);8 路同帧 raw/overlay 差集
+6 相机路 2.4–7.9%、第三方 11.1%、BEV 10.0%;`--maptr` 回归品红 6002 px(6 相机路)vs raw 0、
+**光轴以上 0**。
+
+**两处踩坑(已落单测/文档)**:
+
+1. 世界系相机位姿 → ego 系必须 `inv_ego @ cam`,写成 `cam @ inv_ego` 会把 ego 世界坐标混进
+   平移块 —— 实测偏差 **138.243 m**,而**偏航仍恰好 0.000°**(只看偏航自检会漏掉)。
+2. 旋转阵逆分解 `pitch = asin(R[2,0])`,写成 `asin(−R[2,0])` 静默反号(俯角 −12° → +12°)
+   → 已下沉 `autodrivedata/geometry.rotation_matrix_to_carla` + 往返单测。
+
+**环视 rig 两代并存(重要订正)**:rig **不是"越新越好",必须与权重训练数据一致**。
+`legacy`(共用 `SENSOR_OFFSET` + BACK_LEFT/RIGHT 235/125)对应 `maptr_ep256/ep512`;
+`official`(逐相机 `SENSOR_MOUNTS` + 108.6/−110.8)对应 `maptr_600/1000`。证据:
+`surround_train/map_infos.json` 是 legacy、`surround_p3`/`surround_town13` 是 official,
+且 `maptr_600/map_infos.json` 帧 0-199 为 legacy、帧 200-599 为 official。
+`--rig {auto,official,legacy}` 中 `auto` 按权重名选(默认喂对);A/B 探针
+`bin/probe_rig_mount.py` 量化错配代价(ep512 legacy 122711 px vs official 135989 px)。
+详见 Plan2.md §P-L.1。
+
+**B 期 ✅(在线 SLAM,2026-09-20)**:`autodrivedata/live_slam.py`(纯值 `LiveSlam.push/snapshot`
++ `map_in_ego_frame`/`traj_in_ego_frame` + **`SlamWorker`**)+ `live_studio --slam`
+(挂语义 LiDAR → worker;BEV 槽画地图点灰 / 轨迹青;HUD 显式报滞后)+ `mapviz.bev_points`/
+`bev_trajectory`/`bev_window_mask`。验收见 Plan2.md §P-L.2~P-L.4。
+
+**B 期两条原前提都不成立(重要订正)**:
+
+1. **「离线 ICP 0.78 s/帧 ⇒ 必须 worker 线程」** —— 0.78 s 是 400 帧**含转弯/重访的平均值**,
+   在线逐帧(gap 1)只有 **0.15–0.35 s**。
+2. **「worker 线程能救帧率」** —— 相反,worker 被 **GIL 饿死**:主线程每 tick 的 overlay/拼图/
+   HUD 是纯 Python 字节码持 GIL 不放。同一对点云:worker 线程 eff **0.04–0.24** vs 主线程同步
+   eff **0.90–1.00**;钉 `OPENBLAS_NUM_THREADS=1` 不改结论 ⇒ 不是 BLAS 线程池。
+   ⇒ **默认同步执行**(`SlamWorker(sync=True)`,帧率 ~2.4 fps),`--slam-async` 留作对照。
+
+**有界丢旧队列不足以保证滞后有界(关键机制)**:队列有界的是**深度**,不是 `prev_down` 与当前帧的
+**间隙**,而 ICP 成本随间隙爆炸(0.8 m 0.2 s → 8 m 2.8 s → 32 m 39 s)→ 丢帧 ⇒ 间隙更大 ⇒ 更慢
+⇒ 更多丢帧,**无界正反馈**。异步模式实测:70 s / 259 tick 只处理 **8 帧**、滞后单调涨到
+**157 帧(45 s)**、`lag_bounded False`。修复 = **按帧号差止损**(`--slam-max-gap`,默认 3):
+间隙超阈的帧不做 ICP、直接恒速外推,`prev_down` 照推进 ⇒ 下一帧回到 gap 1,如实计入 `n_dead`。
+
+**验收(全部数值)**:
+
+| 判据 | 结果 |
+|---|---|
+| 与离线基线对拍 | 400 帧链式位姿**逐元素差 0.0**、ATE **0.18768 m = 离线 = 参照**、尺度 1.00829 |
+| 滞后有界 | 同步模式 136 tick / 处理 136 / **丢 0 / 止损 0** / `lag_max 0` / `lag_bounded True` |
+| 停干净 | `nvidia-smi` 6394 MiB = 基线、残留进程 0、日志 `worker 已停(干净退出)` |
+| BEV 数值自证 | 画出 90611 点 / 轨迹 20 段 / `bev_drawn_equals_in_window True` |
+
+**判据订正**:原写"地图点窗内占比 ≈100%"是误读 —— 地图覆盖 ~300 m 行程、窗口只有 30×60 m,
+故 `bev_map_in_window_ratio` 0.241 正常;真正的自证是「画出的点数 = 窗内点数」。
+
 ## 待办(教程 7-15 中尚未落地的能力)
 
 - [x] 单目测距(教程 08):GT 3D 投影框基线 ✅(见上)

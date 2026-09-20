@@ -61,6 +61,21 @@ def carla_rotation_matrix(rotation: tuple[float, float, float]) -> np.ndarray:
     )
 
 
+def rotation_matrix_to_carla(R: np.ndarray) -> tuple[float, float, float]:
+    """3×3 旋转阵 → CARLA Rotation (pitch, yaw, roll)[弧度] —— `carla_rotation_matrix` 的逆。
+
+    逐元素对照 `carla_rotation_matrix` 的矩阵解出:
+    `R[2,0] = sin(pitch)`、`R[2,1] = −cos(pitch)·sin(roll)`、`R[1,0]/R[0,0] = tan(yaw)`。
+    **符号勿凭记忆**:写成 `pitch = asin(−R[2,0])` 会静默反号(第三方视角俯仰变仰视,
+    实测 −12° → +12°);`tests/test_geometry.py` 有往返单测锁定(2.22e-16 级)。
+    """
+    r = np.asarray(R, dtype=np.float64)
+    pitch = float(np.arcsin(np.clip(r[2, 0], -1.0, 1.0)))
+    yaw = float(np.arctan2(r[1, 0], r[0, 0]))
+    roll = float(np.arctan2(-r[2, 1], r[2, 2]))
+    return pitch, yaw, roll
+
+
 def camera_rotation_world_to_cam(cam_rotation: tuple[float, float, float]) -> np.ndarray:
     """相机 CARLA 位姿 → R_camK_world(3×3):世界系向量 → KITTI 相机系向量。
 

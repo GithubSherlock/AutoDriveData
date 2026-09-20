@@ -405,7 +405,8 @@ void estimate_transform_gn(const std::vector<Vec3>& src_in, const std::vector<Ve
 }
 
 struct IcpResult {
-    Mat4 T;
+    Mat4 T;        // 位姿 = init_T @ inv(T_delta)(见 icp_odometry 注释;勿改成 T_delta@init_T)
+    Mat4 T_delta;  // 点映射 src→ref(ICP 直接解出的量)
     double rmse_final = std::numeric_limits<double>::infinity();
     double overlap = 0.0;
     bool converged = false;
@@ -413,11 +414,12 @@ struct IcpResult {
     bool failed = false;
 };
 
-// ---- 帧间点面 ICP(init_T = 上一帧链式位姿;seed = 恒速增量,仅作迭代起点)----
+// ---- 帧间点面 ICP(init_T = 上一帧链式位姿;seed = 恒速**位姿**增量,仅作迭代起点)----
 IcpResult icp_odometry(const std::vector<Vec3>& src, const std::vector<Vec3>& ref, const Mat4& init_T,
                        const Mat4& seed, bool has_seed) {
     IcpResult out;
     mat_identity(out.T);
+    mat_identity(out.T_delta);
     if (src.empty() || ref.empty()) {
         out.T = init_T;
         out.failed = true;
@@ -434,9 +436,12 @@ IcpResult icp_odometry(const std::vector<Vec3>& src, const std::vector<Vec3>& re
         }
         cur = src;
     } else {
+        // seed 是位姿增量 → 取逆换成点映射(与 numpy 侧同式;方向错会收敛到次优解)
+        Mat4 seed_map;
+        mat_inverse_rigid(seed, seed_map);
         for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j) R_acc[i][j] = seed.m[i][j];
-            t_acc[i] = seed.m[i][3];
+            for (int j = 0; j < 3; ++j) R_acc[i][j] = seed_map.m[i][j];
+            t_acc[i] = seed_map.m[i][3];
         }
         for (size_t k = 0; k < src.size(); ++k) {
             cur[k] = {R_acc[0][0] * src[k].x + R_acc[0][1] * src[k].y + R_acc[0][2] * src[k].z + t_acc[0],
@@ -490,7 +495,10 @@ IcpResult icp_odometry(const std::vector<Vec3>& src, const std::vector<Vec3>& re
         for (int j = 0; j < 3; ++j) T_delta.m[i][j] = R_acc[i][j];
         T_delta.m[i][3] = t_acc[i];
     }
-    mat_mul(T_delta, init_T, out.T);
+    out.T_delta = T_delta;
+    Mat4 inv_delta;
+    mat_inverse_rigid(T_delta, inv_delta);
+    mat_mul(init_T, inv_delta, out.T);  // 位姿 = init_T @ inv(T_delta)
     // 重叠度:变换后点云在 ref 网格 0.3m 内的比例
     size_t in = 0;
     for (size_t k = 0; k < cur.size(); ++k) {
