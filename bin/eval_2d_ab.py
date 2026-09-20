@@ -1,8 +1,13 @@
 """P1-3 逆光 A/B:冻结 YOLO11s(KITTI 微调)在 A/B 两 KITTI root 的 2D AP 对比。
 
 用法(base env):
-  python bin/eval_2d_ab.py --root-a outputs/kitti_day_clear --root-b outputs/kitti_sunset_glare \
+  python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare \
       [--limit 150] [--conf 0.25] [--iou 0.5]
+
+注:老 150 帧对(kitti_day_clear / kitti_sunset_glare)中的 kitti_sunset_glare 已于
+2026-09-20 清理删除 —— 该对已被 70 帧帧级配对的 kitti_ab_* 取代(见 Plan2.md §10)。
+kitti_day_clear 保留(Plan2.md §5 与 bin/slam_diff_test.py 仍引用),但**它现在没有配对的 B**,
+要用老口径须显式传一个仍在库的 root。默认值已改为 A/B 新对。
 
 评估口径:GT label_2 2D bbox(列 5-8) vs YOLO 预测(原图尺度),
 IoU 贪心匹配(conf 降序,每 GT 一次)→ 逐类 PR 梯形积分 AP;类名归一化
@@ -144,8 +149,8 @@ def report(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root-a", default="outputs/kitti_day_clear")
-    ap.add_argument("--root-b", default="outputs/kitti_sunset_glare")
+    ap.add_argument("--root-a", default="outputs/kitti_ab_day_clear")
+    ap.add_argument("--root-b", default="outputs/kitti_ab_sunset_glare")
     ap.add_argument(
         "--weight",
         default=(

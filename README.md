@@ -56,7 +56,6 @@ python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/ki
 
 # 7. 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像;速度用于 TTC 归一化)
 python bin/eval_attr.py \
-  --run day4=outputs/kitti_sweep_day_clear_4:4.0 \
   --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 

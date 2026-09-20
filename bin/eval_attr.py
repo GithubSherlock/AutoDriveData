@@ -11,9 +11,13 @@ TTC 箱是安全余量语义(同一箱在不同速度对应不同距离,检出�
 用法(base env,数据已落盘):
   python bin/eval_attr.py \
       --run day8=outputs/kitti_ab_day_clear:8.0 \
-      --run day4=outputs/kitti_sweep_day_clear_4:4.0 \
+      --run day8b=outputs/kitti_sweep_day_clear_8:8.0 \
       --run rain8=outputs/kitti_ab_rain_night:8.0
   # 输出:每跑分箱表 + 漏检画像 + 跨跑距离/框高网格;--json 落原始记录备查
+
+注:速度档 `kitti_sweep_day_clear_{4,12}` 已于 2026-09-20 清理删除(§5.10 结论已归档),
+仅保留 `_8`(CLAUDE.md / README 的命令示例仍用它)。需要 4/12 m/s 档时重采:
+  python bin/collect_ab_route.py --scene day_clear --speed 4 --frames 140
 """
 
 from __future__ import annotations

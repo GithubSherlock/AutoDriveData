@@ -70,6 +70,13 @@
 | V6 | **"地图点在 ego 系窗内占比 ≈100%"是误读**:地图覆盖整段行程(~300 m),BEV 窗口只有 30×60 m ⇒ 占比 0.24 属正常 | 真正的自证是「**画出的点数 = 窗内点数**」(两处独立算:`bev_points` 内部过滤 vs 调用方 `bev_window_mask` 重算),相等才说明窗外点一个都没画上 |
 | V7 | **"离线 ICP 0.78 s/帧"是平均值不是逐帧成本**:`icp_stats.json` 的 0.78 = 400 帧含转弯/重访的均值,在线逐帧(gap 1)只有 **0.15–0.35 s** | 引用成本数字必须写清口径(总均值 vs 逐帧稳态);据此下的架构结论(「必须 worker 线程」)会整条走偏 |
 
+## 实时可视化 / 拼图
+
+| # | 坑 | 修复 |
+|---|---|---|
+| R1 | **`PIL.Image.paste` 在源图大于目标框时不报错、不缩放,只贴左上角**(超出部分静默丢弃):studio 旧 4×2 等尺寸拼图(`disp_w=621`)把 1242×375 相机图裁成 621×187,右半 + **下半(地面)** 无声消失;用户看到的现象是"6 视角 FoV 缩得看不到地面"(**不是 FoV 变了,是画面被切走一半**) | 判据不看图看数:拼图格与「源图左上角裁剪」平均绝对差 **0.128** vs 与「整幅缩放」差 **66.18** ⇒ 裁剪不是缩放。修复 = `live_common.compose_rows`(按行拼、每格**原生像素**)+ `compose_grid` **尺寸守卫**(不符即 `ValueError`,把这类坑钉死不复发)+ `live_studio.GRID_ROWS` 三层。回归 `tests/test_live_common.py`(12 用例,核心判据 = 每格逐像素等于源图) |
+| R2 | **`bin/` 不是包,静态分析跟不到测试里的运行时 `sys.path.insert`** → pyright 报 4 处 `reportMissingImports`(而全仓 pyright 基线本来就有 7580 错,`tests/` 一条没有) | 就地 `# pyright: ignore[reportMissingImports]` 标注 import 行(不改全局 pyright 配置,不给仓库引入新文件);判据 = `pyright tests/test_live_common.py` → 0 errors |
+
 ## 类型系统(pyright 0 纪律)
 
 | # | 坑 | 修复 |

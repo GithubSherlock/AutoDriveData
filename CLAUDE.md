@@ -21,12 +21,14 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
   - **第二轮 ep512 结果口径分化**:留出集 @0.2 **0.0674**(vs ep256 0.0510,+32%)、@0.3 0.0904、@0.4 0.1280(后两档持平略降)→ 保守操作点仍获益、高阈值已饱和;训练对照 0.2603 → **泛化间隙 3.9×**(ep256 时 2.1×)→ 下轮收益靠**扩数据**而非继续长训。权重 `outputs/maptr_ep512.pt`
   - **实时 overlay ✅**(§5.11f):`view_stream.py --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev`(rig 走 `live_common.rig_spec` 两处定义;推理用实挂相机世界位姿);实况数值验证 overlay 品红 25553 px vs raw 0、地平线以上 0/18496、FPS 1.1–1.4
   - **rig 两代并存(2026-09-19,§P-L.1)**:`legacy`(共用 `SENSOR_OFFSET` + BACK_LEFT/RIGHT 235/125)对 `maptr_ep256/ep512`;`official`(逐相机 `SENSOR_MOUNTS` + 108.6/−110.8)对 `maptr_600/1000`。**rig 必须与权重训练数据一致,不是"越新越好"**;`--rig auto`(默认)按权重名选,拿 official 喂 ep512 是错配(品红 122711→135989 px)。A/B 探针 `bin/probe_rig_mount.py`
-- **8 路实时 studio ✅**(2026-09-19 A 期 / 2026-09-20 B 期,Plan2.md §P-L):`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页 / 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载)+ `bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 4×2;`--keyboard` 折进 tick 循环)。`view_stream.py`/`drive_ego.py` 改薄编排
+- **8 路实时 studio ✅**(2026-09-19 A 期 / 2026-09-20 B 期,Plan2.md §P-L):`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页 / 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载)+ `bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;`--keyboard` 折进 tick 循环)。`view_stream.py`/`drive_ego.py` 改薄编排
+  - **拼图三层 + 不缩像素 ✅**(§P-L.6):用户报告"6 视角 FoV 缩得看不到地面"——根因是 **`PIL.Image.paste` 源图大于目标框时只贴左上角、不报错不缩放**,旧 4×2 等尺寸拼图把 1242×375 裁成 621×187,右半 + **下半(地面)** 无声丢弃(判据:与「源图左上角裁剪」差 **0.128** vs 与「整幅缩放」差 **66.18**)。改 `compose_rows`(按行拼、每格**原生像素**)+ `compose_grid` **尺寸守卫**(不符即 `ValueError`,钉死不复发)+ `GRID_ROWS` 三层(①左前/前/右前 ②右后/后/左后 ③第三方 + BEV,**不沿用 `SURROUND_CAMS` 字典序**)。画布 2484×374 → **3726×1170**,逐格与源图最大差 **0.0**;回归 `tests/test_live_common.py`(12 用例)
   - **B 期在线 SLAM ✅**(§P-L.2~P-L.4):`autodrivedata/live_slam.py`(`LiveSlam.push/snapshot` + 地图/轨迹换到当前 ego 系 + `SlamWorker`)+ `live_studio --slam`(语义 LiDAR → BEV 槽画地图点灰/轨迹青,HUD 显式报滞后)。**两条原前提都被实测推翻**:①离线 ICP 0.78 s/帧是 400 帧**含转弯的平均值**,在线逐帧只有 0.15–0.35 s;②**worker 线程被 GIL 饿死**(主线程 overlay/拼图/HUD 是纯 Python 字节码;同一对点云 worker eff 0.04–0.24 vs 主线程同步 0.90–1.00;钉 `OPENBLAS_NUM_THREADS=1` 不改结论 ⇒ 不是 BLAS 线程池)⇒ **默认同步执行**(~2.4 fps),`--slam-async` 留作对照
   - **有界丢旧队列 ≠ 滞后有界**(关键机制):队列有界的是**深度**不是 `prev_down` 与当前帧的**间隙**,而 ICP 成本随间隙爆炸(0.8 m 0.2 s → 8 m 2.8 s → 32 m 39 s)⇒ 丢帧→间隙更大→更慢→更多丢帧**无界正反馈**(异步实测:259 tick 只处理 8 帧、滞后涨到 157 帧/45 s)。修复 = **按帧号差止损**(`--slam-max-gap` 默认 3,超阈帧不做 ICP 直接恒速外推,`prev_down` 照推进)。**滞后口径 = 已 tick 帧号 − 已处理帧号**,不是 `n_offered − n_processed`(后者随丢帧无界增长,是假故障)
   - **验收数字**:400 帧在线 vs 离线链式位姿**逐元素差 0.0**、ATE **0.18768 m**(= 离线 = 参照);同步 136 tick **丢 0/止损 0/lag_max 0**;退出后 `nvidia-smi` 回基线、残留进程 0;BEV 画出 90611 点 / 轨迹 20 段 / **画出的点数 = 窗内点数**。产物 `outputs/slam_gt/{accept_sync,accept_async,accept_parity_full}.json`。**判据订正**:"地图点窗内占比 ≈100%"是误读 —— 地图覆盖 ~300 m 而窗口只有 30×60 m,占比 0.24 正常
   - **逐帧契约 ✅**(§5.11h):`eval_maptr.py --out-frames` → `outputs/surround_pred/{token}.json`(`mapvec_pred/1`:schema/帧归属/类序/坐标系/窗口/阈值/溯源,GT 同文件携带;旧 `--out-pred` 是跨帧汇聚、实例无帧归属,不可对外)。供 AutoLabel 消费——**消费方未接**
 - **官方栈对照已终止**(2026-09-14,§5.12):官方 MapTR/MapQR 复线(同数据重训对照)中止,官方栈产物 `outputs/maptr_official/` 已删(**env 当日漏删,2026-09-19 补删**,合计回收 15 G);**自实现线全部资产不受影响**(ep512 权重/逐帧契约/实时 overlay 照旧)。A′ 的**口径**结论保留(两套 mAP 口径的关系),但"官方实现 vs 自实现"的对照表不存在
+  - **八视角视频段 ✅**(§P-L.5):`live_studio --video <mp4>`(cv2/mp4v 惰性开编码器,拼图槽逐帧写盘;`--video-fps` 是**标称**帧率,结束打印实际采集 fps 与播放倍速——不调到实测值视频就是加速的;`--video-tile >1` 只是插值放大)。实测 MapTR+SLAM 同开 0.3–0.5 fps、仅 GT overlay ~2 fps
 - **P1-6 候选**:wet_road 眩光 / dense_rush 遮挡(待用户定)
 
 ## 环境(勿新建;direnv 进入目录自动激活 autodrivedata,首次需 `direnv allow`)
@@ -94,6 +96,9 @@ python bin/live_studio.py                             # 8 路 + 键盘(stdin 是
 python bin/live_studio.py --speed 8 --npcs            # 定速直行(键盘自动关;两者互斥会报错)
 python bin/live_studio.py --slam --speed 8 --duration 90 --slam-report outputs/slam_gt/accept.json
 python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8  # 感知 + SLAM 同屏
+# 落一段八视角视频(--video-fps 调到接近实际采集 fps 才是实时播放;结束会打印实测 fps 与倍速)
+PYTHONPATH=$PWD python bin/live_studio.py --npcs --speed 6 --duration 100 --fps 10 --no-keyboard \
+  --maptr-ckpt outputs/maptr_ep512.pt --slam --video outputs/videos/studio_8view.mp4 --video-fps 0.5
 PYTHONPATH=$PWD python bin/viz_maptr_pred.py --start 250 --frames 6   # 离线:预测回投 6 相机拼图 + BEV
 # 逐帧契约落盘(供 AutoLabel 消费;GT 同文件携带,见 autodrivedata/mapvec_schema.py)
 PYTHONPATH=$PWD python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \

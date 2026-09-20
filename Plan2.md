@@ -79,6 +79,8 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 
 ## 5 数据资产(可复用,无需重采)
 
+> ⚠️ **2026-09-20 清理后**,下列清单已按实况订正(详见 §10)。
+
 - 图像:`surround_train`(300 帧 × 6)/ `surround_p3` / `surround_town13` / `kitti_*` image_2
 - 点云:`kitti_*/training/velodyne/*.bin`(64 线语义强度)/ `nus_mini` LIDAR_TOP + RADAR
   - **SLAM 输入**:`kitti_drive/training/velodyne/`(150 帧,`bin/slam_odometry.py` 的默认输入)
@@ -86,6 +88,8 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - 轨迹:`traj_town10`(550 帧 4 agents)/ `traj_town13_clean`(175 帧)
 - 3DGS:`outputs/3dgs/`(单俯仰 90 帧 + 多俯仰 270 帧 3×90,含真值深度与位姿)
 - 双目:`outputs/stereo/`(基线 0.4m,left/right/depth 40 帧 + depth_pc 点云)
+- **速度档**:`kitti_sweep_day_clear_8`(70 帧 @8 m/s)是**仅存**的一档(4/12 档已清,可重采)
+- **P1-6 候选数据**:`kitti_wet_road` / `kitti_dense_rush`(各 12 帧,尚无 A/B 版)
 
 ## 6 纪律
 
@@ -261,7 +265,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | 文件 | 动作 | 要点 |
 |---|---|---|
 | `bin/live_common.py` | 新增 | 多槽 MJPEG(单端口 `/stream/<name>` + `/` 索引页)/ 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载 |
-| `bin/live_studio.py` | 新增 | 9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid`(4×2 拼图);`--keyboard` 折进 tick 循环 |
+| `bin/live_studio.py` | 新增 | 9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid`(拼图,当时是 4×2;2026-09-20 改**三层**且不缩像素,见 §P-L.6);`--keyboard` 折进 tick 循环 |
 | `bin/view_stream.py` | 改 | 薄编排:共享件全部改走 `live_common`;新增 `--rig` |
 | `bin/drive_ego.py` | 改 | 薄封装 `live_common.KeyboardState`(独立进程遥控用法保留,studio 内置键盘是首选) |
 
@@ -425,6 +429,91 @@ ICP 0.15–0.35 s、零丢帧、滞后 0),代价 = 帧率 ~2.4 fps;`--slam-async
 ~1.5 fps(voxel 0.5),ICP 与渲染在同一个 tick 里排队;要提速只有两条路 —— 提 voxel
 (1.5 → ICP 0.10 s)或把 overlay/拼图移出主线程(纯 Python 是 GIL 争用的根源)。
 
+#### P-L.5 八视角**视频段**输出 `--video`(2026-09-20,用户问"能输出八视角可视化的一段检测")
+
+**需求**:用户提交 GitHub 后问「现在怎么玩 Carla?可以输出八视角可视化的一段检测?」——
+即把 studio 的拼图槽逐帧编码成一段 mp4,而不是只留浏览器里的实时流。
+
+**实现**(`bin/live_studio.py`):`--video <path>` / `--video-fps` / `--video-tile`。
+
+- 编码器 **cv2(mp4v)**,惰性打开(**首帧到齐才开**,尺寸随 `--video-tile` 变,避免先猜尺寸);
+  `vw.release()` 在 `finally` 里(与 worker 停止同一段,顺序:停 worker → 关编码器)。
+- 环境事实:本机**无 ffmpeg 二进制、无 imageio/av**,但 autodrivedata env 有 **cv2 4.11.0**
+  (`VideoWriter`/`VideoWriter_fourcc` 齐全)。cv2 的 `.pyi` 只声明了类方法
+  `VideoWriter.fourcc`、**没有**模块级 `VideoWriter_fourcc` C 绑定 ⇒ 走
+  `getattr(cv2, "VideoWriter_fourcc")` 包一层(noqa B009),否则 pyright 报未定义属性。
+- `--video-tile` 默认 **1**。曾默认 2,实测只是**插值放大**(30 帧 5120×1440 / 40 MB),
+  信息量不变、文件翻倍 ⇒ 改回 1 并在 help 里写明。
+- **标称 fps vs 实际采集 fps 分开报**:循环跑不到 `--video-fps` 时视频会被**加速播放**,
+  结束时打印 `实际采集 X fps ⇒ 播放速度是实时的 N×`,用户据此把 `--video-fps` 调到接近实测值。
+  `--slam-report` JSON 同步落 `video_path` / `video_frames` / `video_fps_nominal` / `video_fps_real`。
+
+**实测**(`outputs/videos/studio_8view.mp4`,MapTR ep512 + SLAM + 6 NPC 定速 6 m/s):
+
+| 量 | 值 |
+|---|---|
+| 帧数 / 尺寸 / 时长 | **43 帧** / 2484×374 / 86.0 s(标称 0.5 fps) |
+| 实际采集帧率 | **0.43 fps** ⇒ 播放 1.2×(近似实时) |
+| 文件 | 10.3 MB |
+| 8 格内容(非黑占比) | 84–100%(逐格核过,首末帧不同) |
+| HUD(中途) | `pred=156/seg=354`、`SLAM 滞后 0帧`、`已处理 25 丢 0 止损 0`、`地图 369390点 rmse 0.177`、`BEV 点 95810/369390 轨迹段 24` |
+
+**帧率口径(如实)**:MapTR + SLAM 同开时主线程每 tick 要跑 6 路推理 + 6 路 overlay +
+拼图 + ICP,实测 **0.3–0.5 fps**;只开 GT overlay(无 MapTR/SLAM)约 2 fps。
+尺寸 2484×374 = MapTR 路径下 `disp_w = 1242×0.5 = 621` × 4 列 × 2 行(无 MapTR 时是 2560×720)。
+**该 4×2 等尺寸布局已于 2026-09-20 废弃**——它把相机图裁到 621×187 丢掉下半(地面),见 §P-L.6;
+现布局为三层、每格原生像素,尺寸 3726×1170。
+
+**结论**:「八视角检测视频」这条路径打通(`--video` 一行开关);**不是新能力**,是既有 8 路
+studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全部按实时流同一份渲染写进视频。
+
+#### P-L.6 拼图改**三层**且不缩像素 —— 用户报告"FoV 缩得看不到地面"的根因是 `paste` 静默裁剪(2026-09-20)
+
+**用户报告**(看完 `studio_8view.mp4`):「6 视角摄像头的 FoV 缩小得都看不到地面了,能否改成三层,
+以第一层是摄像头的左前、前和右前,第二层是右后、后和左后,第三层是第三视角和 bev,
+且都不要为了整齐而缩减像素尺寸。」
+
+**根因 = `PIL.Image.paste` 在源图大于目标框时不报错、不缩放,只贴左上角**。旧拼图是等尺寸
+`compose_grid`(`cols=4`),MapTR 路径下 `disp_w = 1242×0.5 = 621`,6 路 1242×375 相机图被塞进
+**621×187** 的格子 ⇒ 右半 + **下半(正是地面)** 被无声丢弃。
+
+| 假设 | 与实测拼图格的平均绝对差 |
+|---|---|
+| 源图**左上角裁剪**到 621×187 | **0.128** |
+| 源图**整幅缩放**到 621×187 | **66.18** |
+
+⇒ 是**裁剪**不是缩放(逐相机复算 0.12–0.21 vs 60–86;直接对 1242×375 → 621×187 做一次
+`paste` 复现,差 **0.000**)。这解释了"FoV 变窄"的观感:不是 FoV 变了,是画面被切走了一半。
+
+**改动**:
+
+- `bin/live_common.py` 新增 **`compose_rows(rows, bg, center=True)`**:按行拼,**每格按自身原生像素
+  原样摆**,行高 = 该行最高格、行宽 = 该行各格宽之和、整幅宽 = 最宽行、窄行居中。
+- `compose_grid` 加**永久回归守卫**:格尺寸不符直接 `ValueError`(措辞含"静默裁"与"改用
+  compose_rows"),把这一类坑钉死不再静默复发。`view_stream.py --view grid6` 的调用不受影响
+  (它的格子全是 `disp_w × disp_h`)。
+- `bin/live_studio.py` 新增布局常量 **`GRID_ROWS`**(**不沿用 `SURROUND_CAMS` 的字典序** ——
+  那样第二行会变成"左后/右后"与地理直觉相反)+ `grid_rows()`(整行缺名则丢该行,`--dump` 的
+  raw 拼图没有 BEV 时不留空行);tick 里改调 `compose_rows`。
+- 画布 **2484×374 → 3726×1170**(3×1242 宽;375+375+420 高)。`--video-tile` help 同步订正。
+
+**验收(数值,不靠目检)**:实跑 `--npcs --speed 6 --duration 12 --maptr-ckpt outputs/maptr_ep512.pt
+--dump outputs/dumps/lay3.png`:
+
+| 判据 | 结果 |
+|---|---|
+| 拼图尺寸 | **3726×1170** = 3×1242 × (375+375+420) |
+| 逐格 vs 源图(非标签区) | **最大差 0.0**(逐像素完全相同:既没缩放也没裁) |
+| 第一行 x | 0 / 1242 / 2484 = 左前 / 前 / 右前 |
+| 第二行 x | 0 / 1242 / 2484 = 右后 / 后 / 左后 |
+| 第三行 | 第三方 640×360 @ x=1333 + BEV 420×420 @ x=1973(行居中 `(3726−1060)//2`) |
+| **地面区域** | 相机图下半 **最大差 0.0**、均值 148.6 / 152.4 / 163.0(不再被裁) |
+
+回归:`tests/test_live_common.py`(**新增 12 用例**)= ① `compose_grid` 尺寸不符必抛
+(含"多 1 px 也抛");② `compose_rows` 画布尺寸 = 行宽/行高精确和、**每格逐像素等于源图**
+(核心判据"不为了整齐而缩减像素尺寸")、窄行居中/左对齐/空行报错;③ studio 三层行序与用户口径
+一致、缺名丢行。`ruff check && ruff format` 通过。
+
 ## 8 遗留缺口
 
 - **教程 04(4 相机 IPM/单应拼接)**:仓库仍**无像素级 IPM 环视拼接**(`calib.py`/`mapviz.py` 只有标定与
@@ -538,3 +627,49 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
   剩纯 carla 编排;回归测试先例 tests/test_collect_rig.py(手算锚点 8 passed)
 - **结论**:教程能力批量落地完成,7/16 能力达到"链路通+数值如实"(缺 14 FAST-LIO2 外部 ROS 栈);
   P-G 3DGS 调优(多俯仰采集 + --scale/--iters,见上)与 P-D 生产口径评估已完成
+
+## 10 outputs/ 磁盘清理(2026-09-20 ✅)
+
+**背景**:`outputs/` 长到 15 G,其中大量是一次性探针产物与已被取代的数据集。清理脚本
+`/root/autodl-tmp/outputs_cleanup.sh`(**项目外**,环境维护用,同 `disk_cleanup.sh` 的先例)
+按风险分 A/B/C/D 四层,每层独立确认。**用户实跑 A+B 两层**(C/D 未跑)。
+
+**回收**:数据盘 29 → 30 GiB(脚本口径 1327 MiB;`df` 取整掩盖了零头),`outputs/` **15 G → 13 G**。
+
+### 10.1 已删(逐项 `test -e` 复核,非仅凭执行意图)
+
+| 层 | 项 | 实测 |
+|---|---|---|
+| A | `dumps` `viz_check` `viz_maptr_e120` | 62 MiB |
+| A | `kitti_slam_probe` `kitti_town13_probe` `kitti_town13_static_probe` | 161 MiB |
+| A | `maptr_600_pred` + `mapvec_pred_{final,72e_held20}.{json,png}` | 26 MiB |
+| A | 官方栈构建日志 / `zzz_probe.txt` / 空 `videos/` | ≈0 |
+| B | `kitti_sunset_glare`(老 150 帧对,被 70 帧 A/B 新对取代) | 421 MiB |
+| B | `kitti_sweep_day_clear_{4,12}`(**保留 `_8`**) | 534 MiB |
+| B | `surround_micro_{legacy,official}`(§P-L.1 证据) | 115 MiB |
+
+### 10.2 未删 —— 以及为什么
+
+- **`kitti_day_clear` 保留、`kitti_sunset_glare` 删掉,这对不对称是刻意的**:
+  两者是同一批 150 帧老数据,但 `kitti_day_clear` 仍被 §5 与 `bin/slam_diff_test.py` 引用。
+  代价:`bin/eval_2d_ab.py` 的老口径配对**已不存在** → 已把该脚本默认值改为 A/B 新对并加注。
+- **`kitti_sweep_day_clear_8` 保留**:CLAUDE.md / README / `eval_attr.py` 三处命令示例都用 `_8`,
+  删了要同步改三处文档,不值。
+- **12 帧天气探针只清一半**:`rain_night` / `dense_fog` 已有 70 帧 A/B 版 → 冗余(C 层,**未跑**);
+  `wet_road` / `dense_rush` 是 P1-6 候选、`heavy_rain` / `night_clear` **无** A/B 版(12 帧是唯一数据)→ 全留。
+- **`traj_*` 全部保留**:合计 < 1 M,回收量≈0,且 §5 与 `assemble_traj_pt.py` 按名字引用。
+- **`surround_town13`(2.3 G)保留**:它是 `maptr_1000.pt` **当前唯一剩下的数据源**
+  (`maptr_1000/images` 已于 2026-09-19 删)。删它 = 放弃"多图扩数据"方向,是**取舍**不是清理 ⇒ 单列 D 层 opt-in,默认不做。
+- **`kitti_ft` 在脚本 `PROTECTED` 白名单首位**:被 AutoLabel `finetune_config.py:8` 硬编码为 `data_root`。
+
+### 10.3 订正:`maptr_600/images` 也不存在
+
+复核时发现 **`maptr_600/images`(3600 图)同样已缺失**,只剩 `map_infos.json`(33 M)——
+2026-09-19 只发现并记录了 `maptr_1000` 被删,`docs/fileTree.md` 里 "infos + images" 的说法对 600 也是错的,已一并订正。
+
+### 10.4 教训
+
+**"删了"必须当场 `test -e` 复核。** 本次 A/B 两层共 16 项,逐项 `test -e` 确认全部消失、
+且 11 项保留项(含 `kitti_ft` / `surround_town13` / `kitti_sweep_day_clear_8` / 四个天气探针)全部在位。
+这与 §9 归档里 maptr_official "当日未实际执行却写成已删"是同一类错误的两面 ——
+**写归档前先跑一遍验证,不是复述执行意图。**

@@ -2,9 +2,16 @@
 
 一路 = 一个 `/stream/<name>`(`CAM_FRONT` / `CAM_FRONT_LEFT` / `CAM_FRONT_RIGHT` /
 `CAM_BACK` / `CAM_BACK_LEFT` / `CAM_BACK_RIGHT` / `BEV` / `THIRD_PERSON`),另有 `/`
-索引页(8 个 `<img>` 网格)与 `grid` 拼图槽(4×2 拼成一张,只开一个隧道时用)。
+索引页(8 个 `<img>` 网格)与 `grid` 拼图槽(**三层**拼成一张,只开一个隧道时用)。
 多路服务/拼图/rig/GT overlay/键盘全部来自 `bin/live_common.py`(与 `view_stream.py` 共用
 同一实现,避免两处漂移)。
+
+**拼图三层(用户口径 2026-09-20)**:① 左前/前/右前 ② 右后/后/左后 ③ 第三方 + BEV。
+**每格保持原生像素**(相机 1242×375、第三方 640×360、BEV `--bev-size`),不为了对齐网格而
+缩放 —— 走 `live_common.compose_rows`(按行拼、各格原样)。旧实现用等尺寸 `compose_grid`
+把 6 路 1242×375 塞进 621×187 的格子,`Image.paste` 在源图大于目标框时**不报错、只贴左上角**
+⇒ 右半 + 下半被静默裁掉,而**下半正是地面**(用户报告"6 视角 FoV 缩得看不到地面";
+数值判据:拼图格与「源图左上角裁剪」平均绝对差 0.13,与「整幅缩放」差 66.2)。
 
 与 `view_stream.py` 的分工:那个是单视角 + `--maptr` 实时预测 overlay 的既有验证路径
 (§5.11f 有文档化像素验收);本脚本面向"人开着车采数据"的多路监看台。
@@ -45,6 +52,9 @@ BEV 槽 = SLAM 地图点(浅灰)+ 轨迹(青)+ 可选 MapTR 预测(品红)。在
   python bin/live_studio.py --scene rain_night       # 天气档
   python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt   # BEV 槽出感知结果
   python bin/live_studio.py --slam --speed 8 --duration 90        # 在线 SLAM + 验收报告
+  # 落一段八视角视频(拼图槽逐帧写 mp4;--video-fps 调到接近实际采集 fps 才是实时播放)
+  python bin/live_studio.py --slam --maptr-ckpt outputs/maptr_ep512.pt --npcs \
+    --speed 8 --duration 40 --video outputs/videos/studio_8view.mp4 --video-fps 3
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
 红线:同步模式下 tick 归本脚本,不能与采集脚本同时运行(抢 tick)。
@@ -58,7 +68,8 @@ import json
 import queue
 import sys
 import time
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
 import carla
 import numpy as np
@@ -82,7 +93,7 @@ from live_common import (
     actor_boxes,
     build_spectator,
     build_surround_rig,
-    compose_grid,
+    compose_rows,
     drain,
     draw_hud,
     dump_pair,
@@ -108,10 +119,56 @@ from autodrivedata.scenarios import SCENES, merged_weather
 from autodrivedata.semantic import semantic_to_velodyne_bin
 from autodrivedata.slam import DOWNSAMPLE_VOXEL, ICP_MAX_ITER
 
+try:  # opencv 只在 `--video` 时需要(与 stereo.py 同一处口径:可选依赖不挡主流程)
+    import cv2
+
+    _CV2_OK = True
+except Exception:  # pragma: no cover
+    cv2 = None  # type: ignore[assignment]
+    _CV2_OK = False
+
+
+def _fourcc(tag: str) -> int:
+    """`cv2.VideoWriter_fourcc(*tag)` 的取用口。
+
+    走 `getattr` 而不是直接点属性:opencv 的 `.pyi` 里只有 `VideoWriter.fourcc`(类方法),
+    没有模块级 `VideoWriter_fourcc`(C 绑定实际存在)—— 直接点会让 pyright 报未定义属性。
+    """
+    assert cv2 is not None
+    fn = getattr(cv2, "VideoWriter_fourcc")  # noqa: B009 — 见上:绕 pyi 缺项
+    return int(fn(*tag))
+
+
+def _open_video_writer(path: str, fps: float, size: tuple[int, int]) -> Any:
+    """按真实帧尺寸开 mp4 编码器(**首帧才开**,尺寸随 `--video-tile` 变)。"""
+    assert cv2 is not None
+    w = cv2.VideoWriter(path, _fourcc("mp4v"), fps, size)
+    if not w.isOpened():
+        raise SystemExit(f"VideoWriter 打不开 {path}(检查扩展名/编码器:mp4v 需要 opencv 带 FFMPEG)")
+    return w
+
+
 BEV_NAME = "BEV"
 SPECTATOR_NAME = "THIRD_PERSON"
 GRID_NAME = "grid"
 EGO_BOX_COLOR = (255, 255, 255)  # 第三方视角里的 ego 自身框(白:与 GT 绿/蓝/黄/橙、灯态红/黄/绿都不撞)
+
+# 拼图布局(用户口径 2026-09-20):三层,行内按**车头朝前**的环视顺序排。
+#   ① 左前 / 前 / 右前   ② 右后 / 后 / 左后   ③ 第三方 + BEV
+# 不沿用 `SURROUND_CAMS` 的字典序(FRONT, FRONT_RIGHT, FRONT_LEFT, BACK, BACK_LEFT, BACK_RIGHT)
+# —— 那样第二行会变成"左后/右后"与地理直觉相反。
+GRID_ROWS: tuple[tuple[str, ...], ...] = (
+    ("CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"),
+    ("CAM_BACK_RIGHT", "CAM_BACK", "CAM_BACK_LEFT"),
+    (SPECTATOR_NAME, BEV_NAME),
+)
+
+
+def grid_rows(by_name: dict[str, Image.Image]) -> list[list[tuple[str, Image.Image]]]:
+    """布局名 → 按 `GRID_ROWS` 组行;**整行都缺**时跳过该行(`--dump` 的 raw 拼图没有 BEV,
+    第三行只剩第三方 —— 不会留一条空行让 `compose_rows` 报错)。"""
+    rows = [[(n, by_name[n]) for n in row if n in by_name] for row in GRID_ROWS]
+    return [r for r in rows if r]
 
 
 def count_color(img: Image.Image, color: tuple[int, int, int]) -> int:
@@ -139,6 +196,23 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=5.0)
     ap.add_argument("--duration", type=float, default=0.0, help="秒;0 = 常驻(Ctrl-C 退出)")
     ap.add_argument("--dump", default=None, help="落盘首帧各路的 PATH 前缀(overlay)+ 同名 _raw(诊断)")
+    ap.add_argument(
+        "--video",
+        default=None,
+        help="落盘一段**拼图视频**(mp4,含 8 路 + HUD);需 --duration 或 Ctrl-C 结束(经 project_path)",
+    )
+    ap.add_argument(
+        "--video-fps",
+        type=float,
+        default=10.0,
+        help="视频标称帧率。循环跑不到这个速度时视频会被**加速播放**(结束时打印实际采集 fps)",
+    )
+    ap.add_argument(
+        "--video-tile",
+        type=int,
+        default=1,
+        help="视频里每格放大倍数(1=拼图原始分辨率 3×1242=3726 宽;2 只是插值放大,文件翻倍)",
+    )
     ap.add_argument("--maptr-ckpt", default=None, help="MapTR state_dict → BEV/相机路出预测折线")
     ap.add_argument("--maptr-thr", type=float, default=0.2, help="预测实例得分阈值(口径同 eval_maptr)")
     ap.add_argument(
@@ -185,6 +259,21 @@ def main() -> None:
         raise SystemExit("--keyboard 与 --speed 互斥:两者都写 ego 控制,同时给会互相覆盖")
     if args.dump:
         args.dump = str(project_path(args.dump))  # 产物锚定项目根(相对路径不随 cwd 漂移)
+
+    # 视频落盘:拼图槽逐帧写 mp4。为什么是**拼图**而不是 8 个文件:8 路各写一个 mp4
+    # 后还得再拼一次,而拼图槽本来就是"一张图看全 8 路"的口径;要单路素材用 `--dump` 落帧。
+    # 编码器**首帧才打开**:尺寸取自真实帧(带 --video-tile 缩放),不靠预先推算。
+    # `Any` 而不是 `cv2.VideoWriter`:cv2 是可选导入(未装时名字绑到 None),写进类型注解
+    # 会连带一串 "None 没有该属性" 的假报。
+    vw: Any = None
+    vpath: str | None = None
+    n_video = 0
+    if args.video:
+        if not _CV2_OK:
+            raise SystemExit("--video 需要 opencv(cv2):本环境未装。可改用 --dump 落帧")
+        vpath = str(project_path(args.video))
+        Path(vpath).parent.mkdir(parents=True, exist_ok=True)
+        print(f"[video] → {vpath} @ {args.video_fps:g} fps(首帧到齐后按实际尺寸打开)")
 
     client = carla.Client(args.host, args.sim_port)
     client.set_timeout(60.0)
@@ -391,13 +480,11 @@ def main() -> None:
             )
             slots[BEV_NAME].publish(encode_jpeg(bev))
 
-            grid = compose_grid(
-                [*tiles, spec_img.resize((disp_w, disp_h)), bev.resize((disp_w, disp_h))],
-                [*cams, SPECTATOR_NAME, BEV_NAME],
-                disp_w,
-                disp_h,
-                cols=4,
-            )
+            # 拼图:**三层**,每格保持原生分辨率(不缩放、不裁剪)。
+            # 行序按用户口径:左前/前/右前 → 右后/后/左后 → 第三方 + BEV。
+            # 第三方与 BEV 不缩到相机格尺寸 —— `compose_rows` 按各格自身像素摆。
+            by_name = {**dict(zip(cams, tiles, strict=True)), SPECTATOR_NAME: spec_img, BEV_NAME: bev}
+            grid = compose_rows(grid_rows(by_name))
             if args.dump and not dumped:
                 # 逐路 raw/overlay 成对落盘:差集 = 真实绘制像素(场景自带绿植被/黄标线
                 # 与类别色撞色,数绝对颜色会误判 ⇒ 必须做差)
@@ -405,13 +492,8 @@ def main() -> None:
                     dump_pair(f"{args.dump}_{name}.png", raw_tile, tile.copy())
                 dump_pair(f"{args.dump}_{SPECTATOR_NAME}.png", raw_spec, spec_img.copy())
                 dump_pair(f"{args.dump}_{BEV_NAME}.png", bev_panel([], None, "", bev.size), bev.copy())
-                raw_grid = compose_grid(
-                    [*raw_tiles, raw_spec.resize((disp_w, disp_h))],
-                    [*cams, SPECTATOR_NAME],
-                    disp_w,
-                    disp_h,
-                    cols=4,
-                )
+                raw_by = {**dict(zip(cams, raw_tiles, strict=True)), SPECTATOR_NAME: raw_spec}
+                raw_grid = compose_rows(grid_rows(raw_by))
                 dump_pair(f"{args.dump}_{GRID_NAME}.png", raw_grid, grid.copy())
                 dumped = True
 
@@ -445,6 +527,18 @@ def main() -> None:
                     )
             draw_hud(grid, hud, warn=lag_warn)
             slots[GRID_NAME].publish(encode_jpeg(grid))
+
+            # 视频:同一帧的拼图放大后写 mp4(**放大而不是缩小** —— 每格 640×360 直接压成
+            # 视频会糊到看不清 GT 框)。编码器首帧才按真实尺寸打开(尺寸随 --video-tile 变)。
+            if vpath is not None:
+                t = max(int(args.video_tile), 1)
+                vframe = grid if t == 1 else grid.resize((grid.width * t, grid.height * t))
+                if vw is None:
+                    vw = _open_video_writer(vpath, args.video_fps, vframe.size)
+                    print(f"[video] 编码器已开:{vframe.width}×{vframe.height} @ {args.video_fps:g} fps")
+                vw.write(np.asarray(vframe)[:, :, ::-1])  # PIL RGB → cv2 BGR
+                n_video += 1
+
             frames += 1
             if worker is not None:
                 slam_lag_series.append({"tick": tick_idx, "t": round(time.time() - t_start, 3), **slam_stats})
@@ -461,13 +555,32 @@ def main() -> None:
         if kb is not None:
             kb.close()  # 还原终端属性(否则退出后终端不回显)
         srv.shutdown()
+        # 视频收尾:**必须在 `--slam-report` 之前**(报告里要带实际落盘帧数/时长)
+        if vw is not None:
+            vw.release()
+            real_fps = n_video / max(time.time() - t_start, 1e-6)
+            print(
+                f"[video] {n_video} 帧 → {vpath}\n"
+                f"  标称 {args.video_fps:g} fps,实际采集 {real_fps:.2f} fps"
+                f" ⇒ 播放速度是实时的 {args.video_fps / max(real_fps, 1e-6):.1f}×"
+                "(--video-fps 调到接近实际采集 fps 即为实时)"
+            )
         # **先停 worker 再销毁 world**(顺序反了:线程还在跑 ICP 时会读到已销毁的 actor)
         if worker is not None:
             joined = worker.stop()
             print(f"[slam] worker 已停({'干净退出' if joined else '超时未退,可能卡在一次 ICP'})")
             if args.slam_report and slam is not None:
                 write_slam_report(
-                    args, slam, worker, slam_lag_series, bev_diag, tick_idx, t_start, last_ego_T
+                    args,
+                    slam,
+                    worker,
+                    slam_lag_series,
+                    bev_diag,
+                    tick_idx,
+                    t_start,
+                    last_ego_T,
+                    vpath,
+                    n_video,
                 )
         if lidar is not None:
             lidar.stop()
@@ -493,6 +606,8 @@ def write_slam_report(
     tick_idx: int,
     t_start: float,
     last_ego_T: np.ndarray | None,
+    video_path: str | None = None,
+    n_video: int = 0,
 ) -> None:
     """落盘验收报告(**数值自证**,不靠目检):滞后序列 + 绘制计数 + 窗内点自证。
 
@@ -558,6 +673,10 @@ def write_slam_report(
         "bev_drawn_equals_in_window": bool(n_drawn == in_win),
         "bev_traj_in_window": traj_in_win,
         "bev_traj_in_window_ratio": round(traj_in_win / max(len(snap["poses"]), 1), 4),
+        "video_path": video_path,
+        "video_frames": int(n_video),
+        "video_fps_nominal": args.video_fps,
+        "video_fps_real": round(n_video / max(time.time() - t_start, 1e-6), 3),
         "lag_series": lag_series,
     }
     out = project_path(args.slam_report)

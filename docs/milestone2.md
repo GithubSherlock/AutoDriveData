@@ -248,7 +248,7 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 
 **交付**:`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页、
 拼图、GT overlay、环视 rig、第三方视角、`KeyboardState`、MapTR 懒加载)+
-`bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 4×2 拼图;
+`bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;
 `--keyboard` 折进 tick 循环)。`view_stream.py` / `drive_ego.py` 改为薄编排。
 
 **验收(数值)**:挂点自检 `平移 0.000 m / 偏航 0.000°`;第三方 ego 框 `中心偏移 0.001 画幅 /
@@ -303,6 +303,24 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 
 **判据订正**:原写"地图点窗内占比 ≈100%"是误读 —— 地图覆盖 ~300 m 行程、窗口只有 30×60 m,
 故 `bev_map_in_window_ratio` 0.241 正常;真正的自证是「画出的点数 = 窗内点数」。
+
+**八视角视频段 `--video`(2026-09-20)**:`live_studio --video <mp4>` 把拼图槽逐帧写成 mp4
+(cv2/mp4v,惰性开编码器;`--video-fps` 是标称帧率,结束打印**实际采集 fps 与播放倍速**)。
+实测 `outputs/videos/studio_8view.mp4`:43 帧 / 2484×374 / 86 s、实际 0.43 fps(播放 1.2×)、
+8 格非黑占比 84–100%;HUD 含 `pred=156/seg=354`、`SLAM 滞后 0帧`、`丢 0 / 止损 0`。
+帧率口径:MapTR + SLAM 同开 **0.3–0.5 fps**,仅 GT overlay ~2 fps(纯 Python overlay/拼图持 GIL)。
+`--video-tile >1` 只是插值放大(文件翻倍、无新信息),默认 1。详见 Plan2.md §P-L.5。
+
+**拼图改三层 + 不缩像素(2026-09-20,§P-L.6)**:用户看完视频报告「6 视角摄像头的 FoV 缩小得都
+看不到地面了」。**根因是 `PIL.Image.paste` 在源图大于目标框时不报错、不缩放、只贴左上角** ——
+旧 4×2 等尺寸拼图(`disp_w = 621`)把 1242×375 的相机图裁成 621×187,右半 + **下半(地面)** 无声丢弃。
+数值判据:拼图格与「源图左上角裁剪」差 **0.128** vs 与「整幅缩放」差 **66.18** ⇒ 是裁剪不是缩放。
+
+改动:`live_common.compose_rows`(按行拼,每格**原生像素**)+ `compose_grid` 加尺寸守卫
+(不符即 `ValueError`,把这类坑钉死不复发)+ `live_studio.GRID_ROWS` 三层(①左前/前/右前
+②右后/后/左后 ③第三方 + BEV,**不沿用 `SURROUND_CAMS` 字典序**)。画布 2484×374 → **3726×1170**。
+验收:逐格与源图**最大差 0.0**、相机下半地面区域最大差 0.0、三层行序逐格 x 坐标吻合。
+回归 `tests/test_live_common.py`(新增 12 用例)。
 
 ## 待办(教程 7-15 中尚未落地的能力)
 

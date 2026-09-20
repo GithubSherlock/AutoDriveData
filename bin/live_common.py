@@ -131,15 +131,63 @@ def draw_hud(img: Image.Image, text: str, warn: bool = False) -> Image.Image:
 
 
 def compose_grid(tiles: list[Image.Image], names: list[str], w: int, h: int, cols: int = 3) -> Image.Image:
-    """拼图:cols 列,行数由 tile 数决定(6 格 = 3×2,8 格 = 4×2 传 cols=4)。"""
+    """等尺寸拼图:cols 列,行数由 tile 数决定(6 格 = 3×2,8 格 = 4×2 传 cols=4)。
+
+    **每格必须是 `w`×`h`**:尺寸不符直接报错,不静默裁。PIL 的 `paste` 在源图大于目标
+    框时**只贴左上角、超出部分无声丢弃**(见 `compose_rows` docstring 的踩坑记录)。
+    需要混合尺寸(相机全幅 + 第三方 + BEV)请用 `compose_rows`。
+    """
     rows = math.ceil(len(tiles) / cols)
     grid = Image.new("RGB", (w * cols, h * rows), (0, 0, 0))
     d = ImageDraw.Draw(grid)
     for idx, (tile, name) in enumerate(zip(tiles, names, strict=True)):
+        if tile.size != (w, h):
+            raise ValueError(
+                f"compose_grid: 第 {idx} 格 {name} 尺寸 {tile.size} ≠ 格 {w}×{h}"
+                "(paste 会静默裁掉超出部分;混合尺寸改用 compose_rows)"
+            )
         row, col = divmod(idx, cols)
         grid.paste(tile, (col * w, row * h))
         d.text((col * w + 6, row * h + 6), name, fill=(255, 255, 0))
     return grid
+
+
+def compose_rows(
+    rows: list[list[tuple[str, Image.Image]]],
+    bg: tuple[int, int, int] = (0, 0, 0),
+    center: bool = True,
+) -> Image.Image:
+    """按行拼图:**每格按自身像素原样摆**,不统一尺寸、不缩放、不裁剪。
+
+    行高 = 该行最高的一格;行宽 = 该行各格宽之和;整幅宽 = 最宽的那行,窄行居中
+    (也可以左对齐)。名称标签画在各格左上角。
+
+    为什么需要它(实测踩坑):`compose_grid` 要求所有格同尺寸,调用方为了把 6 路
+    1242×375 相机图 + 第三方 640×360 + BEV 420×420 塞进一个 4×2 网格,只好先把大图
+    缩到小格;而一旦漏缩(或想"少缩一点"),`Image.paste` 在源图大于目标框时**不报错、
+    只贴左上角**——实测把 CAM_FRONT 的 1242×375 裁成左上角 621×187,右半 + 下半全丢,
+    而**下半正是地面**(用户报告"6 视角 FoV 缩得看不到地面")。数值判据:拼图格与
+    「源图左上角裁剪」平均绝对差 0.13,与「整幅缩放」差 66.2 ⇒ 是裁剪不是缩放。
+
+    ⇒ 要"不为了整齐而缩减像素尺寸"就用本函数:每格保持原生分辨率。
+    """
+    if not rows or any(not row for row in rows):
+        raise ValueError("compose_rows: rows 不能为空,且不允许空行")
+    widths = [sum(t.width for _, t in row) for row in rows]
+    heights = [max(t.height for _, t in row) for row in rows]
+    total_w, total_h = max(widths), sum(heights)
+    canvas = Image.new("RGB", (total_w, total_h), bg)
+    d = ImageDraw.Draw(canvas)
+    y = 0
+    for r, row in enumerate(rows):
+        x = (total_w - widths[r]) // 2 if center else 0
+        for name, tile in row:
+            canvas.paste(tile, (x, y))
+            if name:
+                d.text((x + 6, y + 6), name, fill=(255, 255, 0))
+            x += tile.width
+        y += heights[r]
+    return canvas
 
 
 def dump_pair(path: str, raw: Image.Image, over: Image.Image) -> None:
