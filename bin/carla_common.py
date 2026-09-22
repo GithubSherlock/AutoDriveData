@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.traffic_light import (
     TrafficLightFrame,
     TrafficLightState,
@@ -44,16 +45,11 @@ LIDAR_ATTRS = {
     "lower_fov": "-30.0",
 }
 SENSOR_OFFSET = carla.Transform(carla.Location(1.2, 0.0, 1.65))  # 相对 ego 的车顶前装
-# 官方 nuScenes 相机挂点(x 前 / y 右 / z 上,CARLA 系;y 取负=官方 nus 系 y 左镜像,
-# 见 collect_surround 头注)。CAM_FRONT 与 SENSOR_OFFSET 一致;侧/后相机独立平移,
-# 不再共用车顶中心挂点。
+# 官方 nuScenes 相机挂点(x 前 / y 右 / z 上,CARLA 系)——由
+# `autodrivedata/camera_rig.NUS_CAMERA_RIG` 导出(y 已翻号,与官方 nus 系 y 左镜像)。
+# 真值在 camera_rig,**本表只是"只关心平移的调用方"的别名**;改官方标定只改那一处。
 SENSOR_MOUNTS: dict[str, tuple[float, float, float]] = {
-    "CAM_FRONT": (1.2, 0.0, 1.65),
-    "CAM_FRONT_LEFT": (1.5, -0.5, 1.5),
-    "CAM_FRONT_RIGHT": (1.55, 0.5, 1.5),
-    "CAM_BACK": (0.0, 0.0, 1.58),
-    "CAM_BACK_LEFT": (1.05, -0.5, 1.6),
-    "CAM_BACK_RIGHT": (1.0, 0.5, 1.56),
+    name: mount for name, (mount, _rot) in NUS_CAMERA_RIG.items()
 }
 
 

@@ -22,11 +22,23 @@ from autodrivedata import geometry as g
 
 @dataclass(frozen=True)
 class CameraIntrinsics:
-    """CARLA 相机内参(方形像素);fov_h_deg 为水平视场角(CARLA 的 fov 属性)。"""
+    """CARLA 相机内参(方形像素);fov_h_deg 为水平视场角(CARLA 的 fov 属性)。
+
+    主点默认 = **索引约定中心** `(w−1)/2`(不是 `w/2`)。依据见
+    [bin/probe_calib.py](bin/probe_calib.py) 的 A4/A6 锚:轴目标物掩膜**索引**中点直读给出
+    `cx = 620.50 = (1242−1)/2`,跨 5 档横移线性回归残差 0.200 px;A3(深度图交叉验证)在
+    corner 采样约定下 median|e| 0.0003 m vs center 约定 0.023 m(~70×)。`fx` 仍按
+    `(w/2)/tan(fov/2)` 算——"半 FOV ↔ 半宽"与"索引中心"是两件事,并存不矛盾
+    (A4 独立测出 f_est = 621.60 px,标称 621.00,差 0.1%)。
+
+    显式给 `cx`/`cy` 时覆盖默认(供 infos 的 K 直读——落盘的 K 是权威口径)。
+    """
 
     width: int
     height: int
     fov_h_deg: float
+    cx_override: float | None = None  # None ⇒ (width − 1) / 2
+    cy_override: float | None = None  # None ⇒ (height − 1) / 2
 
     @property
     def fx(self) -> float:
@@ -38,11 +50,11 @@ class CameraIntrinsics:
 
     @property
     def cx(self) -> float:
-        return (self.width - 1) / 2.0
+        return (self.width - 1) / 2.0 if self.cx_override is None else float(self.cx_override)
 
     @property
     def cy(self) -> float:
-        return (self.height - 1) / 2.0
+        return (self.height - 1) / 2.0 if self.cy_override is None else float(self.cy_override)
 
     def p2(self) -> np.ndarray:
         """3×4 投影矩阵(KITTI rectified cam 口径)。"""

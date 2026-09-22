@@ -7,10 +7,15 @@ MapTR 端到端训练的输入侧:6 视角图像 + sensor2ego 外参 + 相机内
 采集纪律与 collect_drive 相同(同步模式/预热/清场/场景天气档);**不改动
 A/B 采集器**(P1 复现性红线)。NPC 布置复用 collect_drive 的既有函数。
 
-nuScenes 相机布局(角度 = 官方 calibrated_sensor 光轴方位角;挂点 = 官方
-translation;pitch/roll 恒 0):
-  CAM_FRONT yaw≈0 / FRONT_RIGHT -55 / FRONT_LEFT +55 / BACK 180
-  / BACK_LEFT 108.6 / BACK_RIGHT -110.8
+nuScenes 相机布局:**直接取官方 calibrated_sensor**(6DoF 四元数 + 平移),
+由 [autodrivedata/camera_rig.py](../autodrivedata/camera_rig.py) 转成 CARLA 口径
+(平移 y 翻号、姿态走 `nus_camera_rotation_to_carla`)。采集器不再自己维护角度表。
+
+⚠️ **历史 bug(2026-09-22 修)**:此前 `SURROUND_CAMS` 把官方**方位角**原样抄成正数,
+漏了 CARLA↔nuScenes 的 y 符号翻转(`yaw_carla = −az_nus`)⇒ 四个侧/后相机左右镜像
+(FRONT_LEFT 差 110.3°、BACK_LEFT 差 217.2°)。前/后相机因近自逆而"看起来对",
+所以长期没暴露。同时 pitch/roll 被硬编码 0(官方实测 |pitch| 最大 0.96°)。
+镜像表见 camera_rig 模块头注。
 
 落盘:
   outputs/surround_<scene>/cam_front/000000.png ...(6 视角)
@@ -32,27 +37,21 @@ import argparse
 import json
 import queue
 import time
-from typing import cast
+from typing import Any, cast
 
 import carla
-from carla_common import CAM_ATTRS, SENSOR_MOUNTS, loc, spawn_ego, sync_mode
+from carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
 from collect_drive import spawn_route_walkers, spawn_traffic
 
+from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
+from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
 
-# nuScenes 6 相机布局:名 → 相对 ego 的 yaw(度);pitch/roll 恒 0。
-# **角度 = 官方 calibrated_sensor 光轴方位角**(每相机独立,见 export/nuscenes.py
-# NUS_CAMERA_CALIBS)。CARLA yaw 左转正;官方 quat 光轴 = R@(0,0,1),与 CAM_FRONT
-# yaw 0 对齐。挂点用官方 translation(经 carla_common.SENSOR_MOUNTS,_x/y/z)。
-SURROUND_CAMS = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 108.6,
-    "CAM_BACK_RIGHT": -110.8,
-}
+# 相机名 → 相对 ego 的 yaw(度)。**别名**,真值在 `autodrivedata/camera_rig.py`
+# (`NUS_CAMERA_RIG` 的完整 (平移, (pitch,yaw,roll)));本表只用于**遍历相机名的顺序**
+# 与"只关心偏航"的零散打印 —— 挂载/落盘一律走 `NUS_CAMERA_RIG`(含 pitch/roll)。
+SURROUND_CAMS: dict[str, float] = dict(NUS_CAMERA_YAW)
 
 
 def main() -> None:
@@ -115,14 +114,16 @@ def main() -> None:
 
     cams: dict[str, carla.Sensor] = {}
     qs: dict[str, queue.Queue] = {}
-    for name, yaw in SURROUND_CAMS.items():
-        x, y, z = SENSOR_MOUNTS[name]
-        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0))
+    for name, (mount, rot) in NUS_CAMERA_RIG.items():
+        x, y, z = mount
+        tf = carla.Transform(
+            carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=rot[0], yaw=rot[1], roll=rot[2])
+        )
         s = cast(carla.Sensor, world.spawn_actor(cam_bp, tf, attach_to=ego))
         q: queue.Queue = queue.Queue()
         s.listen(q.put)
         cams[name], qs[name] = s, q
-    print(f"[cams] {len(cams)} 环视相机挂载(官方独立挂点)")
+    print(f"[cams] {len(cams)} 环视相机挂载(nuScenes 官方 6DoF 挂点)")
 
     for _ in range(5):  # 预热
         world.tick()
@@ -130,25 +131,15 @@ def main() -> None:
             q.get(timeout=10)
 
     w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    fov = float(CAM_ATTRS["fov"])
-    import math
-
-    fx = w / 2 / math.tan(math.radians(fov / 2))
-    intrinsic = [[fx, 0.0, w / 2], [0.0, fx, h / 2], [0.0, 0.0, 1.0]]
-    # sensor2ego = 挂点 + 相对 yaw(attach 固定,首帧读取最准;此处与布置一致,运行时核验)
-    calib = {
+    intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
+    # sensor2ego = [x, y, z, yaw, pitch, roll] 度(infos 口径)——由官方标定导出,
+    # 与上面 spawn 用的是**同一份** NUS_CAMERA_RIG,不存在"布置与落盘两处维护"。
+    calib: dict[str, Any] = {
         name: {
-            "sensor2ego": [
-                SENSOR_MOUNTS[name][0],
-                SENSOR_MOUNTS[name][1],
-                SENSOR_MOUNTS[name][2],
-                yaw,
-                0.0,
-                0.0,
-            ],
+            "sensor2ego": [mount[0], mount[1], mount[2], rot[1], rot[0], rot[2]],
             "intrinsic": intrinsic,
         }
-        for name, yaw in SURROUND_CAMS.items()
+        for name, (mount, rot) in NUS_CAMERA_RIG.items()
     }
 
     out = project_path(args.out)

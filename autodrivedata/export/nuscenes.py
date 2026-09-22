@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 
 from autodrivedata import geometry as g
+from autodrivedata.calib import CameraIntrinsics
 
 NUS_CAMERAS = (
     "CAM_FRONT",
@@ -144,8 +145,15 @@ def _quat(yaw_nus: float) -> list[float]:
 
 
 def _intrinsics_1600x900_fov90() -> list[list[float]]:
-    fx = 800.0 / np.tan(np.radians(45.0))
-    return [[fx, 0.0, 799.5], [0.0, fx, 449.5], [0.0, 0.0, 1.0]]
+    """nuScenes devkit 口径内参:1600×900 / fov 90。
+
+    走全仓唯一 fov→fx 落点(`CameraIntrinsics`),主点 = **索引约定中心**
+    `(1600−1)/2 = 799.5`、`(900−1)/2 = 449.5`(CARLA corner 光栅实测裁决,见
+    `bin/probe_calib.py` A3/A4)。历史实现就地写 `800/tan(45°)` 且主点恰为 799.5/449.5
+    —— 数值相同,但公式重复了一遍,换 fov/画幅时不会跟着走。
+    """
+    k = CameraIntrinsics(width=1600, height=900, fov_h_deg=90.0)
+    return [[k.fx, 0.0, k.cx], [0.0, k.fy, k.cy], [0.0, 0.0, 1.0]]
 
 
 def write_mini_dataset(

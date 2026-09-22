@@ -295,8 +295,45 @@ class TestBevPointsBatchPerf:
 
 
 class TestCalib:
-    def test_calib_from_fov_matches_kitti_style(self):
+    def test_calib_from_fov_uses_index_centre_principal_point(self):
+        """主点 = **索引约定中心** `(w−1)/2`,不是 `w/2`。
+
+        依据(2026-09-22 实测裁决,见 `bin/probe_calib.py` A4/A6 锚):
+        - A4 轴目标物实例分割掩膜的**索引**中点线性回归 → cx = 620.500(shift=0,corner
+          约定),残差 0.200 px;若按 center 约定(shift=+0.5)则给 621.000。
+        - A3 用 LiDAR 平面点投影 + 双线性采样深度图:corner 约定 median|e| 0.0003 m
+          vs center 0.023 m,六相机一致(~70×)。
+        `fx` 仍是 `(w/2)/tan(fov/2) = 621.0` —— "半 FOV ↔ 半宽"与"索引中心"是两件事,
+        A4 独立测出 f_est = 621.60 px(标称 621.00,差 0.1%),两者并存不矛盾。
+        """
         intrinsic = mapviz.calib_from_fov(1242, 375, 90.0)["intrinsic"]
-        assert intrinsic[0][0] == pytest.approx(621.0)  # fx
-        assert intrinsic[0][2] == pytest.approx(621.0)  # cx = W/2(采集器口径)
-        assert intrinsic[1][2] == pytest.approx(187.5)  # cy = H/2
+        assert intrinsic[0][0] == pytest.approx(621.0)  # fx = (w/2)/tan(fov/2)
+        assert intrinsic[0][2] == pytest.approx(620.5)  # cx = (w−1)/2
+        assert intrinsic[1][2] == pytest.approx(187.0)  # cy = (h−1)/2
+
+    def test_calib_from_fov_agrees_with_camera_intrinsics(self):
+        """`calib_from_fov` 与 `CameraIntrinsics` 必须**同式**(单一来源,防再次漂移)。"""
+        from autodrivedata.calib import CameraIntrinsics
+
+        intr = mapviz.calib_from_fov(1242, 375, 90.0)["intrinsic"]
+        k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
+        assert (intr[0][0], intr[1][1]) == pytest.approx((k.fx, k.fy))
+        assert (intr[0][2], intr[1][2]) == pytest.approx((k.cx, k.cy))
+
+    def test_intrinsics_from_k_preserves_principal_point(self):
+        """`intrinsics_from_k` 必须**直读** K 的 cx/cy,不得丢掉重算(历史缺陷)。
+
+        构造一个主点**刻意偏离** `(w−1)/2` 的 K:若实现退回重算,这条会失败。
+        """
+        k = [[621.0, 0.0, 617.25], [0.0, 621.0, 190.75], [0.0, 0.0, 1.0]]
+        intr = mapviz.intrinsics_from_k(k, (1242, 375))
+        assert intr.cx == pytest.approx(617.25)
+        assert intr.cy == pytest.approx(190.75)
+        assert intr.fx == pytest.approx(621.0)
+        assert intr.fov_h_deg == pytest.approx(90.0)
+
+    def test_intrinsics_from_k_falls_back_when_k_has_no_principal_point(self):
+        """K 缺主点(2×2 或 3×3 但第三列为 0)⇒ 回落到索引约定中心。"""
+        intr = mapviz.intrinsics_from_k([[621.0, 0.0, 0.0], [0.0, 621.0, 0.0], [0.0, 0.0, 1.0]], (1242, 375))
+        assert intr.cx == pytest.approx(620.5)
+        assert intr.cy == pytest.approx(187.0)

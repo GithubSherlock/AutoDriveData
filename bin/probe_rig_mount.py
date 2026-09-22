@@ -2,13 +2,17 @@
 
 背景(Plan2.md §P-H.3):仓里存在**两代**环视挂点口径 ——
 `legacy`(6 路共用 `SENSOR_OFFSET` 平移 + BACK_LEFT/RIGHT 偏航 235/125)与
-`official`(逐相机 `SENSOR_MOUNTS` 平移 + 108.6/−110.8,当前采集器口径)。
+`nuscenes`(逐相机 `SENSOR_MOUNTS` 平移 + 官方 6DoF 姿态,当前采集器口径)。
 
 **关键事实:rig 不是"越新越好",而是必须与权重训练数据一致。**
-`outputs/maptr_600/map_infos.json` 逐帧查得:帧 0-199 = legacy、帧 200-599 = official。
+`outputs/maptr_600/map_infos.json` 逐帧查得:帧 0-199 = legacy、帧 200-599 = nuscenes 前身。
 ⇒ `maptr_ep256.pt` / `maptr_ep512.pt`(200 帧)是 legacy 训的;`maptr_600.pt` /
-`maptr_1000.pt` 是 official 为主训的。早期 `view_stream.build_maptr_rig` 无条件用
-legacy,喂 ep512 是**对的**;把它"修"成 official 反而错配。
+`maptr_1000.pt` 是当时那套(镜像 + 零 pitch/roll)训的。早期 `view_stream.build_maptr_rig`
+无条件用 legacy,喂 ep512 是**对的**;把它"修"成 nuscenes 反而错配。
+
+⚠️ **2026-09-22 补充**:当时那套 `official` 的偏航是**镜像的**(漏了 `yaw_carla = −az_nus`)
+且 pitch/roll 硬编码 0 ⇒ **全部 MapTR 权重都已标废弃**,须用修正后的 rig 重采重训。
+本探针保留其诊断价值(量化"图与权重错配"的代价),不再是"选哪代 rig"的决策工具。
 
 本探针量化错配的代价:同一 ego 位姿、同一 tick 帧,只变 rig(挂点 + calib)。
 判据不看图:数 6 路品红像素 + **光轴以上**像素(`v < cy`;§5.11f 记作"地平线以上"),
@@ -29,10 +33,9 @@ from typing import cast
 import carla
 import numpy as np
 from carla_common import CAM_ATTRS, loc, rad, spawn_ego, sync_mode
-from collect_surround import SURROUND_CAMS
 from live_common import (
     RIG_LEGACY,
-    RIG_OFFICIAL,
+    RIG_NUSCENES,
     image_to_pil,
     load_maptr,
     maptr_predict,
@@ -51,10 +54,10 @@ W, H, FOV = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]), floa
 def build_rig(world: carla.World, ego: carla.Vehicle, rig: str):
     """按 rig 口径挂 6 路相机(与 `live_common.build_surround_rig` 同式,单测/探针自持)。"""
     k = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)
-    mounts, yaws = rig_spec(rig)
+    mounts, rots = rig_spec(rig)
     cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
     qs: dict[str, queue.Queue] = {}
-    for name, yaw in yaws.items():
+    for name, (pitch, yaw, roll) in rots.items():
         x, y, z = mounts[name]
         bp = world.get_blueprint_library().find("sensor.camera.rgb")
         bp.set_attribute("image_size_x", str(W))
@@ -63,7 +66,9 @@ def build_rig(world: carla.World, ego: carla.Vehicle, rig: str):
         cam = cast(
             carla.Sensor,
             world.spawn_actor(
-                bp, carla.Transform(carla.Location(x, y, z), carla.Rotation(yaw=yaw)), attach_to=ego
+                bp,
+                carla.Transform(carla.Location(x, y, z), carla.Rotation(pitch=pitch, yaw=yaw, roll=roll)),
+                attach_to=ego,
             ),
         )
         q: queue.Queue = queue.Queue()
@@ -88,7 +93,7 @@ def probe_ckpt(
     model, dev = load_maptr(ckpt, None)
     train_rig = resolve_rig("auto", ckpt)
     rows: list[tuple[str, int, int, int, int]] = []
-    for rig in (train_rig, RIG_OFFICIAL if train_rig == RIG_LEGACY else RIG_LEGACY):
+    for rig in (train_rig, RIG_NUSCENES if train_rig == RIG_LEGACY else RIG_LEGACY):
         tag = "训练口径 ✓" if rig == train_rig else "错配 ✗"
         cams, qs = build_rig(world, ego, rig)
         imgs = capture(world, cams, qs)
@@ -126,7 +131,7 @@ def main() -> None:
         "--ckpt",
         action="append",
         default=None,
-        help="可重复;缺省 = outputs/maptr_ep512.pt(legacy)+ outputs/maptr_600.pt(official)",
+        help="可重复;缺省 = outputs/maptr_ep512.pt(legacy)+ outputs/maptr_600.pt(nuscenes 前身)",
     )
     ap.add_argument("--thr", type=float, default=0.2)
     ap.add_argument("--host", default="127.0.0.1")
@@ -158,9 +163,9 @@ def main() -> None:
     print("\n正确性判据 = calib 的 sensor2ego 与**该权重训练数据**逐字段一致(见 live_common.rig_spec);")
     print("两代 rig 的像素数有差异是预期,不是回归 —— 差异本身 = 错配的代价。")
     print(
-        f"训练侧对照:legacy 偏航 BACK_LEFT/RIGHT {rig_spec(RIG_LEGACY)[1]['CAM_BACK_LEFT']}/"
-        f"{rig_spec(RIG_LEGACY)[1]['CAM_BACK_RIGHT']} vs official "
-        f"{SURROUND_CAMS['CAM_BACK_LEFT']}/{SURROUND_CAMS['CAM_BACK_RIGHT']}"
+        f"训练侧对照:legacy 偏航 BACK_LEFT/RIGHT {rig_spec(RIG_LEGACY)[1]['CAM_BACK_LEFT'][1]}/"
+        f"{rig_spec(RIG_LEGACY)[1]['CAM_BACK_RIGHT'][1]} vs nuscenes "
+        f"{rig_spec(RIG_NUSCENES)[1]['CAM_BACK_LEFT'][1]}/{rig_spec(RIG_NUSCENES)[1]['CAM_BACK_RIGHT'][1]}"
     )
 
     ego.destroy()

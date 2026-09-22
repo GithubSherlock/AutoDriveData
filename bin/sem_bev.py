@@ -38,7 +38,7 @@ import numpy as np
 import torch
 
 from autodrivedata.geometry import ground_intersection  # noqa: F401 — 语义 BEV 与采集/实时流共用同一投影
-from autodrivedata.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose
+from autodrivedata.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose, intrinsics_from_k
 from autodrivedata.paths import project_path
 
 try:
@@ -63,12 +63,13 @@ def bev_to_px(x: float, y: float, w: int, h: int) -> tuple[int, int]:
 
 
 def init_camera(calib_cam: dict, size: tuple[int, int]) -> tuple[CameraIntrinsics, list[float]]:
-    """calib.json CAM_* → (intrinsics, sensor2ego)。"""
-    k = calib_cam["intrinsic"]
-    se = calib_cam["sensor2ego"]
-    w, h = size
-    fov_h = math.degrees(2.0 * math.atan((w / 2.0) / k[0][0]))
-    return CameraIntrinsics(width=w, height=h, fov_h_deg=fov_h), se
+    """calib.json CAM_* → (intrinsics, sensor2ego)。
+
+    内参走 `mapviz.intrinsics_from_k`(**直读** K 的 cx/cy):历史实现只抄 fx 反推 fov、
+    把落盘的主点丢掉重算成 `(w−1)/2`,一旦产物里的 K 与它不同(旧产物是 `w/2`)就会
+    静默带半像素横移 —— 落盘的 K 才是权威口径。
+    """
+    return intrinsics_from_k(calib_cam["intrinsic"], size), calib_cam["sensor2ego"]
 
 
 def project_mask_to_bev(

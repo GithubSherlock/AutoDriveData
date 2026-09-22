@@ -11,6 +11,20 @@ world_to_img),tests/test_gkt.py 以该链为 oracle 逐点锁定 torch 实现。
 
 BEV 口径(MapTRv2 同款):200×100 @ 0.3 m/pixel,x ∈ [−15, 15](前正)、
 y ∈ [−30, 30](左正),即 BEVParams.pc_range = (xmin, ymin, xmax, ymax)。
+
+⚠️ **两处曾静默毁掉整条链的坑(2026-09-22 修,单测已锁定)**:
+
+1. **位姿六元组换序**。infos 口径是 `[x, y, z, yaw, pitch, roll]`(CARLA Transform
+   字段序),而 `_carla_rotation_torch` 吃 CARLA Rotation 的 `(pitch, yaw, roll)`。
+   少了这次换序 → 5/6 相机的指向被转错(实测光轴偏 55°~180°),而 yaw≈0 的
+   CAM_FRONT 恰好看不出异常 ⇒ 单测 oracle 复刻了同一个错、把 bug 锁死。
+2. **内参没缩放到特征分辨率**。`calib.json` 的 `intrinsic` 是 1242×375 图像口径
+   (fx=621),而 GKT 采样的是 FPN P2(311×94,stride 4)。拿全分辨率像素去和
+   `feat_w−1` 比边界 ⇒ BEV 可见率从 94.6% 塌到 **1.25%**(实测),`head` 的 4000 个
+   锚点采样位置 100% 落在零 BEV 单元上。
+
+两条合起来的判据:`GKT.forward` 的 `valid` 在 `surround_p3` 帧 0 上应 ≈94.6%
+(修前 1.25%)。`tests/test_gkt.py` 有对应回归。
 """
 
 from __future__ import annotations
@@ -26,6 +40,28 @@ from autodrivedata import geometry as g
 
 # CARLA 系 → KITTI 相机系基变换的转置(geometry.CARLA_TO_CAM 正交、det=−1,转置即逆)
 _C2K_T = torch.tensor(g.CARLA_TO_CAM.T, dtype=torch.float32)
+
+# infos 六元组 [x,y,z,yaw,pitch,roll] → `_carla_rotation_torch` 期望的 (pitch,yaw,roll)。
+# **换序的唯一落点**:漏掉它 = 5/6 相机指向错,且 yaw≈0 的相机看不出异常。
+_ROT_TO_CARLA = (1, 0, 2)
+
+
+def scale_k(k: torch.Tensor, size: tuple[int, int], feat_size: tuple[int, int]) -> torch.Tensor:
+    """标定口径内参 K → 特征图分辨率内参(只缩 fx/fy/cx/cy,末行保持 [0,0,1])。
+
+    `calib.json` 的 `intrinsic` 是**图像**口径(1242×375);GKT 采样的是 FPN 特征图
+    (P2 = 311×94,stride 4)。两者差一个缩放系数,不缩就会拿全分辨率像素去比
+    `feat_w−1` 的边界(见模块头注坑 2)。
+    """
+    fw, fh = feat_size
+    w, h = size
+    sx, sy = fw / w, fh / h
+    out = k.clone()
+    out[..., 0, 0] *= sx  # fx
+    out[..., 0, 2] *= sx  # cx
+    out[..., 1, 1] *= sy  # fy
+    out[..., 1, 2] *= sy  # cy
+    return out
 
 
 @dataclass(frozen=True)
@@ -91,9 +127,12 @@ def cam_world_pose(
     - r_e (…, 3, 3):ego 世界旋转阵(ego 局部系点变世界:pts @ R_eᵀ)
     - r_w2c (…, 3, 3):世界系向量 → KITTI 相机系,与 geometry.world_to_cam 的 R 同式:
       CARLA_TO_CAM @ (R_e·R_s)ᵀ
+
+    入参序与 `_carla_rotation_torch` 的期望序不同(前者 yaw 在前,后者 pitch 在前),
+    `_ROT_TO_CARLA` 是这一次换序的**唯一落点**。
     """
-    rot_e = torch.deg2rad(ego_pose[..., 3:6])
-    rot_s = torch.deg2rad(sensor2ego[..., 3:6])
+    rot_e = torch.deg2rad(ego_pose[..., 3:6])[..., _ROT_TO_CARLA]
+    rot_s = torch.deg2rad(sensor2ego[..., 3:6])[..., _ROT_TO_CARLA]
     r_e = _carla_rotation_torch(rot_e)
     r_s = _carla_rotation_torch(rot_s)
     t_cam = ego_pose[..., :3] + torch.einsum("...ij,...j->...i", r_e, sensor2ego[..., :3])
@@ -137,8 +176,17 @@ class GKT(nn.Module):
         self.register_buffer("grid_ego", torch.from_numpy(bev.cell_centers()), persistent=False)
 
     def forward(
-        self, feats: dict[str, torch.Tensor], poses: torch.Tensor, calibs: dict[str, dict]
+        self,
+        feats: dict[str, torch.Tensor],
+        poses: torch.Tensor,
+        calibs: dict[str, dict],
+        img_size: tuple[int, int],
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """`img_size` = 相机**原图** (宽, 高);`calibs` 的 `intrinsic` 与之同口径。
+
+        **必须显式给**(不给就无从判断 K 该不该缩):K 缩到 `feats` 分辨率由
+        `scale_k` 统一做,调用方不许自己缩(见模块头注坑 2)。
+        """
         if feats.keys() != calibs.keys():
             raise ValueError(f"相机集不一致: feats {sorted(feats)} vs calibs {sorted(calibs)}")
         b, _, feat_h, feat_w = next(iter(feats.values())).shape
@@ -149,6 +197,7 @@ class GKT(nn.Module):
         for name, feat in feats.items():
             se = torch.tensor(calibs[name]["sensor2ego"], dtype=torch.float32, device=feat.device)
             k = torch.tensor(calibs[name]["intrinsic"], dtype=torch.float32, device=feat.device)
+            k = scale_k(k, img_size, (feat_w, feat_h))
             uv, depth = project_pts(grid_ego, poses, se, k)
             u, v = uv[..., 0], uv[..., 1]
             # 覆盖判据 = 像素中心级 [0, W−1](与 calib.world_to_img 同口径);采样坐标

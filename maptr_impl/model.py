@@ -57,7 +57,12 @@ class MapTR(nn.Module):
         """images 相机名 → (B, 3, H, W)(归一化 RGB);poses (B, 6) 度;calibs = B2 口径。
 
         返回 (head 输出 {"pred_logits", "pred_points"}, bev_valid (B, 1, H, W))。
+
+        `calibs` 的 `intrinsic` 是**原图**口径(与 B2 infos 一致);图像尺寸从 `images`
+        自取传给 GKT 做 K 缩放——调用方不必也不能自己缩(见 gkt 模块头注坑 2)。
         """
+        first = next(iter(images.values()))
+        img_size = (int(first.shape[-1]), int(first.shape[-2]))
         feats = {name: self.backbone(x)[FPN_LEVEL] for name, x in images.items()}
-        bev, valid = self.gkt(feats, poses, calibs)
+        bev, valid = self.gkt(feats, poses, calibs, img_size)
         return self.head(bev), valid

@@ -11,9 +11,10 @@ MapTR 实时预测 overlay(`--maptr-ckpt`):在同一 tick 的 6 路环视图上�
 BEV 面板。**rig 必须与权重训练数据逐字段对齐**(相机名→挂点平移/偏航 / 内参 / 分辨率),
 故 rig 与 calib 一律走 `bin/live_common.py` 的 `build_surround_rig` / `surround_calibs`
 (只认 `live_common.rig_spec()` 的两处定义),并做启动自检 `rig_mount_deviation`(平移米 / 偏航度)。
-**两代 rig 并存**:`official`(逐相机 `SENSOR_MOUNTS` + 108.6/−110.8)对 `maptr_600`/`maptr_1000`;
+**两代 rig 并存**:`nuscenes`(逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态)对 `maptr_600`/`maptr_1000`;
 `legacy`(共用 `SENSOR_OFFSET` + 235/125)对 `maptr_ep256`/`maptr_ep512` —— `--rig auto` 按权重名选,
-**拿 official 喂 ep512 是错配**(见 `live_common` 头注对照表)。
+**拿 nuscenes 喂 ep512 是错配**(见 `live_common` 头注对照表)。⚠️ 全部 MapTR 权重已标废弃
+(2026-09-22:训练用的 `official` rig 偏航镜像),保留两代仅为兼容既有产物。
 
 共享件(多槽 MJPEG / 拼图 / GT overlay / 环视 rig / 键盘)在 `bin/live_common.py`,
 8 路 studio 见 `bin/live_studio.py`。
@@ -75,10 +76,10 @@ from autodrivedata.scenarios import SCENES, merged_weather
 
 VIEWS = ("follow", "top", "grid6")
 
-# 纯显示用的 6 视角偏航(度)。**注意与 `collect_surround.SURROUND_CAMS` 不同**:
-# BACK_LEFT/BACK_RIGHT 在训练口径是 108.6 / −110.8(官方独立挂点),这里 125 / −125 是
-# 早期显示口径。显示路径(不带 --maptr)沿用不变;带 --maptr 时 rig 与 calib 一律走
-# `live_common.build_surround_rig` / `surround_calibs`(只认 SURROUND_CAMS),不碰本表。
+# 纯显示用的 6 视角偏航(度)。**与采集口径 `camera_rig.NUS_CAMERA_RIG` 无关**:
+# 早期显示口径(BACK_LEFT/RIGHT 用 125/−125),且不带头顶 pitch/roll。显示路径
+# (不带 --maptr)沿用不变;带 --maptr 时 rig 与 calib 一律走 `live_common.build_surround_rig`
+# / `surround_calibs`(只认 `rig_spec()` 的两处定义),不碰本表。
 CAM_YAW_OFFSET = {
     "CAM_FRONT": 0.0,
     "CAM_FRONT_LEFT": 55.0,
@@ -111,9 +112,9 @@ def main() -> None:
     ap.add_argument("--maptr-device", default=None, help="推理设备(默认 cuda 若可用;与 CARLA 共享 GPU)")
     ap.add_argument(
         "--rig",
-        choices=("auto", "official", "legacy"),
+        choices=("auto", "nuscenes", "legacy"),
         default="auto",
-        help="环视挂点口径;auto 按权重名选(ep256/ep512=legacy,600/1000=official)",
+        help="环视挂点口径;auto 按权重名选(ep256/ep512=legacy,600/1000=nuscenes)",
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sim-port", type=int, default=2000)

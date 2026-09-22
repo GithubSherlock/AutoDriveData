@@ -272,6 +272,11 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 `bin/probe_rig_mount.py` 量化错配代价(ep512 legacy 122711 px vs official 135989 px)。
 详见 Plan2.md §P-L.1。
 
+> ⚠️ **2026-09-22 订正**:`official` 那一代 rig **本身是错的**(偏航漏了 `yaw_carla = −az_nus`
+> ⇒ 四个侧/后相机左右镜像;pitch/roll 硬编码 0),已更名 **`nuscenes`** 并重标;
+> **全部 MapTR 权重**(`ep256/ep512/600/1000`)据此标废弃、重采重训。见下节 §P-M 与
+> Plan2.md §P-M。本节保留的价值 = "rig 必须匹配训练数据"这条方法论与错配代价的量级。
+
 **B 期 ✅(在线 SLAM,2026-09-20)**:`autodrivedata/live_slam.py`(纯值 `LiveSlam.push/snapshot`
 + `map_in_ego_frame`/`traj_in_ego_frame` + **`SlamWorker`**)+ `live_studio --slam`
 (挂语义 LiDAR → worker;BEV 槽画地图点灰 / 轨迹青;HUD 显式报滞后)+ `mapviz.bev_points`/
@@ -321,6 +326,47 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 ②右后/后/左后 ③第三方 + BEV,**不沿用 `SURROUND_CAMS` 字典序**)。画布 2484×374 → **3726×1170**。
 验收:逐格与源图**最大差 0.0**、相机下半地面区域最大差 0.0、三层行序逐格 x 坐标吻合。
 回归 `tests/test_live_common.py`(新增 12 用例)。
+
+## ✅ 环视相机标定修正(nuScenes 口径)+ 七锚自证 + 实时监看槽(2026-09-22,教程 03)
+
+**目标(用户原话)**:「环视相机的标定按照 nuScenes 来是不是更好一些」—— 时序建图的前置,用户设了
+硬顺序 **"先修完标定,才讨论时序建图"**。详见 Plan2.md §P-M。
+
+**根因**:旧 `official` rig 从官方 azimuth 抄值时**没做 CARLA/nuScenes 符号转换**
+(`yaw_carla = −az_nus`)⇒ 四个侧/后相机**左右镜像**(FRONT_LEFT/RIGHT 差 110.3°、
+BACK_LEFT/RIGHT 差 217.2°),pitch/roll 还硬编码 0。**前/后相机因光轴近自逆"看着对"**,
+故长期没暴露 —— 与"能画出图不是投影正确的证据"是同一条教训。真值改由
+`autodrivedata/camera_rig.py` 从官方四元数单点导出(导出前**归一化**:官方值模长
+0.99994~1.00005,不归一化矩阵非正交)。
+
+**七锚自证 `bin/probe_calib.py`**(判据全数值,不目检)→ `outputs/calib_check/report.json`,
+A0–A6 **全 true**:A0 光轴 vs 官方方位角 `7.1e-15°` / A1 侧别 4/4 同侧 / A2 四方位锥四对全 match /
+A3 LiDAR-平面-深度图交叉验证 median |e| **0.0003–0.0009 m** / A4 轴目标物掩膜质心 `cx = 620.5`、
+`fx_est 621.6 px`、残差 max **0.200 px** / A5 实挂 vs 规格 平移 `3.8e-06 m` 偏航 `4.5e-05°` /
+A6 主点锁定 `(w−1)/2`。
+
+**★ 像素约定裁决 = CORNER**(主干结论):CARLA 渲染栅格**索引 i 的连续坐标恰为 i** ⇒
+`cx=(w−1)/2=620.5`、`cy=(h−1)/2=187.0`。A3 corner `0.0003 m` vs center `0.023 m`(**70×**,
+六相机一致);A4 用掩膜**索引**中点独立测得 `fx=621.6 px`。`fx=(w/2)/tan(fov/2)=621.0` 与
+`cx=620.5` **并存不矛盾**(前者"半 FOV↔半宽",后者索引约定中心)。**角色分类防再犯**:
+采样 CARLA 栅格 ⇒ 必须 corner;采样 torch 栅格(FPN/`align_corners=False`/gsplat)⇒
+`(u+0.5)/W*2−1` **正确**;PIL 纯绘制 ⇒ 无关;cx/cy **从 K 直读**不重算。
+
+**实时监看槽 `live_studio --calib`**(`autodrivedata/calib_live.py`):另挂 6 深度相机
+(同挂点/同内参/同分辨率)+ ray_cast ⇒ 世界系平面投影回相机按深度残差着色。验收(77 tick):
+5/6 相机可用、pooled median **0.00032 m**、时序 0.00033/最大 **0.00044 m**。**成本**:平面拟合
+~100–150 ms vs 六相机采样 ~9 ms ⇒ `--calib-refit` 默认 2;**平面是世界系的**故可跨 tick 复用。
+
+**★ CAM_BACK 自遮挡 = 平台边界**:官方挂点 z=1.5791 只比 CARLA ego 自身车顶(≈1.556)高
+**0.023 m** ⇒ 近场(<0.5 m)占比 **1242×375 下 0.367 / 640×360 下 0.195**,其余五路 0.000。
+判据必须是"**样本不足 ⇒ 报 `–` 而不是 0.000**"(它残差中位数 0.0003 与其它同级),**不是**
+"median 大 = 坏标定"。**踩坑**:自遮挡判据曾写死 `> 0.2` —— 1242×375 成立、640×360 **静默失效**;
+根因是近场占比**随画幅宽高比变**(水平 FOV 都 90°,640×360 竖直 FOV 大 ⇒ 车顶占比小)⇒
+改**相对判据**(基准 = 同批可用相机近场占比中位数,阈值 `max(0.05, 10×基准)`),不按相机名硬编码。
+
+**回归**:`tests/test_calib_live.py`(51)+ `tests/test_geometry_nus.py` 的 `camera_rig` 推导钉
+(`yaw_carla = −az_nus` 到 1e-9、平移只翻 y、6DoF 不可降 yaw-only、历史字面表 110°/217° 偏差量级)
++ `tests/test_live_common.py` 的 `rig_spec`/`resolve_rig`/**`rig_mount_deviation` 规格对账**/`draw_hud(y=)`。
 
 ## 待办(教程 7-15 中尚未落地的能力)
 

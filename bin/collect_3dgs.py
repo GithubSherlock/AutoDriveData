@@ -38,17 +38,13 @@ import numpy as np
 from carla_common import CAM_ATTRS, sync_mode
 
 from autodrivedata.collect_rig import ring_cam_pose
+from autodrivedata.depth_codec import decode_depth
 from autodrivedata.paths import project_path
 
 
 def _depth_img_to_meter(dep: carla.Image) -> np.ndarray:
-    arr = np.frombuffer(dep.raw_data, dtype=np.uint8).reshape(dep.height, dep.width, 4)
-    b, g, r = (
-        arr[:, :, 0].astype(np.float32),
-        arr[:, :, 1].astype(np.float32),
-        arr[:, :, 2].astype(np.float32),
-    )
-    return (r + g * 256.0 + b * 256.0 * 256.0) / (256.0**3 - 1.0) * 1000.0
+    """CARLA 深度图 → 深度米 (H,W)(**委托** `depth_codec.decode_depth`,同一口径)。"""
+    return decode_depth(dep.raw_data, dep.height, dep.width)
 
 
 def main() -> None:

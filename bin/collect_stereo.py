@@ -31,21 +31,15 @@ import carla
 import numpy as np
 from carla_common import CAM_ATTRS, spawn_ego, sync_mode
 
+from autodrivedata.calib import CameraIntrinsics
 from autodrivedata.collect_rig import stereo_rig_offsets
+from autodrivedata.depth_codec import decode_depth
 from autodrivedata.paths import project_path
 
 
 def _depth_to_meter(image: carla.Image) -> np.ndarray:
-    """CARLA 深度编码(BGR 各 8bit,归一化 ×1000m)→ 深度米 (H,W) float32。"""
-    arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(image.height, image.width, 4)
-    b, g, r = (
-        arr[:, :, 0].astype(np.float32),
-        arr[:, :, 1].astype(np.float32),
-        arr[:, :, 2].astype(np.float32),
-    )
-    # 归一化 z =  B + G*256 + R*256*256 / 256^3,乘 1000 → 米
-    z = (r + g * 256.0 + b * 256.0 * 256.0) / (256.0**3 - 1.0) * 1000.0
-    return z
+    """CARLA 深度图 → 深度米 (H,W) float32(**委托** `depth_codec.decode_depth`,同一口径)。"""
+    return decode_depth(image.raw_data, image.height, image.width)
 
 
 def main() -> None:
@@ -100,13 +94,14 @@ def main() -> None:
         qd.get(timeout=10)
 
     w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    import math
-
-    fx = w / 2 / math.tan(math.radians(float(CAM_ATTRS["fov"]) / 2))
-    intrinsic = [[fx, 0.0, w / 2], [0.0, fx, h / 2], [0.0, 0.0, 1.0]]
+    # fov→fx 与主点走全仓唯一落点(`CameraIntrinsics`),不再就地重写公式。
+    # 历史实现硬编码主点 = (w/2, h/2),与其余采集器的 (w−1)/2 差 0.5 px ⇒ 本数据集的
+    # 深度/点云与别的数据集不可直接混用。实测裁决见 `bin/probe_calib.py` A3/A4。
+    k = CameraIntrinsics(width=w, height=h, fov_h_deg=float(CAM_ATTRS["fov"]))
+    intrinsic = [[k.fx, 0.0, k.cx], [0.0, k.fy, k.cy], [0.0, 0.0, 1.0]]
     calib = {
         "baseline": args.baseline,
-        "focal_px": fx,
+        "focal_px": k.fx,
         "intrinsic": intrinsic,
         "cam_h_m": 1.65,
         "map": world.get_map().name,

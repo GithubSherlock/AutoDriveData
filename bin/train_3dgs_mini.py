@@ -36,6 +36,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 
+from autodrivedata.calib import CameraIntrinsics
 from autodrivedata.paths import project_path
 
 _DOWNSAMPLE = 2  # 1242x375 → 621x187
@@ -53,8 +54,23 @@ def _load_poses_and_cams(capture: Path):
     多俯仰时每 pose 带 (pitch, i) 以定位图像文件;pitch 存原始 float(供 Rotation 用)。
     """
     pitches = json.loads((capture / "pitches.json").read_text(encoding="utf-8"))
-    f = 1242.0 / 2.0 / (2.0 * math.tan(math.radians(45.0)))  # fx=fy=fov90/2 主点 (W/2,H/2)
+    # fov→fx 与主点走全仓唯一落点(`CameraIntrinsics`),不再就地重写公式。
+    # 历史写法 `1242/2/(2·tan45°)` 数值上恰好等于 621/2(tan45°=1 把多写的那个 2 抵掉),
+    # 是巧合而非推导 —— 换成别的 fov 就会错。
+    #
+    # **两套空间的主点必须各自推对**(实测裁决见 bin/probe_calib.py A3/A4:
+    # CARLA 渲染光栅是 **corner** 约定 —— 索引 i 的连续坐标就是 i,`cx = (w−1)/2 = 620.5`):
+    # - 深度图/图像是 CARLA 光栅 → 下采样索引 j ↔ 原图索引 2j ↔ 原图连续坐标 2j;
+    # - `ks` 喂给 gsplat(torch 原生光栅器,与 `grid_sample(align_corners=False)` 同族,
+    #   **center** 约定:像素 j 覆盖 [j, j+1),中心 j+0.5)。
+    # 令 gsplat 把原图索引 2j 的点画到像素 j:`fx_g·(2j−cx_orig)/fx_orig + cx_g = j + 0.5`
+    # ⇒ `fx_g = fx_orig/2`、`cx_g = (cx_orig+1)/2`。于是
+    #   fx = 621/2 = 310.5、cx = (620.5+1)/2 = 310.75、cy = (187+1)/2 = 94.0
+    # (cx/cy 分别差 0.25/0.5 下采样像素 —— W 偶 H 奇,故两者不对称;历史写 W/2,H/2)
+    _k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
     H, W = 375 // _DOWNSAMPLE, 1242 // _DOWNSAMPLE
+    f = _k.fx / _DOWNSAMPLE
+    cx, cy = (_k.cx + 1.0) / _DOWNSAMPLE, (_k.cy + 1.0) / _DOWNSAMPLE
     poses, viewmats, ks = [], [], []
     for p in pitches:
         pp = float(p)
@@ -80,8 +96,8 @@ def _load_poses_and_cams(capture: Path):
             v[:3, :3] = rw.T
             v[:3, 3] = -rw.T @ tw  # world→cam
             viewmats.append(v)
-            ks.append(torch.tensor([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1]], dtype=torch.float32))
-    return poses, f, H, W, torch.stack(viewmats), torch.stack(ks)
+            ks.append(torch.tensor([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=torch.float32))
+    return poses, f, H, W, cx, cy, torch.stack(viewmats), torch.stack(ks)
 
 
 def _frame_path(capture: Path, pose: dict, sub: str) -> Path:
@@ -106,8 +122,22 @@ def _load_images(capture: Path, poses: list, H: int, W: int) -> torch.Tensor:
 
 
 def _depth_init_points(
-    capture: Path, poses: list, viewmats: torch.Tensor, H: int, W: int, f: float
+    capture: Path,
+    poses: list,
+    viewmats: torch.Tensor,
+    H: int,
+    W: int,
+    f: float,
+    cx: float,
+    cy: float,
 ) -> torch.Tensor:
+    """深度图 → 相机系点(与 `ks` **同一套连续坐标口径**)。
+
+    `px/py` 是 `torch.nonzero` 给出的**光栅索引**;先 `+0.5` 换成连续坐标再减主点 ——
+    这是把"索引"与"连续坐标"两套口径接起来的那一步,漏掉就是恒定半像素外推
+    (30 m 处约 5 cm 横向偏差,随深度线性放大)。`cx/cy` 由 `_load_poses_and_cams` 按
+    "CARLA corner 光栅 → 下采样 → gsplat center 光栅"推出,不在本函数里再推一遍。
+    """
     depths = []
     for pose in poses:
         d = torch.from_numpy(np.load(_frame_path(capture, pose, "depth")).astype(np.float32))
@@ -122,7 +152,10 @@ def _depth_init_points(
         perm = torch.randperm(idx.shape[0])[:_N_INIT_PER_FRAME]
         px, py = idx[perm, 1].float(), idx[perm, 0].float()
         zv = d[py.long(), px.long()]
-        cam_pts = torch.stack([(px - W / 2) * zv / f, (py - H / 2) * zv / f, zv], 1).float()
+        cam_pts = torch.stack(
+            [(px + 0.5 - cx) * zv / f, (py + 0.5 - cy) * zv / f, zv],
+            1,
+        ).float()
         v = viewmats[i].cpu()
         rw, tw = v[:3, :3].T, -v[:3, :3].T @ v[:3, 3]
         pts.append(cam_pts @ rw.T + tw)
@@ -166,7 +199,7 @@ def main() -> None:
     torch.manual_seed(0)
     np.random.seed(0)
     capture = project_path(args.capture)
-    poses, f, H, W, viewmats_all, ks_all = _load_poses_and_cams(capture)
+    poses, f, H, W, cx, cy, viewmats_all, ks_all = _load_poses_and_cams(capture)
     n = len(poses)
     viewmats_all, ks_all = viewmats_all.to(dev), ks_all.to(dev)
 
@@ -174,7 +207,7 @@ def main() -> None:
     train_idx = [i for i in range(n) if i not in val_idx]
     imgs = _load_images(capture, poses, H, W).to(dev)
 
-    points = _depth_init_points(capture, poses, viewmats_all, H, W, f).to(dev)
+    points = _depth_init_points(capture, poses, viewmats_all, H, W, f, cx, cy).to(dev)
     n_init = points.shape[0]
     means = nn.Parameter(points.detach().clone())
     scales = nn.Parameter(torch.full((n_init, 3), args.scale, device=dev))

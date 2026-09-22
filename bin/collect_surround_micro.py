@@ -2,7 +2,7 @@
 
 用法(CARLA 服务器运行中):
   python bin/collect_surround_micro.py --out outputs/surround_micro --frames 10 \
-      --cam-back 官方 --seed <seed>
+      --cam-back nuscenes --seed <seed>
 
 默认不 spawn NPC(纯道路 + 地图矢量 overlay 对照,不受车流变量污染);
 ego 固定起点(spawn point 0,Town10HD_Opt)以贴合周围马茨:
@@ -21,23 +21,18 @@ import json
 import queue
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import carla
-from carla_common import CAM_ATTRS, SENSOR_MOUNTS, loc, sync_mode
+from carla_common import CAM_ATTRS, loc, sync_mode
 
+from autodrivedata.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
 
-# 布局常量**复制**自 collect_surround(同定义源,勿 import collect_surround 免串 env)
-OFFICIAL_CAMS = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 108.6,
-    "CAM_BACK_RIGHT": -110.8,
-}
-# 旧布局(235/125)——只用于微对照,不改主采集
+# 官方布局:真值在 `autodrivedata/camera_rig.py`(6DoF,含 pitch/roll)
+NUSCENES_RIG = NUS_CAMERA_RIG
+# 旧布局(镜像 + 共用挂点 + 偏航 235/125)——只用于微对照,不改主采集
 LEGACY_CAMS = {
     "CAM_FRONT": 0.0,
     "CAM_FRONT_RIGHT": -55.0,
@@ -46,20 +41,31 @@ LEGACY_CAMS = {
     "CAM_BACK_LEFT": 235.0,
     "CAM_BACK_RIGHT": 125.0,
 }
+LEGACY_MOUNT = (1.2, 0.0, 1.65)  # 早期 6 路共用挂点
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="输出根目录")
     ap.add_argument("--frames", type=int, default=10)
-    ap.add_argument("--cam-back", choices=("官方", "legacy"), default="官方", help="后相机布局(对照用)")
+    ap.add_argument(
+        "--cam-back",
+        choices=("nuscenes", "legacy"),
+        default="nuscenes",
+        help="后相机布局(对照用;nuscenes = 官方 6DoF 标定)",
+    )
     ap.add_argument("--npc", action="store_true", help="spawn NPC(默认不 spawn,纯道路对照)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     args = ap.parse_args()
     args.out = str(project_path(args.out))
 
-    cams_spec = OFFICIAL_CAMS if args.cam_back == "官方" else LEGACY_CAMS
+    if args.cam_back == "nuscenes":
+        # (平移, (pitch,yaw,roll)) —— CARLA 口径
+        spec: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = dict(NUSCENES_RIG)
+    else:
+        spec = {name: (LEGACY_MOUNT, (0.0, yaw, 0.0)) for name, yaw in LEGACY_CAMS.items()}
+    cam_names = list(spec)
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(30.0)
@@ -92,9 +98,12 @@ def main() -> None:
 
     cams: dict[str, carla.Sensor] = {}
     qs: dict[str, queue.Queue] = {}
-    for name, yaw in cams_spec.items():
-        x, y, z = SENSOR_MOUNTS[name]
-        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0))
+    for name in cam_names:
+        mount, rot = spec[name]
+        tf = carla.Transform(
+            carla.Location(x=mount[0], y=mount[1], z=mount[2]),
+            carla.Rotation(pitch=rot[0], yaw=rot[1], roll=rot[2]),
+        )
         s = cast(carla.Sensor, world.spawn_actor(cam_bp, tf, attach_to=ego))
         q: queue.Queue = queue.Queue()
         s.listen(q.put)
@@ -106,28 +115,24 @@ def main() -> None:
             q.get(timeout=10)
 
     w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    fov = float(CAM_ATTRS["fov"])
-    import math
-
-    fx = w / 2 / math.tan(math.radians(fov / 2))
-    intrinsic = [[fx, 0.0, w / 2], [0.0, fx, h / 2], [0.0, 0.0, 1.0]]
-    calib = {
+    intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
+    calib: dict[str, Any] = {
         name: {
             "sensor2ego": [
-                SENSOR_MOUNTS[name][0],
-                SENSOR_MOUNTS[name][1],
-                SENSOR_MOUNTS[name][2],
-                yaw,
-                0.0,
-                0.0,
+                spec[name][0][0],
+                spec[name][0][1],
+                spec[name][0][2],
+                spec[name][1][1],
+                spec[name][1][0],
+                spec[name][1][2],
             ],
             "intrinsic": intrinsic,
         }
-        for name, yaw in cams_spec.items()
+        for name in cam_names
     }
 
     out = Path(args.out)
-    for name in cams_spec:
+    for name in cam_names:
         (out / name.lower()).mkdir(parents=True, exist_ok=True)
     with open(out / "calib.json", "w", encoding="utf-8") as f:
         json.dump(calib, f, indent=1)
@@ -137,7 +142,7 @@ def main() -> None:
     try:
         for i in range(args.frames):
             world.tick()
-            for name in cams_spec:
+            for name in cam_names:
                 image: carla.Image = qs[name].get(timeout=10)
                 image.save_to_disk(str(out / name.lower() / f"{i:06d}.png"))
             egot = ego.get_transform()

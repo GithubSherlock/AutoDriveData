@@ -98,10 +98,13 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - 语义分割 GT:需要像素级 GT 时用 CARLA `sensor.camera.semantic_segmentation` 合成(采集侧),不手工标注
 - 与 Plan.md 同律:Conventional Commits、提交不附 AI 署名、`ruff check && ruff format`、相关单测
 
-## 7 执行进度(2026-09-19 更新)
+## 7 执行进度(2026-09-19 更新;最新条目见 §P-M)
 
 > 单测口径:`autodrivedata` env 全量 **353 passed / 3 skipped**(2026-09-19 torch 2.6.0+cu124 换装后复跑);
-> 本节各条目的"N passed"是该模块自身测试文件的口径。
+> 本节各条目的"N passed"是该模块自身测试文件的口径。**2026-09-22**:`pytest --collect-only` 已收集
+> **712 用例**(§P-M 新增 `test_calib_live.py` 51 / `test_calib_probe.py` 55 / `test_depth_codec.py` 29 /
+> `test_probe_calib.py` 9 / `test_nuscenes_cali_sensors.py` 33 与 `test_geometry_nus` 14 / `test_live_common` 24
+> 的扩充),下方各节的"N passed"未逐条回填。
 
 ### P2-A 语义 BEV(教程 05+06)——✅ 链路已通
 - `bin/sem_bev.py`:YOLOPv2(检测+车道线+可行驶)+ YOLO11s-seg(实例掩膜)→ 像素级 BEV 投影
@@ -334,10 +337,15 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 | `maptr_600.pt` @ legacy(错配 ✗) | 158 | 282 | 140562 | 0 |
 
 **处置**:`live_common` 同时保留两套口径(`rig_spec`),`view_stream` / `live_studio` 加
-`--rig {auto,official,legacy}`;`auto` 按权重名查 `LEGACY_CKPTS` 选(**默认喂对**)。
+`--rig {auto,nuscenes,legacy}`;`auto` 按权重名查 `LEGACY_CKPTS` 选(**默认喂对**)。
 **正确性判据 = 外参与该权重训练数据逐字段一致**,不是"数字变了"也不是"用最新布局"。
 ⇒ `CLAUDE.md` / Plan.md §5.11f 里 `--maptr-ckpt outputs/maptr_ep512.pt` 的命令现在经
 `auto` 自动走 legacy,**行为与文档化验收一致**。
+
+> ⚠️ **2026-09-22 订正(见 §P-M):上表的 `official` 那一代 rig 本身是错的**——
+> 它的偏航是官方方位角的**镜像**(漏了 `yaw_carla = −az_nus`),pitch/roll 硬编码 0。
+> 故 `maptr_600.pt` / `maptr_1000.pt`(以及**全部** MapTR 权重)已标废弃,须重采重训。
+> 本节保留的价值 = "rig 必须匹配训练数据"这条**方法论**,以及错配代价的量级。
 
 **B 期交付(在线 SLAM,2026-09-20 ✅)**:
 
@@ -513,6 +521,150 @@ studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全�
 (含"多 1 px 也抛");② `compose_rows` 画布尺寸 = 行宽/行高精确和、**每格逐像素等于源图**
 (核心判据"不为了整齐而缩减像素尺寸")、窄行居中/左对齐/空行报错;③ studio 三层行序与用户口径
 一致、缺名丢行。`ruff check && ruff format` 通过。
+
+### P-M 环视相机标定修正(nuScenes 口径)+ 七锚自证 + 实时监看槽(2026-09-22 ✅)
+
+> **触发**:用户要求环视 6 相机按 **nuScenes 官方硬件布局**标定 —— 这是**时序建图**(MapQR/MapTRv2
+> temporal;StreamMapNet/MapTracker 因非 SOTA 被用户明确降级)的**前置**,且用户设了硬顺序
+> **"先修完标定,才讨论时序建图"**。
+
+#### P-M.1 根因:rig 镜像(`yaw_carla = −az_nus` 漏翻)+ pitch/roll 硬编码 0
+
+旧 `official` rig 的偏航是**官方方位角原样抄的正数**,漏了 CARLA/nuScenes 的符号转换
+(`yaw_carla = −az_nus`,见 [autodrivedata/geometry.py](autodrivedata/geometry.py) `carla_yaw_to_nus_yaw`)
+⇒ **四个侧/后相机左右互换**,pitch/roll 还硬编码 `0`:
+
+| 相机 | 旧值(bug) | 应为(−az_nus) | 偏差 |
+|---|---|---|---|
+| CAM_FRONT_RIGHT | −55.0 | **+56.40** | — |
+| CAM_FRONT_LEFT | 55.0 | **−55.16** | 两者差 **110.3°** |
+| CAM_BACK_LEFT | 108.6 | **−108.60** | — |
+| CAM_BACK_RIGHT | −110.8 | **+110.79** | 两者差 **217.2°** |
+| CAM_FRONT / CAM_BACK | ≈0 / 180 | −0.32 / −179.85 | 近自逆 ⇒ **长期没暴露** |
+
+**为什么长期没被发现**:前/后两台相机在镜像下"看着对"(光轴近自逆),而"能画出图"从来不是
+投影正确的证据(与 §5.11f 同一条教训)。**真值改为单点提供**:[autodrivedata/camera_rig.py](autodrivedata/camera_rig.py)
+从官方 `calibrated_sensor` 四元数导出 `NUS_CAMERA_RIG`(导出前**归一化** —— 官方存储的四元数
+不是单位长度),采集器 / 实时流 / 导出器同源;`official` 更名 **`nuscenes`**。
+
+**修复面**:`collect_surround.py` / `collect_surround_micro.py`(后者 `OFFICIAL_CAMS`→`NUSCENES_CAMS`)、
+`carla_common.SENSOR_MOUNTS["CAM_FRONT"]`(占位 `(1.2,0.0,1.65)` → 官方 `(1.7008, 0.0159, 1.5110)`)、
+两处 calib dict 里 `sensor2ego` 硬编码的 `0.0, 0.0`、`live_common`/`view_stream`/`live_studio`/
+`probe_rig_mount` 的 rig 名与文档。
+
+#### P-M.2 七锚自证探针(`bin/probe_calib.py` → `outputs/calib_check/report.json`)
+
+**判据全数值,不目检。** 静态 ego、训练口径全分辨率(1242×375)、spawn 6 RGB + 6 depth + LiDAR +
+施工锥;`verdict` 七项**全 true**:
+
+| 锚 | 检什么 | 实测 | 判据 |
+|---|---|---|---|
+| A0 | 实挂光轴方位角 vs 官方 | `max_abs_diff_deg = **7.105e-15**` | 数值一致 |
+| A1 | 侧别一致性(挂点 y 与光轴 y 同号) | **4/4 同侧** | 全部同侧 |
+| A2 | 世界方向:四个方位锥各自被"该看到"的相机看到 | 四对**全 match**(FRONT 354 px / BACK 254 / LEFT 991 / RIGHT 747) | 集合相等 |
+| A3 | LiDAR 平面 × 深度图交叉验证 | 逐相机 median \|e\| **0.00032–0.00090 m** | < 0.1 m |
+| A4 | 轴目标物掩膜质心回归主点 | `cx = **620.5**`、`fx_est = 621.6 px`、残差 max **0.200 px** | < 0.5 px |
+| A5 | 实挂位姿 vs 规格 | 平移 **3.84e-06 m** / 偏航 **4.49e-05°** | < 1e-3 |
+| A6 | 主点锁定 `(w−1)/2` | `cx_est == 620.5` | < 0.5 px |
+
+**★ A3/A4 联合裁决了像素约定 = CORNER**(整个工作流的主干):CARLA 渲染出的栅格**索引 i 的连续
+图像坐标恰为 i**,故 `cx = (w−1)/2 = 620.5`、`cy = (h−1)/2 = 187.0`。证据:A3 在 corner 口径下
+median \|e\| = **0.0003 m** vs center 口径 **0.023 m**(约 **70×**,六相机一致);A4 用**实例掩膜
+索引**中点回归,独立测得 `fx = 621.6 px`(偏差 0.1%)。
+**`fx = (w/2)/tan(fov/2) = 621.0` 与 `cx = 620.5` 并存不是矛盾** —— 前者是"半 FOV ↔ 半宽",
+后者是索引约定中心。
+
+**按约定给角色分类(防再犯)**:A = 采样 CARLA 渲染栅格(深度/语义/实例分割/RGB)⇒ **必须 corner**;
+B = 采样 **torch** 栅格(FPN 特征图 / `grid_sample(align_corners=False)` / gsplat)⇒ 索引 i ↔ 坐标 i+0.5,
+故 `(u+0.5)/W*2−1` 是**正确**的;C = 纯绘制(PIL)⇒ 与约定无关;D = 读内参 / fov→fx ⇒ fx 公式
+**唯一落点** `CameraIntrinsics.fx`,cx/cy **必须从 K 直读**而不重算;E = 混用索引与连续坐标 ⇒ 真缺陷。
+
+#### P-M.3 全局口径统一
+
+- [autodrivedata/mapviz.py](autodrivedata/mapviz.py) `intrinsics_from_k` 改为**直读 K 的 cx/cy**
+  (旧实现只读 fx、把 cx/cy 丢掉重算 —— 纯缺陷,与主点裁决无关,必须修)
+- fov→fx 公式收敛到 `mapviz.calib_from_fov` **全仓唯一落点**(消除 `collect_surround*` 里的内联重复实现)
+- **已导出的 KITTI `calib.txt` P2 不动**,只统一代码侧新导出的口径
+
+#### P-M.4 实时监看槽(`live_studio --calib`)+ CAM_BACK 平台边界
+
+`autodrivedata/calib_live.py`(纯值)+ `bin/live_studio.py --calib`:另挂 6 深度相机(同挂点/同内参/
+同分辨率,否则 overlay 无法逐像素对齐)+ `sensor.lidar.ray_cast` ⇒ LiDAR→世界系平面→投影回相机→
+按深度残差着色画进各相机槽;`draw_hud` **第二行**报 pooled |e| 与逐路样本数。离线探针与实时槽
+**共用同一套色带**(`calib_live.paint_residuals`)。
+
+**验收(640×360,`--speed 8`)**:5/6 相机可用,pooled median **0.00032–0.00044 m**,时序中位数 0.00033 /
+最大 **0.00044 m**(行驶中稳定,77 tick 与 63 tick 两次运行同量级),退出后 `nvidia-smi` 回基线、残留进程 0。
+
+- **第一次运行(修复前)**正是**发现 K3 的那次**:`self_occluded` 报 `False` —— 而 CAM_BACK 的
+  `near_fraction = 0.195` 明明自遮挡。**判据静默失效,不报错**。
+- **修复后复跑**:HUD/报告显式输出 `自遮挡相机 ['CAM_BACK'](近场占比 CAM_BACK 20%)—— 样本不足属
+  **平台边界**,不是标定误差`。**这条输出本身就是验收判据**:平台边界必须被显式报出来,
+  而不是让读表的人自己从"样本 2 / median –"里猜。
+
+**★ 成本预算(实测)**:平面拟合 ~**100–150 ms/tick**、六相机采样合计仅 ~**9 ms** ⇒ 瓶颈全在拟合,
+故 `--calib-refit` 默认 2。**平面是"世界系"的**(描述场景表面,不是"这一帧的点云")⇒ ego 移动几米后
+仍成立、可跨 tick 复用,被挡住的点由单侧可见性判据剔掉。可靠最低配置 = voxel 1.0 / 半径 2.0 /
+dist<20 / 上限 1500(半径 1.5 或更低 ⇒ 邻域低于 `MIN_PLANE_PTS=12`,**0 个平面合格点**)。
+
+**★ CAM_BACK 自遮挡 = 平台边界,必须显式报,不能读成"标定坏了"**:官方 `CAM_BACK` 挂点
+`(x=0.0283, y=−0.0035, z=1.5791)` 只比 CARLA ego **自身车顶**(bbox extent z 0.7745 + location
+z 0.7818 ⇒ z≈1.556)高 **0.023 m** ⇒ 相当一部分画面被**自己的车顶**挡住。实测近场(深度 < 0.5 m)
+像素占比:**1242×375 下 0.367、640×360 下 0.195**,其余五路 **0.000**。
+
+- **后果**:它可用样本数常年 0–30(其余 50–200),但**残差中位数并不因此变差**(0.0003 m 量级,
+  与其它相机同级)⇒ 判据必须是"**样本不足时不许报 median**"(`median_abs = None`,HUD 报"无数据"),
+  **不是**"median 大 = 坏标定"。
+- **★ 踩坑(实时运行才暴露)**:`self_occluded` 曾写死绝对阈值 `> 0.2` —— 该阈值在 1242×375 下成立、
+  在 640×360 下**静默失效**(0.195 < 0.2)。根因是**近场占比随画幅宽高比变**(两者水平 FOV 都是 90°,
+  但 640×360 竖直 FOV 大得多 ⇒ 车顶占比小)。修复 = **相对判据** `self_occluded_cameras(stats)`:
+  基准取**同批可用相机**近场占比的中位数(典型 0.000),阈值 `max(NEAR_FRACTION_MIN=0.05,
+  NEAR_FRACTION_RATIO=10.0 × 基准)`;**不按相机名硬编码** ⇒ 换 ego / 换挂点 / 换分辨率判据自动跟着走。
+  回归钉 `tests/test_calib_live.py::TestSelfOccluded::test_flags_at_the_live_resolution_fraction`
+  (0.195 这个实测值必须判得出来)。
+
+**交付文件**:`autodrivedata/calib_live.py`(新)、`tests/test_calib_live.py`(新,51 用例)、
+`bin/live_studio.py`、`bin/live_common.py`(`build_surround_rig(kind=)` + `draw_hud(y=)`)、
+`bin/probe_calib.py`。产物 `outputs/calib_check/{report.json,overlay.png,live.json}`。
+
+**回归测试(本次新增/扩展,三条锁)**:
+
+| 文件 | 新增 | 钉住什么 |
+|---|---|---|
+| `tests/test_geometry_nus.py` | `TestQuat` +2、`TestNusCameraRigDerivation` +5(**不 skip**) | 官方四元数**非单位长度**(不归一化 ⇒ 闭式解矩阵非正交 >1e-5);`yaw_carla = −az_nus` 到 **1e-9**;平移只翻 y;6DoF **不可**降 yaw-only(最大 \|pitch\| 0.96°/\|roll\| 0.62°);历史字面表偏差 **110.2/111.4/217.2/221.6°**(取**不 wrap** 的原始差 —— wrap 会把 217.2° 折成 142.8° 而丢掉"镜像"这件事) |
+| `tests/test_live_common.py` | `TestRigSpec` +4、`TestRigMountDeviation` +5、`TestDrawHudSecondLine` +3 | `rig_spec(nuscenes)` == `NUS_CAMERA_RIG`;legacy 与 nuscenes 的**真实差异形状**(前侧 110°、后侧仅 14–16° ⇒ **"差得多不多"不是判据**,逐相机挂点 + 有无 pitch/roll 才是);`resolve_rig` 显式指定不被文件名覆盖;**`rig_mount_deviation` 规格对账**(矩阵顺序写反 ⇒ 平移爆掉而**偏航仍 ~0**、偏差随 ego 离原点变远而放大、tick 前全 0 陈旧位姿**不许**判成"通过");`draw_hud(y=)` 第二行不动第一行 |
+| `tests/test_calib_live.py` | 51 用例(前次会话) | 自遮挡**相对**判据(0.195 实时分辨率实测值也必须判得出来);样本不足 ⇒ `median_abs is None` **不许报假数字** |
+
+#### P-M.5 MapTR 权重处置:全部标废弃,重采重训
+
+`maptr_ep256 / ep512 / 600 / 1000` **全部废弃** —— 采集数据本身就错(错误 rig),不是训练问题;
+**不做数值修补**,重新采集(修正后 rig)+ 重新训练。与 §P-L.1 那条订正框呼应:
+本节保留的价值 = **"rig 必须匹配训练数据"** 这条方法论 + 错配代价的量级。
+
+**legacy 路径回归(本次改动没误伤它的证据)**:`view_stream.py --view grid6
+--maptr-ckpt outputs/maptr_ep512.pt --maptr-bev --speed 6 --duration 20 --dump` 复跑:
+
+| 判据 | 结果 |
+|---|---|
+| rig 自检 | `[rig] legacy(--rig auto → 权重 outputs/maptr_ep512.pt)`、实挂 vs 规格 `平移 0.000 m / 偏航 0.000°` |
+| 画布 | **1863×374**(= 3×621 × 2×187,该视图的 `--maptr-scale 0.5` 口径,与 studio 三层拼图无关) |
+| overlay 品红 vs raw | **6370 px vs 0**(场景本身不含品红 ⇒ 差集判据成立) |
+| 6 瓦片覆盖 | 1089 / 1932 / 1544 / 207 / 663 / 935 px(逐格非零) |
+
+⇒ 本次口径改动(主点 corner、`intrinsics_from_k` 直读、`calib_from_fov` 统一)只作用在
+**新导出/新采集**路径上;legacy 权重走的是 infos 里已落盘的 K,行为未变。
+
+#### P-M.6 时序建图阶段前置事项(用户已要求过,此处落笔)
+
+硬顺序:**标定 ✅ → 才讨论 online HD mapping**。已定:
+
+1. **实现优先序 = MapQR 或 MapTRv2 的时序建图**;StreamMapNet / MapTracker 是 2023/24 架构、
+   已非 SOTA,**用户明确降级**。
+2. **数据必须先重采**(§P-M.5)—— 现有一切 MapTR 数据/权重都在错误 rig 下产生,**不可复用**。
+3. 标定侧已备好的接口:逐帧契约 `mapvec_pred/1`(`eval_maptr.py --out-frames`,GT 同文件携带,
+   **消费方 AutoLabel 尚未接**);实时 overlay(`view_stream.py --maptr-ckpt ... --maptr-bev`)。
+4. 待用户定:时序窗口长度 / 是否引入 ego 运动补偿 / 评估口径沿用 chamfer AP(须**固定
+   `--score-thr`**,见红线)。
 
 ## 8 遗留缺口
 

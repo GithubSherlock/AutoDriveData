@@ -198,7 +198,11 @@ def carla_yaw_to_nus_quat(yaw_carla: float) -> tuple[float, float, float, float]
 
 
 def quat_to_matrix(quat: tuple[float, float, float, float]) -> np.ndarray:
-    """四元数 (w,x,y,z) → 3×3 旋转阵(Hamilton 约定,同 auto3dlabel rot_matrix)。"""
+    """四元数 (w,x,y,z) → 3×3 旋转阵(Hamilton 约定,同 auto3dlabel rot_matrix)。
+
+    **闭式解假定 |q| = 1**:官方 nuScenes 标定的四元数不是单位长度,取用前先过
+    `quat_normalize`(见 `nus_camera_rotation_to_carla`)。
+    """
     w, x, y, z = (float(v) for v in quat)
     return np.array(
         [
@@ -208,6 +212,39 @@ def quat_to_matrix(quat: tuple[float, float, float, float]) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+def quat_normalize(quat: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """四元数 (w,x,y,z) 归一化到单位长度。
+
+    **官方 nuScenes 标定存的四元数不是单位长度**(实测模长 0.99994~1.00005),
+    而 `quat_to_matrix` 的闭式解假定 |q| = 1 ⇒ 不归一化会带进 ~1e-4 rad 的姿态误差。
+    模长为 0 抛错(静默返回原值会让下游拿到非正交矩阵)。
+    """
+    q = np.asarray(quat, dtype=np.float64)
+    n = float(np.linalg.norm(q))
+    if n <= 0.0:
+        raise ValueError(f"四元数模长为 0,无法归一化:{quat}")
+    u = q / n
+    return (float(u[0]), float(u[1]), float(u[2]), float(u[3]))
+
+
+def nus_camera_rotation_to_carla(quat_nus: tuple[float, float, float, float]) -> np.ndarray:
+    """nuScenes 相机标定四元数 → 该相机在 **CARLA 全局系** 的旋转阵。
+
+    R_carla = CARLA_TO_NUS @ R_nus @ CARLA_TO_CAM
+
+    两段基变换的含义:
+    - `R_nus`(由 `quat_to_matrix` 得)把 **nuScenes 相机局部系** 向量变到 nuScenes 全局系;
+      nuScenes 相机局部系 = x 右 / y 下 / z 前(实测:NUS_CAMERA_CALIBS 的 CAM_FRONT 四元数
+      第三列 = (1.000, 0.006, −0.006) 即朝前,第一列 ≈ −y_global 即朝右),
+      与 KITTI 相机系同构 ⇒ CARLA 相机局部系(x 前/y 右/z 上)到它的基变换就是 `CARLA_TO_CAM`。
+    - `CARLA_TO_NUS` 把 nuScenes 全局系(y 左)变回 CARLA 全局系(y 右);它是对合阵,转置即自身。
+
+    由此导出的偏航恰好满足 `carla_yaw_to_nus_yaw`(yaw_c = −az_nus),两者互为校验。
+    """
+    r_nus = quat_to_matrix(quat_normalize(quat_nus))
+    return CARLA_TO_NUS @ r_nus @ CARLA_TO_CAM
 
 
 # ── 单目测距(P-D,教程 08)───────────────────────────────────────────────────

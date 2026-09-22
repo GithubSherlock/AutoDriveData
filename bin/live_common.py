@@ -9,16 +9,21 @@
 
 **rig 口径(两代,必须与权重的训练数据一致 —— 不是"越新越好")**:
 
-| rig | 平移 | 偏航(BACK_LEFT / BACK_RIGHT) | 训练数据 |
-|---|---|---|---|
-| `official`(当前) | `SENSOR_MOUNTS[name]` 逐相机 | 108.6 / −110.8 | `surround_p3` / `surround_town13` |
-| `legacy`(早期) | 6 路**共用** `SENSOR_OFFSET`(1.2, 0, 1.65) | 235 / 125 | `surround_train` / `surround_drive` |
+| rig | 平移 | 偏航(BACK_LEFT / BACK_RIGHT) | 姿态 | 训练数据 |
+|---|---|---|---|---|
+| `nuscenes`(当前) | `SENSOR_MOUNTS[name]` 逐相机 | −108.6 / +110.8 | 逐相机 6DoF(pitch/roll 非 0) | `surround_p3` / `surround_town13` |
+| `legacy`(早期) | 6 路**共用** `SENSOR_OFFSET`(1.2, 0, 1.65) | 235 / 125 | 仅偏航 | `surround_train` / `surround_drive` |
+
+**`nuscenes` 曾名 `official`,且当时的值是镜像的**(2026-09-22 修):`SURROUND_CAMS` 把官方
+方位角原样抄成正数,漏了 `yaw_carla = −az_nus`(见 `geometry.carla_yaw_to_nus_yaw`)⇒ 四个侧/后
+相机左右互换(FRONT_LEFT 差 110.3°、BACK_LEFT 差 217.2°),pitch/roll 也被硬编码 0。前/后相机
+因近自逆而"看着对",长期没暴露。真值现由 `autodrivedata/camera_rig.NUS_CAMERA_RIG` 单点提供
+(官方四元数导出),采集器与本文件**同源**。
 
 早期 `view_stream.build_maptr_rig` 给 6 路**共用** `SENSOR_OFFSET` 平移(与逐相机差最多 1.5 m),
-且 BACK_LEFT/BACK_RIGHT 偏航与官方布局**恰好互换**(镜像是最隐蔽的错位:`SURROUND_CAMS`
-的 108.6/−110.8 vs 早期 `CAM_YAW_OFFSET` 的 235/125)。它**不是无条件 bug**:`maptr_ep512.pt`
-就是在这套 rig 上训出来的,拿 official 喂它反而是错配。故本文件同时保留两套口径,
-由 `--rig {auto,official,legacy}` 选(`auto` 按权重文件名查 `LEGACY_CKPTS`)。
+且 BACK_LEFT/BACK_RIGHT 偏航与官方布局**恰好互换**。它**不是无条件 bug**:`maptr_ep512.pt`
+就是在这套 rig 上训出来的,拿 nuscenes 喂它反而是错配。故本文件同时保留两套口径,
+由 `--rig {auto,nuscenes,legacy}` 选(`auto` 按权重文件名查 `LEGACY_CKPTS`)。
 
 **判据不看图**:`rig_mount_deviation()` 直接量"实挂位姿 vs **该 rig 规格**"的平移/偏航偏差,
 修正前预期 ~1.5 m(旧口径下偏差反而 ~0)。**必须先 tick 再读**(传感器 `get_transform()`
@@ -47,10 +52,10 @@ from typing import TYPE_CHECKING, cast
 import carla
 import numpy as np
 from carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
-from collect_surround import SURROUND_CAMS
 from PIL import Image, ImageDraw
 
 from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
 from autodrivedata.mapviz import calib_from_fov
@@ -62,7 +67,7 @@ if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --m
 
 # ---------------------------------------------------------------- rig 口径表
 
-RIG_OFFICIAL = "official"
+RIG_NUSCENES = "nuscenes"
 RIG_LEGACY = "legacy"
 
 # 早期布局:6 路共用 SENSOR_OFFSET 平移 + 这套偏航(BACK_LEFT/RIGHT 与官方**互换**)
@@ -76,30 +81,34 @@ LEGACY_CAM_YAW: dict[str, float] = {
 }
 
 # 权重文件名 → 它的训练数据用的是 legacy rig(见 `outputs/maptr_600/map_infos.json`:
-# 帧 0-199 旧布局 / 200-599 官方布局)。新权重一律 official。
+# 帧 0-199 旧布局 / 200-599 官方布局)。新权重一律 nuscenes。
 LEGACY_CKPTS = ("maptr_ep256", "maptr_ep512")
 
 
-def rig_spec(rig: str) -> tuple[dict[str, tuple[float, float, float]], dict[str, float]]:
-    """rig 名 → (逐相机平移, 逐相机偏航度)。`official` = 训练侧采集器口径。"""
-    if rig == RIG_OFFICIAL:
-        return dict(SENSOR_MOUNTS), dict(SURROUND_CAMS)
+def rig_spec(
+    rig: str,
+) -> tuple[dict[str, tuple[float, float, float]], dict[str, tuple[float, float, float]]]:
+    """rig 名 → (逐相机平移, 逐相机姿态 (pitch,yaw,roll) 度)。`nuscenes` = 采集器口径。"""
+    if rig == RIG_NUSCENES:
+        return dict(SENSOR_MOUNTS), {name: rot for name, (_, rot) in NUS_CAMERA_RIG.items()}
     shared = (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z)
-    return {name: shared for name in SURROUND_CAMS}, dict(LEGACY_CAM_YAW)
+    return {name: shared for name in LEGACY_CAM_YAW}, {
+        name: (0.0, yaw, 0.0) for name, yaw in LEGACY_CAM_YAW.items()
+    }
 
 
 def resolve_rig(choice: str, ckpt: str | None) -> str:
-    """`auto` 按权重文件名定 rig;显式给 `official`/`legacy` 时不猜。
+    """`auto` 按权重文件名定 rig;显式给 `nuscenes`/`legacy` 时不猜。
 
     **为什么要按权重选**:外参必须与权重**训练时见过的一致**,否则第 i 路图与它学过的
     语义错位。实测 `maptr_ep512.pt` ← `surround_train`(legacy)、`maptr_600.pt` /
-    `maptr_1000.pt` ← `surround_p3` + `surround_town13`(official)。
+    `maptr_1000.pt` ← `surround_p3` + `surround_town13`(当时的 nuscenes 前身)。
     """
     if choice != "auto":
         return choice
     if ckpt and any(tag in Path(ckpt).stem for tag in LEGACY_CKPTS):
         return RIG_LEGACY
-    return RIG_OFFICIAL
+    return RIG_NUSCENES
 
 
 # ---------------------------------------------------------------- 图像
@@ -121,12 +130,16 @@ def encode_jpeg(img: Image.Image, quality: int = 80) -> bytes:
     return buf.getvalue()
 
 
-def draw_hud(img: Image.Image, text: str, warn: bool = False) -> Image.Image:
-    """左上角 HUD 条;`warn=True` 转红底(用于"滞后无界"这类必须看见的故障)。"""
+def draw_hud(img: Image.Image, text: str, warn: bool = False, y: int = 0) -> Image.Image:
+    """左上角 HUD 条;`warn=True` 转红底(用于"滞后无界"这类必须看见的故障)。
+
+    `y` = 条带顶边的像素偏移(默认 0)。多行 HUD(如 `--calib` 的第二行)靠它叠加,
+    不必为此再造一个函数;条带高 16 px,故第二行传 16。
+    """
     d = ImageDraw.Draw(img)
     bg = (140, 0, 0) if warn else (0, 0, 0)
-    d.rectangle([0, 0, 7 * len(text) + 8, 16], fill=bg)
-    d.text((4, 3), text, fill=(255, 255, 255))
+    d.rectangle([0, y, 7 * len(text) + 8, y + 16], fill=bg)
+    d.text((4, y + 3), text, fill=(255, 255, 255))
     return img
 
 
@@ -368,57 +381,66 @@ def build_surround_rig(
     width: int | None = None,
     height: int | None = None,
     fov: float | None = None,
-    rig: str = RIG_OFFICIAL,
+    rig: str = RIG_NUSCENES,
+    kind: str = "rgb",
 ) -> dict[str, tuple[carla.Sensor, CameraIntrinsics]]:
     """环视 rig:挂点/内参/分辨率与 `collect_surround.py` **逐字段**对齐。
 
     模型是按"相机名 → 该名挂点"记语义的:name→挂点与训练不一致 = 第 i 路图与它学过的
-    第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:官方 BACK_LEFT/RIGHT 偏航
-    108.6/−110.8 与早期 235/125 恰好互换)。故这里只认 `rig_spec()` 的两处定义。
+    第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:早期 235/125 与官方 −108.6/+110.8
+    恰好互换)。故这里只认 `rig_spec()` 的两处定义。
 
-    `rig` 选口径:默认 `official`(当前采集器);喂旧权重(`maptr_ep512.pt` 一类)必须传
+    `rig` 选口径:默认 `nuscenes`(当前采集器);喂旧权重(`maptr_ep512.pt` 一类)必须传
     `legacy`,否则图与权重错配(见模块头注的对照表)。
 
     `width/height/fov` 缺省 = 训练口径(`CAM_ATTRS`,1242×375 fov90);纯显示路径
     (`view_stream --view grid6` 不带 `--maptr`)可传小分辨率省带宽 —— 挂点与偏航不受影响。
+
+    `kind` 是相机蓝图后缀(`rgb` / `depth` / `instance_segmentation`)。**实时标定槽**
+    (`live_studio --calib`)要挂 `depth` 并与 RGB 槽**逐像素对齐**,故它必须传与 RGB
+    完全相同的 `width/height/fov` —— 内参、挂点、分辨率三者任一不同,着色点都会错位。
     """
     w = int(width if width else CAM_ATTRS["image_size_x"])
     h = int(height if height else CAM_ATTRS["image_size_y"])
     f = float(fov if fov else CAM_ATTRS["fov"])
     k = CameraIntrinsics(width=w, height=h, fov_h_deg=f)
-    mounts, yaws = rig_spec(rig)
+    mounts, rots = rig_spec(rig)
     bp_lib = world.get_blueprint_library()
     cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
-    for name, yaw_off in yaws.items():
+    for name, (pitch, yaw, roll) in rots.items():
         x, y, z = mounts[name]
-        bp = bp_lib.find("sensor.camera.rgb")
+        bp = bp_lib.find(f"sensor.camera.{kind}")
         bp.set_attribute("image_size_x", str(w))
         bp.set_attribute("image_size_y", str(h))
         bp.set_attribute("fov", str(f))
-        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0))
+        tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=pitch, yaw=yaw, roll=roll))
         cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
     return cams
 
 
-def surround_calibs(rig: str = RIG_OFFICIAL) -> dict[str, dict]:
+def surround_calibs(rig: str = RIG_NUSCENES) -> dict[str, dict]:
     """环视 rig 的 calib(与训练 infos 同结构:内参 3×3 + sensor2ego 6 元组)。
 
-    内参与采集器同式(单一来源 `carla_common.CAM_ATTRS`);sensor2ego = **该 rig** 的
-    挂点三点 + 相对偏航 —— 逐字段对齐权重训练数据里的那份,不是"最新那份"。
+    内参与采集器同式(单一来源 `carla_common.CAM_ATTRS`);sensor2ego =
+    `[x, y, z, yaw, pitch, roll]`(infos 口径,**注意不是 rig_spec 的 (pitch,yaw,roll)**)
+    —— 逐字段对齐权重训练数据里的那份,不是"最新那份"。
     """
     w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
     intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
-    mounts, yaws = rig_spec(rig)
+    mounts, rots = rig_spec(rig)
     return {
-        name: {"sensor2ego": [*mounts[name], yaw, 0.0, 0.0], "intrinsic": intrinsic}
-        for name, yaw in yaws.items()
+        name: {
+            "sensor2ego": [*mounts[name], rot[1], rot[0], rot[2]],
+            "intrinsic": intrinsic,
+        }
+        for name, rot in rots.items()
     }
 
 
 def rig_mount_deviation(
     cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]],
     ego: carla.Vehicle,
-    rig: str = RIG_OFFICIAL,
+    rig: str = RIG_NUSCENES,
 ) -> tuple[float, float]:
     """实挂相机相对 ego 的平移/偏航 vs **该 rig 规格**的最大偏差 → (米, 度)。**调用前必须 tick**。
 
@@ -428,16 +450,22 @@ def rig_mount_deviation(
     **矩阵顺序是 ego⁻¹·cam**(把世界系的相机位姿换算到 ego 系);写成 `cam·ego⁻¹`
     会把 ego 的**世界坐标**混进平移块,ego 离原点越远偏差越大(实测 138 m,偏航却
     恰好仍为 0 —— 只看偏航自检会漏掉,故本函数同时报平移)。
+
+    偏航对账**用规格旋转阵自身解出的 yaw**,不是规格里那个 yaw 字段——nuscenes rig
+    带非零 pitch/roll,yaw 字段与矩阵解出的 yaw 在 Rz·Ry·Rx 组合下**不是**同一个数。
     """
-    mounts, yaws = rig_spec(rig)
+    mounts, rots = rig_spec(rig)
     inv_ego = np.array(ego.get_transform().get_inverse_matrix(), dtype=np.float64)
     dev_t = dev_y = 0.0
     for name, (cam, _) in cams.items():
         T = inv_ego @ np.array(cam.get_transform().get_matrix(), dtype=np.float64)
         spec = np.array(mounts[name], dtype=np.float64)
         dev_t = max(dev_t, float(np.linalg.norm(T[:3, 3] - spec)))
+        pitch, yaw, roll = (math.radians(v) for v in rots[name])
+        r_spec = carla_rotation_matrix((pitch, yaw, roll))
+        yaw_spec = math.degrees(math.atan2(r_spec[1, 0], r_spec[0, 0]))
         yaw = math.degrees(math.atan2(T[1, 0], T[0, 0]))
-        dev_y = max(dev_y, abs((yaw - yaws[name] + 180.0) % 360.0 - 180.0))
+        dev_y = max(dev_y, abs((yaw - yaw_spec + 180.0) % 360.0 - 180.0))
     return dev_t, dev_y
 
 

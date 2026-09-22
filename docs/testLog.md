@@ -77,6 +77,16 @@
 | R1 | **`PIL.Image.paste` 在源图大于目标框时不报错、不缩放,只贴左上角**(超出部分静默丢弃):studio 旧 4×2 等尺寸拼图(`disp_w=621`)把 1242×375 相机图裁成 621×187,右半 + **下半(地面)** 无声消失;用户看到的现象是"6 视角 FoV 缩得看不到地面"(**不是 FoV 变了,是画面被切走一半**) | 判据不看图看数:拼图格与「源图左上角裁剪」平均绝对差 **0.128** vs 与「整幅缩放」差 **66.18** ⇒ 裁剪不是缩放。修复 = `live_common.compose_rows`(按行拼、每格**原生像素**)+ `compose_grid` **尺寸守卫**(不符即 `ValueError`,把这类坑钉死不复发)+ `live_studio.GRID_ROWS` 三层。回归 `tests/test_live_common.py`(12 用例,核心判据 = 每格逐像素等于源图) |
 | R2 | **`bin/` 不是包,静态分析跟不到测试里的运行时 `sys.path.insert`** → pyright 报 4 处 `reportMissingImports`(而全仓 pyright 基线本来就有 7580 错,`tests/` 一条没有) | 就地 `# pyright: ignore[reportMissingImports]` 标注 import 行(不改全局 pyright 配置,不给仓库引入新文件);判据 = `pyright tests/test_live_common.py` → 0 errors |
 
+## 标定自证 / 实时监看
+
+| # | 坑 | 修复 |
+|---|---|---|
+| K1 | **rig 镜像:`yaw_carla = −az_nus` 漏翻** —— 旧 `official` rig 把官方方位角原样抄成正数,pitch/roll 还硬编码 0 ⇒ 四个侧/后相机左右互换(FRONT_LEFT/RIGHT 差 **110.3°**、BACK_LEFT/RIGHT 差 **217.2°**);**前/后相机因近自逆"看着对",长期没暴露** | 真值单点提供:`camera_rig.NUS_CAMERA_RIG`(官方 `calibrated_sensor` 四元数导出,**导出前必须归一化**——官方存储的四元数不是单位长度),采集器/实时流/导出器同源。**判据 = A1 侧别一致性(挂点 y 与光轴 y 同号)**:镜像 rig 会让 4/4 判 false,能当场拦下。回归 `tests/test_probe_calib.py`(含"A1 能拦下历史镜像 bug"的反向自证) |
+| K2 | **像素约定 = corner 还是 center?** 差 0.5 px 在近处就是米级深度误差 | A3(LiDAR 平面 × 深度图交叉验证)裁决:CARLA 渲染栅格 **索引 i 的连续坐标恰为 i** ⇒ corner。median \|e\| **0.0003 m**(corner) vs **0.023 m**(center),**约 70×**,六相机一致;A4 用**实例掩膜索引**中点独立测得 `fx = 621.6 px`。`cx = (w−1)/2 = 620.5` 与 `fx = (w/2)/tan(fov/2) = 621.0` **并存不矛盾**(前者索引约定中心、后者"半 FOV↔半宽")。**角色分类防再犯**:采样 CARLA 栅格 ⇒ 必须 corner;采样 torch 栅格(FPN/`align_corners=False`/gsplat)⇒ `(u+0.5)/W*2−1` **正确**;PIL 纯绘制 ⇒ 无关;读内参 ⇒ cx/cy **从 K 直读**不重算。回归 `tests/test_depth_codec.py` + `tests/test_calib_live.py::test_index_equals_coordinate` |
+| K3 | **自遮挡判据写死绝对阈值 ⇒ 换分辨率静默失效**:`self_occluded` 用 `near_fraction > 0.2`,该阈值在 1242×375 下成立(CAM_BACK 实测 **0.367**),在 640×360 下**判不出来**(实测 **0.195**) | 根因:**近场占比随画幅宽高比变**(水平 FOV 都是 90°,640×360 竖直 FOV 大得多 ⇒ 车顶占画面比例小)。修复 = **相对判据** `calib_live.self_occluded_cameras`:基准取**同批可用相机**近场占比中位数(典型 0.000),阈值 `max(NEAR_FRACTION_MIN=0.05, NEAR_FRACTION_RATIO=10×基准)`;全部不可用时基准退回 0.0(没有参照也要给结论,不沉默)。**不按相机名硬编码**。回归 `TestSelfOccluded::test_flags_at_the_live_resolution_fraction`(0.195 必须判得出) |
+| K4 | **样本少 ≠ 标定坏**:CAM_BACK 挂点只比 ego 自身车顶高 **0.023 m**(官方 z=1.5791 vs 车顶 ≈1.556)⇒ 可用样本常年 0–30(其余 50–200),但**残差中位数与其它相机同级**(0.0003 m) | 判据做成"**样本 < `MIN_CAM_SAMPLES` ⇒ `median_abs = None`**",HUD 报"无数据"而**不是** 0.000(0.000 会被读成"标定完美")。回归 `TestSummarize::test_below_threshold_reports_none_not_a_number` + `TestHudLine::test_no_data_says_so_instead_of_zero` |
+| K5 | 实时槽平面重拟合成本:逐点邻域平面是 **O(N²)**,实测 **~100–150 ms/tick**,而六相机采样合计仅 **~9 ms** | 瓶颈全在拟合 ⇒ `--calib-refit` 默认 2(每 2 tick 重拟合)。**平面是"世界系"的**(描述场景表面,不是"这一帧的点云")⇒ ego 移动几米后同一块路面仍是同一平面,可跨 tick 复用;被挡住的点由单侧可见性判据剔掉。**抽样必须在拟合之前**(逐点独立 ⇒ 抽样不改变任一保留点的判定;先拟合再抽会把"哪些点过闸"交给运气)。可靠最低配置 = voxel 1.0 / 半径 2.0 / dist<20 / 上限 1500(半径 1.5 或更低 ⇒ 邻域低于 `MIN_PLANE_PTS=12`,**0 个合格点**) |
+
 ## 类型系统(pyright 0 纪律)
 
 | # | 坑 | 修复 |

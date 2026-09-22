@@ -69,16 +69,36 @@ def cam_pose(eg: list[float], se: list[float]) -> CamPose:
 
 
 def intrinsics_from_k(k: list[list[float]], size: tuple[int, int]) -> CameraIntrinsics:
-    """infos 内参 3×3 → CameraIntrinsics(fov 由 fx 反推,不硬编码)。"""
+    """infos 内参 3×3 → CameraIntrinsics。
+
+    **K 是权威来源**:fov 由 `k[0][0]`(= fx)反推、**cx/cy 直读** `k[0][2]`/`k[1][2]`
+    (不再丢弃重算——历史实现只取 fx 后由 `CameraIntrinsics` 重算主点,一旦落盘的 K 与
+    `(w−1)/2` 不同,投影就会静默偏离落盘口径)。`size` 提供画幅;K 里缺 cx/cy 时回落到
+    `(w−1)/2`/`(h−1)/2`。
+    """
     w, h = size
-    fov_h = math.degrees(2.0 * math.atan((w / 2.0) / k[0][0]))
-    return CameraIntrinsics(width=w, height=h, fov_h_deg=fov_h)
+    fx = float(k[0][0])
+    fov_h = math.degrees(2.0 * math.atan((w / 2.0) / fx)) if fx > 0 else 0.0
+    # 主点:直读;缺失或为 0(退化的 K)⇒ None,由 CameraIntrinsics 回落到 (w−1)/2
+    cx = float(k[0][2]) if len(k[0]) > 2 and k[0][2] else None
+    cy = float(k[1][2]) if len(k) > 1 and len(k[1]) > 2 and k[1][2] else None
+    return CameraIntrinsics(width=w, height=h, fov_h_deg=fov_h, cx_override=cx, cy_override=cy)
 
 
 def calib_from_fov(width: int, height: int, fov_deg: float) -> dict[str, Any]:
-    """(宽, 高, fov) → B2 口径内参块(与 collect_surround 同式,单一来源 = carla_common.CAM_ATTRS)。"""
-    fx = width / 2.0 / math.tan(math.radians(fov_deg / 2.0))
-    return {"intrinsic": [[fx, 0.0, width / 2.0], [0.0, fx, height / 2.0], [0.0, 0.0, 1.0]]}
+    """(宽, 高, fov) → B2 口径内参块。**全仓唯一 fov→fx 落点。**
+
+    fx/fy 与主点都取自 `CameraIntrinsics`(单一公式源),不再各写一遍 `w/2`。
+
+    ⚠️ **主点口径已从 `w/2` 改为 `(w−1)/2`**(2026-09-22 实测裁决,`bin/probe_calib.py`
+    A3/A4):CARLA 渲染光栅是 **corner** 约定 —— 索引 i 的连续坐标就是 i,故
+    `cx = (1242−1)/2 = 620.5`、`cy = (375−1)/2 = 187.0`。A3 在 corner 下 median|e|
+    0.0003 m、center 下 0.023 m(~70×,六相机一致);A4 掩膜索引中点回归给 620.50。
+    旧产物/旧权重里的 `621.0 / 187.5` 是同一个物理主点在 center 约定下的**另一种写法**,
+    差恰好半像素 —— 新采集一律写 corner 值(旧权重已全部标废弃,重采重训)。
+    """
+    intr = CameraIntrinsics(width=width, height=height, fov_h_deg=fov_deg)
+    return {"intrinsic": [[intr.fx, 0.0, intr.cx], [0.0, intr.fy, intr.cy], [0.0, 0.0, 1.0]]}
 
 
 def project_points(

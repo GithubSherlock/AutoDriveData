@@ -57,6 +57,10 @@ AutoDriveData/
 |---|---|
 | `geometry.py` | 坐标转换唯一落点:CARLA 系 ↔ KITTI 相机系 |
 | `calib.py` | KITTI 标定生成(内参/外参 → calib txt,含 `world_to_img` 投影共用件) |
+| `camera_rig.py` | **环视相机 rig 唯一来源**:官方 nuScenes `calibrated_sensor`(6DoF 四元数)→ CARLA 采集口径 `NUS_CAMERA_RIG`(平移 y 翻号 + 姿态走 `nus_camera_rotation_to_carla`)。采集器 / 实时流 / 导出器同源;模块头注记录**镜像 bug**(`yaw_carla = −az_nus` 漏翻 ⇒ 四个侧/后相机左右互换) |
+| `calib_probe.py` | **标定自证纯值件**:平面拟合(`fit_plane`/`fit_local_planes`)、相机射线/反投影(`cam_rays`/`project_world`/`backproject_depth`)、深度图采样(`collect_samples`/`DepthSamples`)、轴目标物质心法主点裁决(`estimate_axis_delta`/`estimate_delta_uv`)、镜像不对称度(`mirror_asymmetry`)、径向误差剖面 |
+| `depth_codec.py` | CARLA 深度图编解码(`decode_depth`/`encode_depth`,BGRA→米)+ 采样口径(`CONVENTION_CENTER`/`CONVENTION_CORNER` + `sample_bilinear_many`)——**实测裁决 CARLA 光栅 = corner**(索引 i 即连续坐标 i;见 `probe_calib.py` A3/A4),`CENTER` 保留供对照。**坑:`decode` 与 `sample` 的像素索引约定必须一致**,差 0.5 px 在近处 = 米级深度误差 |
+| `calib_live.py` | **实时标定槽纯值件**(`live_studio --calib`):`live_planes`(体素+抽样+逐点邻域平面,`LIVE_*` 廉价预算)/ `sample_camera`(复用 `calib_probe.collect_samples`,`CONVENTION_CORNER`,不开窗口极差)/ `residual_colors`+`paint_residuals`(着色,**与离线探针同源**)/ `summarize`+`CameraResidual`(样本 < `MIN_CAM_SAMPLES` 时 `median_abs is None`,**不许报假数字**)/ `self_occluded_cameras`+`near_fraction`(**相对**判据,见下)/ `hud_line`。**坑:自遮挡判据不能写死阈值**——近场占比随**画幅宽高比**变(CAM_BACK 1242×375 是 0.367、640×360 只有 0.195),故按同批可用相机的近场占比中位数定阈;平面是**世界系**故可跨 tick 复用(瓶颈全在拟合 ~100–150 ms vs 六相机采样 ~9 ms ⇒ 默认每 2 tick 重拟合) |
 | `gt.py` | CARLA actor → KITTI label_2 GT 行 |
 | `static_gt.py` | 静态目标/道路特征 GT(地图查询源:P2) |
 | `traffic_light.py` | 交通信号灯状态 GT(动态时序层:状态归一/前向判据/相位查表) |
@@ -64,7 +68,7 @@ AutoDriveData/
 | `opendrive.py` | OpenDRIVE 1.4 解析(planView/lanes/objects/signals/junction) |
 | `mapvec.py` | 地图矢量 GT 提取与采样(MapTR 口径:六类要素 + 裁剪 + 重采样) |
 | `mapvec_schema.py` | 矢量预测对外契约 `mapvec_pred/1`(schema 校验/JSON 往返) |
-| `mapviz.py` | 矢量投影与绘制:ego 系折线 → 相机像素 + BEV 面板 |
+| `mapviz.py` | 矢量投影与绘制:ego 系折线 → 相机像素 + BEV 面板。`intrinsics_from_k` **直读 K 的 cx/cy**(不重算);`calib_from_fov` 是**全仓唯一 fov→fx 落点**(主点 = 索引约定中心 `(w−1)/2`) |
 | `chamfer_ap.py` | MapTR 评估纯值:Chamfer 距离匹配 + 多阈值 AP(官方口径) |
 | `compare.py` | 伪标签 vs GT 比对层:3D IoU 匹配 → 分歧帧 → AP/复核率报表 |
 | `attribution.py` | 失效归因:逐帧 2D 匹配 → 漏检按距离/框高/TTC 分箱 |
@@ -89,7 +93,7 @@ AutoDriveData/
 | 文件 | 职责 |
 |---|---|
 | `model.py` | 模型组装:ResNet50+FPN backbone + GKT BEV 变换 + 分层 query head |
-| `gkt.py` | GKT(Geometry-aware Kernel Transform):环视相机特征 → BEV 特征 |
+| `gkt.py` | GKT(Geometry-aware Kernel Transform):环视相机特征 → BEV 特征。**两处已修 bug(2026-09-22)**:①infos 六元组 `[x,y,z,yaw,pitch,roll]` 必须换序成 `(pitch,yaw,roll)`(`_ROT_TO_CARLA`),漏了 = 5/6 相机指向错;②K 必须缩到**特征图**分辨率(`scale_k`,FPN P2 = 311×94),漏了 = 全分辨率像素与 `feat_w−1` 比。两坑叠加把 BEV 有效覆盖从 94.6% 打到 1.25% |
 | `head.py` | 分层 query head:实例级 query + 点级 query + 置换等价匹配 |
 | `dataset.py` | B2 infos json → 训练数据集(图像加载 + 位姿/标定透传 + GT 解析) |
 | `chamfer_gpu.py` | Chamfer 代价矩阵 GPU 实现(与 `chamfer_ap` 同口径) |
@@ -162,8 +166,8 @@ AutoDriveData/
 | 文件 | 职责 |
 |---|---|
 | `view_stream.py` | 场景实时流:真 UE 渲染 + GT/预测 overlay → 浏览器 MJPEG |
-| `live_common.py` | **实时可视化共享件**(从 view_stream 抽出):多槽 MJPEG 服务(单端口 `/stream/<name>` + `/` 索引页)/ **拼图(两套:`compose_grid` 等尺寸 + **尺寸守卫**,不符即 `ValueError` —— `paste` 源图大于目标框时只贴左上角、静默裁;`compose_rows` 按行拼、每格**原生像素**,studio 三层用它)** / GT overlay / **环视 rig(两代口径 `rig_spec`:`official` 逐相机 `SENSOR_MOUNTS` + 108.6/−110.8,`legacy` 共用 `SENSOR_OFFSET` + 235/125;`resolve_rig` 按权重名选)** / 第三方视角 / 键盘 —— view_stream 与 live_studio 共用 |
-| `live_studio.py` | **8 路 studio**:6 相机 + BEV + 第三方 + `grid` 拼图槽,各占一路;`--keyboard` 折进 tick 循环(WASD 开采集);第三方非 attach 每 tick 摆位。**拼图 = `GRID_ROWS` 三层**(①左前/前/右前 ②右后/后/左后 ③第三方 + BEV),**每格原生像素不缩放**(相机 1242×375 / 第三方 640×360 / BEV `--bev-size` ⇒ 画布 3726×1170;旧 4×2 等尺寸布局把相机图裁到 621×187 丢掉地面,见 Plan2.md §P-L.6)。**`--slam` 接在线 SLAM**(挂语义 LiDAR → `SlamWorker`,BEV 槽画地图点/轨迹;`--slam-async` / `--slam-voxel` / `--slam-max-gap` / `--slam-report` 落验收 JSON)。**`--video` 落八视角视频段**(拼图槽逐帧写 mp4,cv2/mp4v 惰性开编码器;`--video-fps` 标称帧率 / `--video-tile` 放大倍数) |
+| `live_common.py` | **实时可视化共享件**(从 view_stream 抽出):多槽 MJPEG 服务(单端口 `/stream/<name>` + `/` 索引页)/ **拼图(两套:`compose_grid` 等尺寸 + **尺寸守卫**,不符即 `ValueError` —— `paste` 源图大于目标框时只贴左上角、静默裁;`compose_rows` 按行拼、每格**原生像素**,studio 三层用它)** / GT overlay / **环视 rig(两代口径 `rig_spec`:`nuscenes` 逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态,`legacy` 共用 `SENSOR_OFFSET` + 235/125;`resolve_rig` 按权重名选)** / 第三方视角 / 键盘 —— view_stream 与 live_studio 共用。**`build_surround_rig(..., kind=)`** 可挂 `rgb` 或 `depth`(深度槽必须与 RGB 槽**同挂点同内参同分辨率**,否则 overlay 无法逐像素对齐);`draw_hud(..., y=)` 支持第二行(条带 16 px) |
+| `live_studio.py` | **8 路 studio**:6 相机 + BEV + 第三方 + `grid` 拼图槽,各占一路;`--keyboard` 折进 tick 循环(WASD 开采集);第三方非 attach 每 tick 摆位。**拼图 = `GRID_ROWS` 三层**(①左前/前/右前 ②右后/后/左后 ③第三方 + BEV),**每格原生像素不缩放**(相机 1242×375 / 第三方 640×360 / BEV `--bev-size` ⇒ 画布 3726×1170;旧 4×2 等尺寸布局把相机图裁到 621×187 丢掉地面,见 Plan2.md §P-L.6)。**`--slam` 接在线 SLAM**(挂语义 LiDAR → `SlamWorker`,BEV 槽画地图点/轨迹;`--slam-async` / `--slam-voxel` / `--slam-max-gap` / `--slam-report` 落验收 JSON)。**`--calib` 接实时标定监看**(另挂 6 深度相机同挂点同内参 + `sensor.lidar.ray_cast`,LiDAR→世界平面→投影回相机按深度残差着色画进各相机槽,`draw_hud` 第二行报 pooled |e| 与逐路样本数,`--calib-report` 落 JSON;`--calib-refit` 默认 2 tick 重拟合一次,预算见 `calib_live.py`)。**`--video` 落八视角视频段**(拼图槽逐帧写 mp4,cv2/mp4v 惰性开编码器;`--video-fps` 标称帧率 / `--video-tile` 放大倍数) |
 | `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板 |
 | `viz_layout_cmp.py` | 相机布局对照数值化(同镜头两布局的可见性对比) |
 | `drive_ego.py` | live 手动驾驶(服务器终端 WASD 遥控);薄封装 `live_common.KeyboardState`(studio 内置键盘是首选) |
@@ -179,6 +183,7 @@ AutoDriveData/
 | `probe_imu.py` | **B1 实测**:CARLA IMU 能否支撑 FAST-LIO2 的 IESKF 预测(结论:直行段 IMU 预测比恒速先验更差 → B3 不投) |
 | `probe_scan_to_map.py` | **B2 实测**:oracle GT 局部地图下 scan-to-map vs scan-to-scan(结论:误差随地图深度 K 单调变差 1.05×→2.75×,重新体素化救不回 → 不建 ikd-Tree 前端;含代价/谱/地面占比三条机制证据) |
 | `probe_rig_mount.py` | **环视挂点口径 A/B 实测**:同一权重喂「它训练时见过的 rig」vs「另一代 rig」→ 品红像素/段数差 = 错配代价(结论见 Plan2.md §P-L.1) |
+| `probe_calib.py` | **标定自证探针(七锚 A0–A6)**:spawn 6 RGB + 6 depth + LiDAR + 施工锥 → `outputs/calib_check/{report.json,overlay.png}`。A0 光轴 vs 官方方位角 / A1 侧别一致性 / A2 实例分割解码(`id = G + 256·B`)/ A3 LiDAR-平面-深度图交叉验证(裁决**像素约定 = corner**)/ A4 轴目标物掩膜质心回归主点 / A5 实挂 vs 规格 / A6 主点锁定 `(w−1)/2`。**判据全数值,不目检** |
 | `smoke.py` | M0 smoke:CARLA headless 连接 → 同步模式 → 各取一帧落盘 |
 
 ### 4.7 共用件与运维脚本
@@ -201,10 +206,13 @@ AutoDriveData/
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
 | 教程能力线 | `test_mono_depth.py` `test_stereo.py` `test_multilidar.py` `test_slam.py` `test_accum.py` `test_ground.py` `test_cluster.py` `test_collect_rig.py` | 各含手算锚点;`collect_rig` 兼作采集器回归先例 |
 | SLAM 精度/在线线 | `test_slam_eval.py` `test_live_slam.py` | `slam_eval`:ATE/RPE 手算锚点 + 杆臂方向(不补杆臂 ATE 2.44×);`live_slam`:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ `SlamWorker` 滞后有界/止损/同步模式 |
-| 实时可视化 | `test_live_common.py` | `compose_grid` **尺寸守卫**(不符必抛,防 `paste` 静默裁)+ `compose_rows` 每格**原生像素**逐像素等于源图 + studio `GRID_ROWS` 三层行序。import `bin/` 模块需运行时加 `sys.path`(非包),静态分析跟不到 ⇒ 就地 `pyright: ignore[reportMissingImports]` |
-| MapTR 自实现 | `test_gkt.py` `test_head.py` `test_device.py` | 单帧过拟合正确性锚定 |
+| 实时可视化 | `test_live_common.py` | `compose_grid` **尺寸守卫**(不符必抛,防 `paste` 静默裁)+ `compose_rows` 每格**原生像素**逐像素等于源图 + studio `GRID_ROWS` 三层行序 + **`rig_spec`/`resolve_rig`**(两代 rig 口径与"按权重选":legacy 共用挂点 + pitch/roll=0,nuscenes 逐相机 6DoF;显式指定不被文件名覆盖)+ **`rig_mount_deviation` 规格对账**(矩阵顺序写反 ⇒ 平移爆掉而偏航仍 ~0、偏差随 ego 离原点变远而变大、legacy 实挂对 nuscenes 规格必报 110°、tick 前全 0 陈旧位姿**不许**判成"通过")+ `draw_hud(y=)` 第二行(第一行逐像素不变、`y=0` 与旧行为一致)。import `bin/` 模块需运行时加 `sys.path`(非包),静态分析跟不到 ⇒ 就地 `pyright: ignore[reportMissingImports]` |
+| MapTR 自实现 | `test_gkt.py` `test_head.py` `test_device.py` | 单帧过拟合正确性锚定。`test_gkt` 三条**回归钉**:`test_pose_rotation_order_is_carla_convention`(换序)、`test_scale_k_to_feature_resolution`(K 缩放)、`test_gkt_valid_coverage_on_real_rig`(真实 rig BEV 可见率 ≈94%,修前 1.25%) |
+| 标定自证 | `test_calib_probe.py` `test_depth_codec.py` `test_probe_calib.py` `test_calib_live.py` | `calib_probe`:轴目标物质心法在合成对称掩膜上精确复原注入的 cx;ray-plane 深度闭式解手算锚点;单侧可见性判据(渲染更近才判遮挡,对称窗口极差会误杀 95%)。`depth_codec`:深度编解码往返 + 像素约定。`probe_calib`:**实例分割解码公式**(`id = G + 256·B`,含两个旧错误候选作反例)+ A0/A1 锚 + "A1 能拦下历史镜像 bug" 的反向自证。`calib_live`:**判据不许报假数字**(样本不足 ⇒ `median_abs is None`,HUD 报"无数据"而非 0.000)+ 着色用 `index = u`(corner)+ `pooled_median` **等权** + 自遮挡**相对**判据(0.195 这个实时分辨率实测值也必须判得出来——绝对阈值 `> 0.2` 会漏) |
 | 落盘契约 | `test_export_kitti.py` `test_export_nuscenes.py` | 路径/字段与消费方契约一致 |
-| oracle 对比 | `test_geometry_carla_oracle.py` `test_geometry_nus.py` `test_calib_oracle_autolabel.py` `test_gt_oracle_autolabel.py` `test_nuscenes_oracle_autolabel.py` | **需 autolabel env / CARLA 机器**,缺失时自动 skip |
+| devkit 表读取 | `test_nuscenes_cali_sensors.py` | 读 `sensor`/`calibrated_sensor`,打印每传感器相对 ego 的位姿 + 视线轴方位角/俯仰角。两处坑:①**视线轴因 modality 而异**(相机自身系 z 前 ⇒ 视线轴 +z;激光/雷达 x 前 ⇒ +x),对相机用 `Quaternion.yaw_pitch_roll` 读出的三个角无几何意义;②官方 mini 每通道 10 条记录但只 2 套位姿(n015 6 条 / n008 4 条),车辆/地点字段只能经 sample_data→sample→scene→log 反查。**可直接 `python` 跑**(打印),也可 pytest 收集;缺 devkit / 缺 dataroot 自动跳过 |
+| oracle 对比 | `test_geometry_carla_oracle.py` `test_calib_oracle_autolabel.py` `test_gt_oracle_autolabel.py` `test_nuscenes_oracle_autolabel.py` | **需 autolabel env / CARLA 机器**,缺失时自动 skip |
+| nuScenes 约定纯值 | `test_geometry_nus.py` | **不 skip、任何 env 可跑**:四元数归一化(官方值非单位 ⇒ 不归一化时闭式解矩阵非正交)+ `camera_rig` 推导钉(`yaw_carla = −az_nus` 到 1e-9、平移只翻 y、6DoF 不可降 yaw-only、历史字面表的 110°/217° 偏差量级)。**这是 §P-M 镜像 bug 的回归锁之一** |
 
 ## 6 `docs/` — 文档
 
@@ -229,11 +237,12 @@ AutoDriveData/
 | `kitti3d_ab_*` | 上列 A/B 的 3D 伪标签输出(AutoLabel 消费) | `auto3dlabel run` + `eval_kitti.py` |
 | `surround_*` | 环视 6 相机数据集(`surround_train` / `surround_p3` / `surround_town13` / `surround_pred` 逐帧契约) | `collect_surround.py` / `assemble_maptr.py` / `eval_maptr.py` |
 | `traj_town*` | 多 agent 轨迹数据集(HiVT 输入) | `collect_traj.py` / `assemble_traj_pt.py` |
-| `maptr_*.pt` | MapTR 权重(`maptr_600` / `maptr_1000` / `ep256` / `ep512` + `.opt` 优化器态) | `train_maptr.py` |
+| `maptr_*.pt` | MapTR 权重(`maptr_600` / `maptr_1000` / `ep256` / `ep512` + `.opt` 优化器态)。**⚠️ 全部四个已标废弃**(2026-09-22,§P-M):采集时用的 rig 是错的(镜像 + pitch/roll 硬编码 0),数据本身错 ⇒ 重采重训。文件保留仅供历史对照与 legacy 路径回归,勿作新实验基线 | `train_maptr.py` |
 | `maptr_600` / `maptr_1000` | MapTR 扩数据轮的 infos 与图像。**两轮的 `images/` 均已清理**(`maptr_1000` 于 2026-09-19 删 5.5 G;`maptr_600/images` 3600 图同期发现已不存在),现仅存 `maptr_600/map_infos.json`(33 M);`maptr_1000/` 已整目录不存在。**权重 `.pt` 均保留**。复现训练需重跑组装链(`surround_train` + `surround_p3` + `training/map/Town10HD_Opt_full.json` → `bin/finalize_maptr_600.sh`) | `assemble_maptr.py` / `merge_train_infos.py` |
 | `kitti_sweep_day_clear_8` | **仅存**的速度档(70 帧 @8 m/s)。`_4` / `_12` 于 2026-09-20 清理(§5.10 结论已归档);重采 `collect_ab_route.py --speed N` | `collect_ab_route.py` |
 | `kitti_wet_road` / `kitti_dense_rush` | **P1-6 候选**场景探针(各 12 帧,尚无 A/B 版)。同批的 `rain_night` / `dense_fog` 因已有 70 帧 A/B 版而列入待清;`heavy_rain` / `night_clear` **无** A/B 版,12 帧版是唯一数据 | `collect_drive.py` |
 | `kitti_slam` / `slam_gt/` | SLAM 数据集(velodyne + **pose 真值**)与轨迹/精度产物(`traj_raw.json` / `icp_stats.json` / `eval_*.json` / **B 期验收 `accept_sync|accept_async|accept_parity_full.json`**) | `collect_slam.py` / `slam_odometry.py` / `eval_slam.py` / `live_studio.py --slam-report` |
+| `calib_check/` | 标定自证产物:`report.json`(七锚 A0–A6 全数值)+ `overlay.png`(6 相机三层 overlay);`live.json` = `live_studio --calib` 实时槽读数(逐相机 n/median/p90/近场占比 + 时序) | `probe_calib.py` / `live_studio.py --calib-report` |
 | `sem_bev/` `mono_distance/` `stereo/` `multilidar/` `accum_map/` `ground/` `cluster/` | 教程能力线各产物的图/点云/结果 json | 各自 `bin/*.py` |
 | `3dgs/` | 3DGS 环绕采集帧 + 真值深度位姿 + `.ply` 高斯 + 训练结果 json | `collect_3dgs.py` / `train_3dgs_mini.py` |
 | `hivt_carla/` | HiVT 训练用 TemporalData 与场景划分 | `convert_hivt_pt.py` |
