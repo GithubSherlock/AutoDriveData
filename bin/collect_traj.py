@@ -25,21 +25,10 @@ import time
 from typing import cast
 
 import carla
-from carla_common import loc, sync_mode
+from carla_common import loc, spawn_ego_at, sync_mode
 
 from autodrivedata.paths import project_path
 from autodrivedata.scenarios import SCENES, merged_weather
-
-
-def spawn_ego_at(world: carla.World, index: int) -> carla.Vehicle:
-    """用指定 spawn point index 生成 ego(直线段;spawn 后 tick 同步位姿)。"""
-    pts = world.get_map().get_spawn_points()
-    bp = world.get_blueprint_library().find("vehicle.audi.a2")
-    ego = world.try_spawn_actor(bp, pts[index])
-    if ego is None:
-        raise RuntimeError(f"spawn point {index} 生成失败(碰撞?)")
-    world.tick()
-    return cast(carla.Vehicle, ego)
 
 
 def main() -> None:

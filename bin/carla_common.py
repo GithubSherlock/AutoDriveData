@@ -13,6 +13,7 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
+from autodrivedata import fonts
 from autodrivedata.calib import CameraIntrinsics, world_to_img
 from autodrivedata.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.traffic_light import (
@@ -74,6 +75,28 @@ def spawn_ego(world: carla.World) -> carla.Vehicle:
         raise RuntimeError("所有出生点均 spawn 失败(碰撞)")
     # 同步模式红线:spawn 后必须 tick,actor 位姿才同步到客户端
     # (实测:不 tick 则 get_transform 返回恒等变换 (0,0,0))
+    world.tick()
+    return cast(carla.Vehicle, ego)
+
+
+def spawn_ego_at(world: carla.World, index: int) -> carla.Vehicle:
+    """用**指定的** spawn point index 生成 ego(碰撞即报错,不 fallback)。
+
+    与 `spawn_ego` 的分工:那个"逐个试第一个空位",适合单次采集;这个要求**可复现的
+    指定起点**,供多段采集(每段一条独立路线,段间起点必须互不相同且可复现)。
+    **失败不换点**是刻意的——静默 fallback 会让"我要 88 号点"变成"随便哪条街",
+    分段留出集就失去意义(同 `collect_ab_route` 的起点校验纪律)。
+
+    原为 `bin/collect_traj.py` 局部实现,2026-09-23 上移共享(§P-M.11 下游)。
+    """
+    pts = world.get_map().get_spawn_points()
+    if not 0 <= index < len(pts):
+        raise ValueError(f"spawn index {index} 越界(本图共 {len(pts)} 个 spawn point)")
+    bp = world.get_blueprint_library().find("vehicle.audi.a2")
+    ego = world.try_spawn_actor(bp, pts[index])
+    if ego is None:
+        raise RuntimeError(f"spawn point {index} 生成失败(碰撞?)")
+    # 同步模式红线:spawn 后必须 tick,actor 位姿才同步到客户端(同 spawn_ego)
     world.tick()
     return cast(carla.Vehicle, ego)
 
@@ -205,5 +228,11 @@ def draw_traffic_lights(
         col = TL_COLOR.get(light.state, TL_COLOR["Unknown"])
         x, y = uv
         d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=col, outline=(0, 0, 0))
-        d.text((x + 8, y - 6), f"#{light.opendrive_id} {light.state} {light.distance_m:.0f}m", fill=col)
+        fonts.draw_text(
+            d,
+            (x + 8, y - 15),
+            f"#{light.opendrive_id} {light.state} {light.distance_m:.0f}m",
+            size=13,
+            fill=col,
+        )
     return img

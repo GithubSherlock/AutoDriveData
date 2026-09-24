@@ -32,7 +32,7 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, loc, rad, spawn_ego, sync_mode
+from carla_common import loc, rad, spawn_ego, sync_mode
 from live_common import (
     RIG_LEGACY,
     RIG_NUSCENES,
@@ -40,6 +40,7 @@ from live_common import (
     load_maptr,
     maptr_predict,
     resolve_rig,
+    rig_frame,
     rig_spec,
     surround_calibs,
 )
@@ -48,21 +49,24 @@ from PIL import ImageDraw
 from autodrivedata.calib import CameraIntrinsics
 from autodrivedata.mapviz import PRED_COLOR, draw_projected_lines
 
-W, H, FOV = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]), float(CAM_ATTRS["fov"])
-
 
 def build_rig(world: carla.World, ego: carla.Vehicle, rig: str):
-    """按 rig 口径挂 6 路相机(与 `live_common.build_surround_rig` 同式,单测/探针自持)。"""
-    k = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)
+    """按 rig 口径挂 6 路相机(与 `live_common.build_surround_rig` 同式,单测/探针自持)。
+
+    画幅/FoV 走 `rig_frame`(逐通道)——探针的用处正是"对/错 rig 的像素差",若这里按
+    `CAM_ATTRS` 一表六用,而预测侧 `surround_calibs(rig)` 是逐通道的,两边画幅与 FoV
+    都对不上,探针会报出**假**的错配签名(把"探针自己错"读成"权重错")。
+    """
+    w, h, fovs = rig_frame(rig)
     mounts, rots = rig_spec(rig)
     cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
     qs: dict[str, queue.Queue] = {}
     for name, (pitch, yaw, roll) in rots.items():
         x, y, z = mounts[name]
         bp = world.get_blueprint_library().find("sensor.camera.rgb")
-        bp.set_attribute("image_size_x", str(W))
-        bp.set_attribute("image_size_y", str(H))
-        bp.set_attribute("fov", str(FOV))
+        bp.set_attribute("image_size_x", str(w))
+        bp.set_attribute("image_size_y", str(h))
+        bp.set_attribute("fov", f"{fovs[name]:.6f}")
         cam = cast(
             carla.Sensor,
             world.spawn_actor(
@@ -73,7 +77,7 @@ def build_rig(world: carla.World, ego: carla.Vehicle, rig: str):
         )
         q: queue.Queue = queue.Queue()
         cam.listen(q.put)
-        cams[name], qs[name] = (cam, k), q
+        cams[name], qs[name] = (cam, CameraIntrinsics(width=w, height=h, fov_h_deg=fovs[name])), q
     return cams, qs
 
 
@@ -99,12 +103,13 @@ def probe_ckpt(
         imgs = capture(world, cams, qs)
         et = ego.get_transform()
         ego_g = [*loc(et), et.rotation.yaw, et.rotation.pitch, et.rotation.roll]
-        preds = maptr_predict(model, dev, imgs, ego_g, surround_calibs(rig), thr)
+        rw, rh, _ = rig_frame(rig)
+        preds = maptr_predict(model, dev, imgs, ego_g, surround_calibs(rig, rw, rh), thr)
         all_preds = [p for cls in preds for p in cls]
         n_seg = 0
         mag = np.array(PRED_COLOR)
         px = above = 0
-        cy = (H - 1) / 2
+        cy = (rig_frame(rig)[1] - 1) / 2  # 光轴画幅中线(逐 rig;corner 约定)
         for name, (cam, k) in cams.items():
             t = cam.get_transform()
             img = imgs[name].copy()

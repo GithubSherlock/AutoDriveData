@@ -1,17 +1,42 @@
 """M1b 静态采集:ego 静止 + NPC + 6 相机 + LiDAR + 5 雷达 → nuScenes 迷你集(scene-0103)。
 
 用法(base env,CARLA 服务器运行中):
-  python bin/collect_nus.py [--out outputs/nus_mini] [--frames 2]
+  python bin/collect_nus.py [--out outputs/nus_mini] [--frames 2] [--rig nuscenes|wide]
 
 落盘 = 标准 nuScenes dataroot(devkit 直读,auto3dlabel nuscenes-queue 消费):
   {out}/v1.0-mini/*.json(14 表)+ samples/LIDAR_TOP/*.bin((N,5) raw)
   + samples/RADAR_*/*.pcd(18 字段 radar 点云)+ samples/CAM_*/*.png
 坐标系:入表数据经 geometry.CARLA_TO_NUS 翻 y(入 nuScenes 全局系 y 左)。
 
+**全传感器标定口径 = 「渲染位姿」与「声明位姿」同源**(2026-09-23,Plan2.md §P-M.7):
+本采集器此前是**表对了、图错了**的新失效模式——`calibrated_sensor` 写官方正确值,而 6 相机
+实际 spawn 在 LiDAR 挂点 + 旧镜像偏航表上(四路侧/后相机左右互换)、雷达偏航差 94–136°、
+LiDAR 无旋转。现在**每一项都由同一份官方常量导出**:
+
+| 传感器 | 渲染(spawn) | 声明(calibrated_sensor) | 共同来源 |
+|---|---|---|---|
+| 6 相机 | `--rig` 选中的 rig 表(挂点 + 6DoF 姿态) | 同一 rig 的 calib 表 | `camera_rig`(同一次推导) |
+| LiDAR | `LIDAR_MOUNT` + `LIDAR_ROT` | `NUS_LIDAR_CALIB` | `export/nuscenes` |
+| 5 雷达 | `NUS_RADAR_OFFSETS` 的 CARLA 镜像 | `NUS_RADAR_OFFSETS` 原值 | `export/nuscenes` |
+
+相机蓝图 `fov` 逐通道由**该 rig 的 K** 反推(官方 rig:64.31–64.96°,CAM_BACK 89.34°)——
+否则"标定说 64°、图像是 90°"又是同一类声明≠渲染。判据(全数值)见 `bin/verify_nus_calib.py`。
+
+★ **ego 原点(2026-09-23,Plan2 §P-M.10)**:上表的"声明"列全部是 **nuScenes ego 系**,
+其原点 = **后轴中心在地面**;而 CARLA 车辆 actor 的原点 = **车身长度中点**。故
+`x_carla = x_nus + NUS_EGO_ORIGIN_X`(= −1.2563 m,实测 a2 后轴),`ego_pose` 也必须写
+**后轴点**的位姿。历史实现两处都按 actor 原点办 ⇒ 6 相机 + 6 雷达 + LiDAR 整体前移 1.26 m
+(实测 `CAM_BACK` 画幅 42.999% 是自身车体、`RADAR_FRONT` 悬在车头前 1.56 m)。
+
+`--rig wide`(2026-09-23,Plan2 §P-M.8)= **自定义宽视口口径**(前 55°/后侧 110°/后 120°、
+后三路挂点后移到车尾 x=−1.90 ⇒ 零车体像素),与官方口径**并存**、默认仍是官方。
+宽视口下相机内参由 FoV 反推且主点走 corner 约定(wide 的图是 CARLA 渲染栅格),见
+`export/nuscenes._wide_intrinsics`。**雷达与 LiDAR 不受 rig 影响。**
+
 雷达(2026-09-14 扩展):5 通道照官方 nuScenes 布局(RADAR_FRONT/FRONT_LEFT/
 FRONT_RIGHT/BACK_LEFT/BACK_RIGHT),参数复刻官方大陆 ars408(77°×14.2°、range
 250);同步模式固定 0.1s → 与 LiDAR 同为 10Hz(官方 13Hz 无法复刻)。挂载 = 官方
-calibrated_sensor 位姿的 CARLA 镜像(spawn location y 取负、yaw 与同名相机同号),
+calibrated_sensor 位姿的 CARLA 镜像(spawn location y 取负、yaw = −az_nus),
 入表零转换直接用官方原值 → 雷达锥与同名相机同物理象限。radar 点进 GT 关联:
 5 通道点各经 points_sensor_to_global_nus → 全局系合并 → count_points_in_box_nus
 计 num_radar_pts。
@@ -28,7 +53,6 @@ import carla
 import numpy as np
 from carla_common import (
     LIDAR_ATTRS,
-    SENSOR_OFFSET,
     loc,
     rad,
     spawn_ego,
@@ -37,46 +61,72 @@ from carla_common import (
 )
 
 from autodrivedata import geometry as g
+from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
 from autodrivedata.export.nuscenes import (
     NUS_CAMERA_CALIBS,
+    NUS_CAMERA_FOV,
     NUS_CAMERAS,
+    NUS_LIDAR_CALIB,
+    NUS_LIDAR_MOUNT_CARLA,
     NUS_RADAR_CHANNELS,
+    NUS_RADAR_MOUNTS_CARLA,
     NUS_RADAR_OFFSETS,
+    NUS_RIGS,
     NusSample,
+    camera_calibs,
+    camera_fov,
     count_points_in_box_nus,
     points_sensor_to_global_nus,
+    radar_yaw_offset_carla,
     write_mini_dataset,
 )
 from autodrivedata.gt import ActorBox, box_center_world, box_heading_world, classify_nus
 from autodrivedata.paths import project_path
 from autodrivedata.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
 
-# 6 相机视角(相对 ego,CARLA yaw 度,左转正):yaw 取官方相机光轴方位角
-# (NUS_CAMERA_CALIBS 光轴 = R@+z 的 CARLA 镜像;实测 CAM_FRONT=+0.3°≈0)——
-# 保证真实渲染视野与 devkit 深度解释(光轴方向)对齐。
-CAM_YAW_OFFSET = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 125.0,
-    "CAM_BACK_RIGHT": -125.0,
-}
-CAM_ATTRS = {
+# 相机蓝图属性:分辨率 + **逐通道 fov**。`fov` 是**水平** FOV,官方 K 反推值见
+# `NUS_CAMERA_FOV`;六路共用 90° 会让五路"应该是 64.3°"的相机被渲染成 90°(声明≠渲染)。
+CAM_ATTRS_COMMON = {
     "image_size_x": "1600",
     "image_size_y": "900",
-    "fov": "90",
 }  # nuScenes 分辨率
+CAM_FOV: dict[str, float] = dict(NUS_CAMERA_FOV)  # 默认 rig(=官方口径),供只读官方表的调用方
 
-# 5 雷达视角(相对 ego,CARLA yaw 度,左转正)——与同名相机同号,保证雷达锥与
-# 相机同物理象限;spawn 平移 = 官方 calibrated_sensor 的 CARLA 镜像(y 取负)。
-RADAR_YAW_OFFSET = {
-    "RADAR_FRONT": 0.0,
-    "RADAR_FRONT_LEFT": 45.0,
-    "RADAR_FRONT_RIGHT": -45.0,
-    "RADAR_BACK_LEFT": 90.0,
-    "RADAR_BACK_RIGHT": -90.0,
-}
+
+def rig_tables(rig: str) -> tuple[dict, dict, dict]:
+    """rig 名 → `(CARLA 侧 spawn rig, nuScenes 侧落盘标定, 逐通道 fov)`。
+
+    **三项必须来自同一个 rig**——采集器只经本函数取表,不许就地写第二份(这正是 §P-M.7
+    "表对了、图错了"的成因:spawn 用的表和落盘的表各写一份,对不上时两边都自洽)。
+
+    `nuscenes` = 官方标定(默认,行为不得变);`wide` = 自定义宽视口口径(前 55°/后侧 110°/
+    后 120°、后三路挂点后移到车尾,见 `camera_rig` 模块头注 + Plan2 §P-M.8)。
+    """
+    if rig == "nuscenes":
+        return NUS_CAMERA_RIG, NUS_CAMERA_CALIBS, NUS_CAMERA_FOV
+    if rig == "wide":
+        # 后两表由 `export/nuscenes` 按同一 rig 名派发(wide 的 K 由 FoV 反推,见其注释)
+        return NUS_WIDE_CAMERA_RIG, camera_calibs(rig), camera_fov(rig)
+    raise ValueError(f"未知相机 rig:{rig!r}(可选 {NUS_RIGS})")
+
+
+# LiDAR 挂点 / 姿态(CARLA 口径)。
+# 挂点**由官方 nus 系标定经 `nus_mount_to_carla` 导出**(x 加 ego 原点差 + y 翻号),
+# 见 `export.nuscenes.NUS_LIDAR_MOUNT_CARLA`;姿态由官方四元数导出。两者都不手抄 ——
+# 手抄正是"表对了、图错了"的成因(§P-M.7),把 x 当 actor 系距离用是同一个坑的第二代(§P-M.10)。
+LIDAR_MOUNT: tuple[float, float, float] = NUS_LIDAR_MOUNT_CARLA
+_LIDAR_RPY = g.rotation_matrix_to_carla(g.nus_sensor_rotation_to_carla(NUS_LIDAR_CALIB[1]))
+LIDAR_ROT: tuple[float, float, float] = (
+    math.degrees(_LIDAR_RPY[0]),
+    math.degrees(_LIDAR_RPY[1]),
+    math.degrees(_LIDAR_RPY[2]),
+)  # ≈ (−0.3380, +89.8835, −1.3884)
+
+# 5 雷达视角(相对 ego,CARLA yaw 度,左转正)—— **由官方标定导出**,不手抄:
+# CARLA 侧 `yaw_carla = −az_nus`,与相机同一条规则(`carla_yaw_to_nus_yaw` 的逆)。
+# 旧表 {0,+45,−45,+90,−90} 是"与同名相机同号"的猜测,四路角雷达实测差 94–136°。
+RADAR_YAW_OFFSET: dict[str, float] = {ch: radar_yaw_offset_carla(ch) for ch in NUS_RADAR_CHANNELS}
+
 # 官方大陆 ars408 雷达参数(复刻;horizontal 77°/vertical 14.2°/range 250m)。
 # **CARLA 0.9.16 两 FOV 属性交叉使用**(编译行为,prebuilt 无法改源码):
 #   实际 azi 半角 = vertical_fov/2、实际 alt 半角 = horizontal_fov/2
@@ -157,7 +207,15 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=2)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
+    ap.add_argument(
+        "--rig",
+        choices=NUS_RIGS,
+        default="nuscenes",
+        help="相机口径:nuscenes=官方标定(默认)/ wide=自定义宽视口(见 camera_rig 头注)",
+    )
     args = ap.parse_args()
+
+    cam_rig, cam_calibs, cam_fov = rig_tables(args.rig)
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(30.0)
@@ -166,35 +224,58 @@ def main() -> None:
 
     ego = spawn_ego(world)
     ego_t = ego.get_transform()
-    print(f"[ego] vehicle.audi.a2 @ {loc(ego_t)}")
+    print(f"[ego] {ego.type_id} @ actor {loc(ego_t)} → nus 原点(后轴) x += {g.NUS_EGO_ORIGIN_X:+.4f} m")
 
     bp_lib = world.get_blueprint_library()
     lid_bp = bp_lib.find("sensor.lidar.ray_cast")
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
-    lidar = cast(carla.Sensor, world.spawn_actor(lid_bp, SENSOR_OFFSET, attach_to=ego))
+    # LiDAR:挂点 + **姿态**都要设。不设 rotation 等于宣称"传感器系 = ego 系"——
+    # 点云存的是传感器自身系,devkit 按 `calibrated_sensor.rotation` 解释,缺了它
+    # 整片点云绕 z 转 90°(实测 `num_lidar_pts` 复现比值 1.0000 → 0.0854)。
+    lidar = cast(
+        carla.Sensor,
+        world.spawn_actor(
+            lid_bp,
+            carla.Transform(
+                carla.Location(*LIDAR_MOUNT),
+                carla.Rotation(pitch=LIDAR_ROT[0], yaw=LIDAR_ROT[1], roll=LIDAR_ROT[2]),
+            ),
+            attach_to=ego,
+        ),
+    )
+    # 6 相机:挂点 + 6DoF 姿态 + 逐通道 fov,全部由 `--rig` 选中的那一份表导出
+    # (与写进 `calibrated_sensor` 的标定同源推导,见 `rig_tables`)。
+    # 样板 = `bin/collect_surround.py`(那一版从 §P-M 起就是对的)。
     cameras: dict[str, carla.Sensor] = {}
-    for cam, yaw_off in CAM_YAW_OFFSET.items():
+    for cam, (mount, rot) in cam_rig.items():
         cam_bp = bp_lib.find("sensor.camera.rgb")
-        for k, v in CAM_ATTRS.items():
+        for k, v in CAM_ATTRS_COMMON.items():
             cam_bp.set_attribute(k, v)
-        tf = carla.Transform(SENSOR_OFFSET.location, carla.Rotation(pitch=0.0, yaw=yaw_off, roll=0.0))
+        cam_bp.set_attribute("fov", f"{cam_fov[cam]:.6f}")
+        tf = carla.Transform(
+            carla.Location(x=mount[0], y=mount[1], z=mount[2]),
+            carla.Rotation(pitch=rot[0], yaw=rot[1], roll=rot[2]),
+        )
         cameras[cam] = cast(carla.Sensor, world.spawn_actor(cam_bp, tf, attach_to=ego))
-    # 5 雷达:挂载 = 官方 calibrated_sensor 的 CARLA 镜像(y 取负、yaw 同号)
+    # 5 雷达:挂载 = 官方 calibrated_sensor 的 CARLA 镜像(y 取负、yaw = −az_nus)
     radars: dict[str, carla.Sensor] = {}
     for ch in NUS_RADAR_CHANNELS:
         r_bp = bp_lib.find("sensor.other.radar")
         for k, v in RADAR_ATTRS.items():
             r_bp.set_attribute(k, v)
-        t_nus, _ = NUS_RADAR_OFFSETS[ch]
+        t_carla = NUS_RADAR_MOUNTS_CARLA[ch]
         tf = carla.Transform(
-            carla.Location(x=t_nus[0], y=-t_nus[1], z=t_nus[2]),
+            carla.Location(*t_carla),
             carla.Rotation(pitch=0.0, yaw=RADAR_YAW_OFFSET[ch], roll=0.0),
         )
         radars[ch] = cast(carla.Sensor, world.spawn_actor(r_bp, tf, attach_to=ego))
     print(
-        f"[sensor] lidar {LIDAR_ATTRS['channels']}ch + {len(radars)} radars(ars408) + "
-        f"6 cameras {CAM_ATTRS['image_size_x']}x{CAM_ATTRS['image_size_y']}"
+        f"[sensor] lidar {LIDAR_ATTRS['channels']}ch @ {LIDAR_MOUNT} rot "
+        f"({LIDAR_ROT[0]:+.4f}, {LIDAR_ROT[1]:+.4f}, {LIDAR_ROT[2]:+.4f})° + "
+        f"{len(radars)} radars(ars408) + 6 cameras "
+        f"{CAM_ATTRS_COMMON['image_size_x']}x{CAM_ATTRS_COMMON['image_size_y']} "
+        f"(rig={args.rig}, fov {min(cam_fov.values()):.2f}–{max(cam_fov.values()):.2f}°)"
     )
 
     spawn_npcs(world, ego_t)
@@ -228,20 +309,18 @@ def main() -> None:
     # 首帧 ego 平移 = 各自场景基准,如 (411,1181,0)/(600,1647,0)/(1316,1039,0))——
     # 我们单场景采集也按此约定:采集中以 ego 首帧为原点,平移量 = 首帧负值,
     # 使本场景坐标系与官方"以场景为单元"的全局一致。
-    _ego0 = loc(ego.get_transform())
-    nus_origin = g.carla_to_nus_global(np.asarray([_ego0]))[0]
+    _t0 = ego.get_transform()
+    nus_origin = np.asarray(g.nus_ego_translation(loc(_t0), rad(_t0.rotation)))
     origin_nus = (float(nus_origin[0]), float(nus_origin[1]), float(nus_origin[2]))
-    calib_lidar = (
-        (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z),
-        0.0,
-    )
-    calib_cameras = {c: NUS_CAMERA_CALIBS[c] for c in NUS_CAMERAS}
-    # calib_radars:translation = 官方 nus 原值(nus 系,零转换),rotation = CARLA
-    # yaw 走与相机同一转换路径 → 雷达锥与同名相机同物理象限。
-    calib_radars = {
-        ch: (NUS_RADAR_OFFSETS[ch][0], g.carla_yaw_to_nus_yaw(math.radians(RADAR_YAW_OFFSET[ch])))
-        for ch in NUS_RADAR_CHANNELS
-    }
+    # 三张标定表**全部直接用原值**(nus 系,y 左),零转换:
+    # - LiDAR:官方 translation + **四元数**(含 1.4289° up 轴倾角,是观测量)
+    # - 相机:`--rig` 选中那一份的 translation + 6DoF 四元数(与 spawn 的表同源推导)
+    # - 雷达:官方 translation + yaw(官方 pitch/roll 精确为 0,yaw-only 无损)
+    # 采集侧 spawn 的 CARLA 镜像(y 取负、yaw = −az_nus)是**同一物理挂点的另一套表达**,
+    # 由 `RADAR_YAW_OFFSET` / `cam_rig` 从这三张表导出 ⇒ 不存在"布置与落盘两处维护"。
+    calib_lidar = NUS_LIDAR_CALIB
+    calib_cameras = {c: cam_calibs[c] for c in NUS_CAMERAS}
+    calib_radars = {ch: NUS_RADAR_OFFSETS[ch] for ch in NUS_RADAR_CHANNELS}
 
     samples: list[NusSample] = []
     try:
@@ -283,32 +362,39 @@ def main() -> None:
                 camera_filenames[cam] = rel
 
             ego_t_now = ego.get_transform()
-            _ego_nus = g.carla_to_nus_global(np.asarray([loc(ego_t_now)]))[0]
+            # ★ ego_pose 必须是 **nuScenes ego 原点(后轴中心)** 的位姿,不是 CARLA actor 原点
+            # (车身长度中点)—— 整套 `calibrated_sensor.translation` 都以后轴为基准,
+            # 写 actor 原点会让整组传感器相对自车偏 1.2563 m(§P-M.10)。见 `geometry.NUS_EGO_ORIGIN_X`。
+            _ego_nus = g.nus_ego_translation(loc(ego_t_now), rad(ego_t_now.rotation))
             ego_trans_nus = (
-                float(_ego_nus[0] - origin_nus[0]),
-                float(_ego_nus[1] - origin_nus[1]),
-                float(_ego_nus[2] - origin_nus[2]),
+                _ego_nus[0] - origin_nus[0],
+                _ego_nus[1] - origin_nus[1],
+                _ego_nus[2] - origin_nus[2],
             )
-            ego_yaw_nus = g.carla_yaw_to_nus_yaw(np.radians(ego_t_now.rotation.yaw))
+            # ★ 全 6DoF:**不能**用 `carla_yaw_to_nus_quat` —— 实测静止时车体俯仰 +0.0642°,
+            # 拍平成纯偏航会让 ego_pose ⊕ calibrated_sensor 与世界系真值差这个量级(§P-M.10)。
+            ego_rot_nus = g.nus_ego_rotation(rad(ego_t_now.rotation))
 
             pts_global = points_sensor_to_global_nus(
                 pts_nus[:, :3],
                 ego_trans_nus,
-                ego_yaw_nus,
+                ego_rot_nus,
                 calib_lidar[0],
                 calib_lidar[1],
             )
-            # 5 雷达点各自进全局系(calib 非零 yaw 由 points_sensor_to_global_nus 支持)
-            # → 合并 → GT 框内计数 num_radar_pts(与官方"当前 sample 全雷达通道命中总数"同口径)
+            # 5 雷达点各自进全局系 → 合并 → GT 框内计数 num_radar_pts
+            # (与官方"当前 sample 全雷达通道命中总数"同口径)。
+            # 雷达标定只有 yaw(官方 pitch/roll 精确为 0)⇒ 传 `yaw_to_quat(yaw)`,
+            # 与 LiDAR 共用**同一个** `points_sensor_to_global_nus`(一条链,不分叉)。
             radar_pts_global: list[np.ndarray] = []
             for ch in NUS_RADAR_CHANNELS:
                 radar_pts_global.append(
                     points_sensor_to_global_nus(
                         radar_nus18[ch][:, :3],
                         ego_trans_nus,
-                        ego_yaw_nus,
+                        ego_rot_nus,
                         calib_radars[ch][0],
-                        calib_radars[ch][1],
+                        g.yaw_to_quat(calib_radars[ch][1]),
                     )
                 )
             radar_global = np.vstack(radar_pts_global) if radar_pts_global else np.empty((0, 3))
@@ -323,7 +409,7 @@ def main() -> None:
             samples.append(
                 NusSample(
                     ego_translation=ego_trans_nus,
-                    ego_yaw_nus=ego_yaw_nus,
+                    ego_rotation_nus=ego_rot_nus,
                     lidar_filename=lidar_rel,
                     camera_filenames=camera_filenames,
                     calib_lidar=calib_lidar,
@@ -360,8 +446,9 @@ def main() -> None:
         out,
         "v1.0-mini",
         {"scene-0103": samples, "scene-0916": [samples[0]]},
+        rig=args.rig,
     )
-    print(f"[done] nuScenes dataroot: {out.resolve()} (2 scenes, {len(samples)}+1 samples)")
+    print(f"[done] nuScenes dataroot: {out.resolve()} (2 scenes, {len(samples)}+1 samples, rig={args.rig})")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ import termios
 import threading
 import time
 import tty
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -54,8 +55,10 @@ import numpy as np
 from carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
 from PIL import Image, ImageDraw
 
+from autodrivedata import fonts
 from autodrivedata.calib import CameraIntrinsics, world_to_img
-from autodrivedata.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
 from autodrivedata.mapviz import calib_from_fov
@@ -69,6 +72,9 @@ if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --m
 
 RIG_NUSCENES = "nuscenes"
 RIG_LEGACY = "legacy"
+# 自定义 wide rig(后移挂点 + 55/110/120 口径,见 `autodrivedata/camera_rig.py` 头注)。
+# 与 legacy 同构:这里只登记**挂点与姿态**,FoV/内参由 `export/nuscenes` 按 rig 分派。
+RIG_WIDE = "wide"
 
 # 早期布局:6 路共用 SENSOR_OFFSET 平移 + 这套偏航(BACK_LEFT/RIGHT 与官方**互换**)
 LEGACY_CAM_YAW: dict[str, float] = {
@@ -84,6 +90,10 @@ LEGACY_CAM_YAW: dict[str, float] = {
 # 帧 0-199 旧布局 / 200-599 官方布局)。新权重一律 nuscenes。
 LEGACY_CKPTS = ("maptr_ep256", "maptr_ep512")
 
+# legacy 画幅/FoV = KITTI 口径那套(**旧权重的口径,勿改**;由 CAM_ATTRS 导出,不手抄)
+LEGACY_FRAME = (int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]))
+LEGACY_FOV = float(CAM_ATTRS["fov"])
+
 
 def rig_spec(
     rig: str,
@@ -91,10 +101,43 @@ def rig_spec(
     """rig 名 → (逐相机平移, 逐相机姿态 (pitch,yaw,roll) 度)。`nuscenes` = 采集器口径。"""
     if rig == RIG_NUSCENES:
         return dict(SENSOR_MOUNTS), {name: rot for name, (_, rot) in NUS_CAMERA_RIG.items()}
+    if rig == RIG_WIDE:  # 后三路挂点后移到车尾 + 轴方位角重排;**前三个与官方逐位相同**
+        return (
+            {name: m for name, (m, _) in NUS_WIDE_CAMERA_RIG.items()},
+            {name: rot for name, (_, rot) in NUS_WIDE_CAMERA_RIG.items()},
+        )
     shared = (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z)
     return {name: shared for name in LEGACY_CAM_YAW}, {
         name: (0.0, yaw, 0.0) for name, yaw in LEGACY_CAM_YAW.items()
     }
+
+
+def rig_frame(
+    rig: str, width: int | None = None, height: int | None = None, fov: float | None = None
+) -> tuple[int, int, dict[str, float]]:
+    """rig 名 + 可选覆盖 → (画幅 w, h, **逐通道** fov 度)。**实时侧的画幅/FoV 唯一落点**
+    (采集侧的对应物 = `collect_surround.SURROUND_CAM_ATTRS` + `export.nuscenes.NUS_CAMERA_FOV`)。
+
+    - `nuscenes` / `wide`:**1600×900** + **逐通道** fov(由该 rig 的 K 导出)。
+      逐通道是硬要求 —— 六路共用 90° 是"声明 ≠ 渲染"(§P-M.7)的第三种形态:模拟器里
+      25° 的视野差会让第 i 路图与权重学过的语义错位,症状比挂点镜像更隐蔽。
+    - `legacy`:1242×375 + 六路共用 90°(**旧权重口径,勿改** —— 它服务的是已废弃的
+      `maptr_ep512`,不是"省带宽的小分辨率档")。
+
+    `width/height` 显式传入只换光栅尺寸、**不换 FoV**(FoV 是相机属性,不是光栅属性),
+    故仍逐通道;只有显式传 `fov` 才把六路抹平成一个值(纯显示路径)。
+    """
+    names = list(rig_spec(rig)[1])
+    if rig in (RIG_NUSCENES, RIG_WIDE):
+        w0, h0 = NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT
+        all_fov = camera_fov(rig)
+        fovs = {name: float(all_fov[name]) for name in names}
+    else:
+        w0, h0 = LEGACY_FRAME
+        fovs = dict.fromkeys(names, LEGACY_FOV)
+    if fov is not None:
+        fovs = dict.fromkeys(names, float(fov))
+    return int(width or w0), int(height or h0), fovs
 
 
 def resolve_rig(choice: str, ckpt: str | None) -> str:
@@ -130,16 +173,36 @@ def encode_jpeg(img: Image.Image, quality: int = 80) -> bytes:
     return buf.getvalue()
 
 
+HUD_H = 16  # 条带高(px)—— 第二行 HUD 传 y=HUD_H
+HUD_FONT_SIZE = 13  # 字号:13 px 下 ink 高 ~13 px,恰好落进 HUD_H 条带
+
+# 拼图**格内**的相机名角标(不额外占画布高度)。这三个常量是给测试用的契约:
+# `TILE_LABEL_BOTTOM` 之下必须与源图逐像素相同 —— 换字号/字体时它自动跟着变,
+# 不再是散在测试里的魔数(曾经写死 20,换成真字体后角标下沿到 26,测试就会假失败)。
+TILE_LABEL_XY = (6, 6)
+TILE_LABEL_SIZE = 16
+TILE_LABEL_BOTTOM = (
+    TILE_LABEL_XY[1]
+    + fonts.bbox(ImageDraw.Draw(Image.new("L", (1, 1))), "CAM_FRONT_LEFT", TILE_LABEL_SIZE)[3]
+    + 1
+)
+
+
 def draw_hud(img: Image.Image, text: str, warn: bool = False, y: int = 0) -> Image.Image:
     """左上角 HUD 条;`warn=True` 转红底(用于"滞后无界"这类必须看见的故障)。
 
     `y` = 条带顶边的像素偏移(默认 0)。多行 HUD(如 `--calib` 的第二行)靠它叠加,
-    不必为此再造一个函数;条带高 16 px,故第二行传 16。
+    不必为此再造一个函数;条带高 `HUD_H` px,故第二行传 16。
+
+    底条宽度按**实测**文本宽度定:旧实现是 `7 * len(text) + 8`,那个 7 是 PIL 内置位图字体
+    的经验字宽 —— 换真字体、或文本含中文(CJK 字宽 ≈ 2× ASCII)后常数必然错。
+    **字体一律走 `autodrivedata.fonts`**:直接 `d.text(...)` 不传 `font=` 会用内置位图字体,
+    中文整行画成豆腐块(见 [autodrivedata/fonts.py](../autodrivedata/fonts.py))。
     """
     d = ImageDraw.Draw(img)
     bg = (140, 0, 0) if warn else (0, 0, 0)
-    d.rectangle([0, y, 7 * len(text) + 8, y + 16], fill=bg)
-    d.text((4, y + 3), text, fill=(255, 255, 255))
+    d.rectangle([0, y, min(img.width, int(fonts.width(text, HUD_FONT_SIZE)) + 9), y + HUD_H], fill=bg)
+    fonts.draw_text(d, (4, y + 1), text, size=HUD_FONT_SIZE, fill=(255, 255, 255))
     return img
 
 
@@ -161,7 +224,13 @@ def compose_grid(tiles: list[Image.Image], names: list[str], w: int, h: int, col
             )
         row, col = divmod(idx, cols)
         grid.paste(tile, (col * w, row * h))
-        d.text((col * w + 6, row * h + 6), name, fill=(255, 255, 0))
+        fonts.draw_text(
+            d,
+            (col * w + TILE_LABEL_XY[0], row * h + TILE_LABEL_XY[1]),
+            name,
+            size=TILE_LABEL_SIZE,
+            fill=(255, 255, 0),
+        )
     return grid
 
 
@@ -197,7 +266,13 @@ def compose_rows(
         for name, tile in row:
             canvas.paste(tile, (x, y))
             if name:
-                d.text((x + 6, y + 6), name, fill=(255, 255, 0))
+                fonts.draw_text(
+                    d,
+                    (x + TILE_LABEL_XY[0], y + TILE_LABEL_XY[1]),
+                    name,
+                    size=TILE_LABEL_SIZE,
+                    fill=(255, 255, 0),
+                )
             x += tile.width
         y += heights[r]
     return canvas
@@ -368,7 +443,7 @@ def overlay_gt(
         dist = math.hypot(float(p[11]), float(p[13]))  # 相机系 (x, z)
         col = CLASS_COLOR.get(cls, CLASS_COLOR["Misc"])
         d.rectangle([x1, y1, x2, y2], outline=col, width=2)
-        d.text((x1 + 2, max(0.0, y1 - 11)), f"{cls} {dist:.0f}m", fill=col)
+        fonts.draw_text(d, (x1 + 2, max(0.0, y1 - 14)), f"{cls} {dist:.0f}m", size=13, fill=col)
     return img
 
 
@@ -390,59 +465,62 @@ def build_surround_rig(
     第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:早期 235/125 与官方 −108.6/+110.8
     恰好互换)。故这里只认 `rig_spec()` 的两处定义。
 
-    `rig` 选口径:默认 `nuscenes`(当前采集器);喂旧权重(`maptr_ep512.pt` 一类)必须传
-    `legacy`,否则图与权重错配(见模块头注的对照表)。
+    `rig` 选口径:默认 `nuscenes` = 当前采集器(1600×900 + **逐通道** fov);
+    喂旧权重(`maptr_ep512.pt` 一类)必须传 `legacy`(1242×375 + 六路共用 90°),
+    否则图与权重错配(见模块头注的对照表)。画幅/FoV 一律走 `rig_frame`,不在此另立。
 
-    `width/height/fov` 缺省 = 训练口径(`CAM_ATTRS`,1242×375 fov90);纯显示路径
-    (`view_stream --view grid6` 不带 `--maptr`)可传小分辨率省带宽 —— 挂点与偏航不受影响。
+    `width/height` 缺省 = 该 rig 的原生画幅;纯显示路径(`view_stream --view grid6`
+    不带 `--maptr`)可传小分辨率省带宽 —— 挂点与 FoV 不受影响。
 
     `kind` 是相机蓝图后缀(`rgb` / `depth` / `instance_segmentation`)。**实时标定槽**
     (`live_studio --calib`)要挂 `depth` 并与 RGB 槽**逐像素对齐**,故它必须传与 RGB
     完全相同的 `width/height/fov` —— 内参、挂点、分辨率三者任一不同,着色点都会错位。
     """
-    w = int(width if width else CAM_ATTRS["image_size_x"])
-    h = int(height if height else CAM_ATTRS["image_size_y"])
-    f = float(fov if fov else CAM_ATTRS["fov"])
-    k = CameraIntrinsics(width=w, height=h, fov_h_deg=f)
+    w, h, fovs = rig_frame(rig, width, height, fov)
     mounts, rots = rig_spec(rig)
     bp_lib = world.get_blueprint_library()
     cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]] = {}
     for name, (pitch, yaw, roll) in rots.items():
         x, y, z = mounts[name]
+        # 逐相机蓝图:每路设自己的 fov(六路共用一个 bp 就是"声明 ≠ 渲染",见 rig_frame)
         bp = bp_lib.find(f"sensor.camera.{kind}")
         bp.set_attribute("image_size_x", str(w))
         bp.set_attribute("image_size_y", str(h))
-        bp.set_attribute("fov", str(f))
+        bp.set_attribute("fov", f"{fovs[name]:.6f}")
         tf = carla.Transform(carla.Location(x=x, y=y, z=z), carla.Rotation(pitch=pitch, yaw=yaw, roll=roll))
+        k = CameraIntrinsics(width=w, height=h, fov_h_deg=fovs[name])
         cams[name] = (cast(carla.Sensor, world.spawn_actor(bp, tf, attach_to=ego)), k)
     return cams
 
 
-def surround_calibs(rig: str = RIG_NUSCENES) -> dict[str, dict]:
+def surround_calibs(
+    rig: str = RIG_NUSCENES, width: int | None = None, height: int | None = None
+) -> dict[str, dict]:
     """环视 rig 的 calib(与训练 infos 同结构:内参 3×3 + sensor2ego 6 元组)。
 
-    内参与采集器同式(单一来源 `carla_common.CAM_ATTRS`);sensor2ego =
-    `[x, y, z, yaw, pitch, roll]`(infos 口径,**注意不是 rig_spec 的 (pitch,yaw,roll)**)
-    —— 逐字段对齐权重训练数据里的那份,不是"最新那份"。
+    内参走 `rig_frame` **逐通道**(render 与落盘同源,不允许"六路一张 K");
+    `width/height` 必须与 `build_surround_rig` 传的**相同**,否则画幅与 K 分叉。
+    sensor2ego = `[x, y, z, yaw, pitch, roll]`(infos 口径,**注意不是 rig_spec 的
+    (pitch,yaw,roll)**)—— 逐字段对齐权重训练数据里的那份,不是"最新那份"。
     """
-    w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
-    intrinsic = calib_from_fov(w, h, float(CAM_ATTRS["fov"]))["intrinsic"]
+    w, h, fovs = rig_frame(rig, width, height, None)
     mounts, rots = rig_spec(rig)
     return {
         name: {
             "sensor2ego": [*mounts[name], rot[1], rot[0], rot[2]],
-            "intrinsic": intrinsic,
+            "intrinsic": calib_from_fov(w, h, fovs[name])["intrinsic"],
         }
         for name, rot in rots.items()
     }
 
 
-def rig_mount_deviation(
-    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]],
+def mount_deviation_of(
+    actors: Mapping[str, carla.Actor],
     ego: carla.Vehicle,
-    rig: str = RIG_NUSCENES,
+    mounts: Mapping[str, tuple[float, float, float]],
+    rots: Mapping[str, tuple[float, float, float]],
 ) -> tuple[float, float]:
-    """实挂相机相对 ego 的平移/偏航 vs **该 rig 规格**的最大偏差 → (米, 度)。**调用前必须 tick**。
+    """实挂传感器相对 ego 的平移/偏航 vs **给定规格**的最大偏差 → (米, 度)。**调用前必须 tick**。
 
     传感器 `get_transform()` 只在 tick 后刷新:tick 前读到的是全 0 陈旧值,
     会假报 ~179.8°(= CAM_BACK 规格 180 − ego 固有 yaw 0.159,见 Plan.md 红线)。
@@ -453,12 +531,14 @@ def rig_mount_deviation(
 
     偏航对账**用规格旋转阵自身解出的 yaw**,不是规格里那个 yaw 字段——nuscenes rig
     带非零 pitch/roll,yaw 字段与矩阵解出的 yaw 在 Rz·Ry·Rx 组合下**不是**同一个数。
+
+    相机与雷达共用本函数(两者都是 attach 到 ego 的刚体,判据同形);`rots` 一律是
+    CARLA 口径的 `(pitch, yaw, roll)` 度。
     """
-    mounts, rots = rig_spec(rig)
     inv_ego = np.array(ego.get_transform().get_inverse_matrix(), dtype=np.float64)
     dev_t = dev_y = 0.0
-    for name, (cam, _) in cams.items():
-        T = inv_ego @ np.array(cam.get_transform().get_matrix(), dtype=np.float64)
+    for name, actor in actors.items():
+        T = inv_ego @ np.array(actor.get_transform().get_matrix(), dtype=np.float64)
         spec = np.array(mounts[name], dtype=np.float64)
         dev_t = max(dev_t, float(np.linalg.norm(T[:3, 3] - spec)))
         pitch, yaw, roll = (math.radians(v) for v in rots[name])
@@ -467,6 +547,20 @@ def rig_mount_deviation(
         yaw = math.degrees(math.atan2(T[1, 0], T[0, 0]))
         dev_y = max(dev_y, abs((yaw - yaw_spec + 180.0) % 360.0 - 180.0))
     return dev_t, dev_y
+
+
+def rig_mount_deviation(
+    cams: dict[str, tuple[carla.Sensor, CameraIntrinsics]],
+    ego: carla.Vehicle,
+    rig: str = RIG_NUSCENES,
+) -> tuple[float, float]:
+    """实挂相机 vs **该 rig 规格** 的 (平移米, 偏航度) 最大偏差。**调用前必须 tick**。
+
+    薄封装:`rig_spec(rig)` 取规格后委托 `mount_deviation_of`(相机与雷达共用同一实现,
+    避免验收脚本里再抄一遍 `ego⁻¹·cam` 的矩阵顺序)。
+    """
+    mounts, rots = rig_spec(rig)
+    return mount_deviation_of({n: c for n, (c, _) in cams.items()}, ego, mounts, rots)
 
 
 def build_cameras(

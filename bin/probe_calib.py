@@ -98,6 +98,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata import calib_live as cl
 from autodrivedata import calib_probe as cp
+from autodrivedata import fonts
 from autodrivedata.accum import voxel_downsample
 from autodrivedata.calib import CameraIntrinsics
 from autodrivedata.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
@@ -547,7 +548,9 @@ def pass_a3(
             per_cam[name].append(s)
             img = image_to_pil(f["rgb"][name])
             draw_residuals(img, s)
-            ImageDraw.Draw(img).text((8, H - 16), f"{name} 采样 {len(s)}", fill=(255, 255, 0))
+            fonts.draw_text(
+                ImageDraw.Draw(img), (8, H - 18), f"{name} 采样 {len(s)}", size=15, fill=(255, 255, 0)
+            )
             if i == args.frames - 1:
                 row.append((name, img))
                 if len(row) == 2:

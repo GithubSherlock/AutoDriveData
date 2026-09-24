@@ -96,7 +96,6 @@ from typing import Any, cast
 import carla
 import numpy as np
 from carla_common import (
-    CAM_ATTRS,
     LIDAR_ATTRS,
     SENSOR_OFFSET,
     draw_traffic_lights,
@@ -128,6 +127,7 @@ from live_common import (
     maptr_predict,
     overlay_gt,
     resolve_rig,
+    rig_frame,
     rig_mount_deviation,
     start_server,
     surround_calibs,
@@ -363,17 +363,22 @@ def main() -> None:
 
     maptr = load_maptr(args.maptr_ckpt, args.maptr_device) if args.maptr_ckpt else None
     rig = resolve_rig(args.rig, args.maptr_ckpt)
-    calibs = surround_calibs(rig) if maptr else {}
     if maptr:
-        # 模型输入必须与**该权重**训练数据逐字段一致(1242×375 fov90 + 逐相机挂点)
-        # ⇒ rig 按训练口径挂,只在显示侧缩放(与 view_stream 同一条已验证路径)
-        print(f"[rig] {rig}(--rig {args.rig} → 权重 {args.maptr_ckpt})")
+        # 模型输入必须与**该权重**训练数据逐字段一致(画幅 + 逐通道 fov + 逐相机挂点)
+        # ⇒ rig 按训练口径挂,只在显示侧缩放(与 view_stream 同一条已验证路径)。
+        # 画幅取自 `rig_frame` 而不是 CAM_ATTRS —— 后者是本仓十余个 KITTI/P1 脚本的共用常量,
+        # 与 nuscenes rig 的 1600×900 无关(拿它推显示尺寸会静默按错画幅缩放)。
+        rig_w, rig_h, _ = rig_frame(rig)
         cams = build_surround_rig(world, ego, rig=rig)
-        disp_w = int(int(CAM_ATTRS["image_size_x"]) * args.maptr_scale)
-        disp_h = int(int(CAM_ATTRS["image_size_y"]) * args.maptr_scale)
+        disp_w = int(rig_w * args.maptr_scale)
+        disp_h = int(rig_h * args.maptr_scale)
     else:
+        rig_w, rig_h = args.width, args.height
         cams = build_surround_rig(world, ego, args.width, args.height, rig=rig)
         disp_w, disp_h = args.width, args.height
+    # 深度监看槽必须与**上面实际挂的那套 RGB** 逐像素对齐(画幅/挂点/内参三者任一不同即错位)
+    # ⇒ 传 rig_w/rig_h 而非 args.width/height(`--maptr` 时两者不同)。
+    calibs = surround_calibs(rig, rig_w, rig_h) if maptr else {}
     spectator, k_spec = build_spectator(world, None, args.width, args.height)
 
     queues: dict[str, queue.Queue] = {name: queue.Queue() for name in cams}
@@ -422,7 +427,7 @@ def main() -> None:
 
     # ---- 标定监看槽:深度相机 rig + 点云平面(与 RGB 槽**同分辨率/同挂点**) ----
     # 深度相机必须与 RGB 逐像素对齐:内参、挂点、分辨率三者任一不同,着色点就整体错位
-    # (`build_surround_rig` 的 `kind` 只换蓝图,其余全走同一份 `rig_spec`/`CAM_ATTRS`)。
+    # (`build_surround_rig` 的 `kind` 只换蓝图,画幅/挂点/内参全走同一份 `rig_spec`/`rig_frame`)。
     # LiDAR 复用 `--slam` 那台(语义蓝图带 intensity,这里只取前 3 列)⇒ 同开时不重复挂。
     # 点云用 `sensor.lidar.ray_cast`(非语义):语义帧每点 6 个 float32,本槽只关心几何。
     depth_cams: dict[str, tuple[carla.Sensor, Any]] = {}
@@ -438,7 +443,7 @@ def main() -> None:
     calib_series: list[dict] = []
     calib_rng = np.random.default_rng(0)
     if args.calib:
-        depth_cams = build_surround_rig(world, ego, args.width, args.height, rig=rig, kind="depth")
+        depth_cams = build_surround_rig(world, ego, rig_w, rig_h, rig=rig, kind="depth")
         for name, (cam, _) in depth_cams.items():
             q: queue.Queue = queue.Queue()
             cam.listen(q.put)

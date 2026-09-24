@@ -26,6 +26,7 @@ import numpy as np
 from carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 from PIL import Image, ImageDraw
 
+from autodrivedata import fonts
 from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, world_to_img
 from autodrivedata.paths import project_path
@@ -165,7 +166,7 @@ def draw_overlay(
         d.ellipse([x - 7, y - 7, x + 7, y + 7], outline=(255, 40, 40), width=3)
         d.line([x - 11, y, x + 11, y], fill=(255, 40, 40), width=2)
         d.line([x, y - 11, x, y + 11], fill=(255, 40, 40), width=2)
-        d.text((x + 10, y - 12), s.kind, fill=(255, 40, 40))
+        fonts.draw_text(d, (x + 10, y - 16), s.kind, size=14, fill=(255, 40, 40))
     return img
 
 

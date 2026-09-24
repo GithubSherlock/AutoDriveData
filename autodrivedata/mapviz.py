@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
+from autodrivedata import fonts
 from autodrivedata.calib import CameraIntrinsics, world_to_img
 
 PRED_COLOR = (255, 0, 255)  # 品红:路面场景罕见
@@ -269,5 +270,6 @@ def bev_panel(
             stats["n_traj_seg"] = n_seg
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline=(120, 120, 120))
     if title:
-        draw.text((4, 2), title, fill=(255, 255, 255))
+        # 走 fonts:直接 draw.text(...) 不给 font= 会用 PIL 内置位图字体(无中文字形)
+        fonts.draw_text(draw, (4, 2), title, size=15, fill=(255, 255, 255))
     return img

@@ -29,11 +29,11 @@ def _build_dataroot(tmp_path) -> None:
     samples = [
         ne.NusSample(
             ego_translation=(0.0, 0.0, 0.0),
-            ego_yaw_nus=0.0,
+            ego_rotation_nus=(1.0, 0.0, 0.0, 0.0),
             lidar_filename=f"samples/LIDAR_TOP/{i:06d}.bin",
             camera_filenames={c: f"samples/{c}/{i:06d}.png" for c in ne.NUS_CAMERAS},
-            calib_lidar=((1.2, 0.0, 1.65), 0.0),
-            calib_cameras={c: ((1.2, 0.0, 1.65), 0.0) for c in ne.NUS_CAMERAS},
+            calib_lidar=(ne.NUS_LIDAR_CALIB[0], ne.NUS_LIDAR_CALIB[1]),
+            calib_cameras={c: ((1.2, 0.0, 1.65), (1.0, 0.0, 0.0, 0.0)) for c in ne.NUS_CAMERAS},
             annotations=[
                 {
                     "category": "car",

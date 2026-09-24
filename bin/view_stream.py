@@ -40,7 +40,6 @@ import time
 import carla
 import numpy as np
 from carla_common import (
-    CAM_ATTRS,
     draw_traffic_lights,
     loc,
     rad,
@@ -64,6 +63,7 @@ from live_common import (
     maptr_predict,
     overlay_gt,
     resolve_rig,
+    rig_frame,
     rig_mount_deviation,
     start_server,
     surround_calibs,
@@ -160,12 +160,16 @@ def main() -> None:
 
     maptr = load_maptr(args.maptr_ckpt, args.maptr_device) if args.maptr_ckpt else None
     rig = resolve_rig(args.rig, args.maptr_ckpt)
-    calibs = surround_calibs(rig) if maptr else {}
+    calibs: dict[str, dict] = {}
     if maptr:
-        cams = build_surround_rig(world, ego, rig=rig)  # 1242×375 fov90 环视(与权重训练口径对齐)
-        print(f"[rig] {rig}(--rig {args.rig} → 权重 {args.maptr_ckpt})")
-        disp_w = int(int(CAM_ATTRS["image_size_x"]) * args.maptr_scale)
-        disp_h = int(int(CAM_ATTRS["image_size_y"]) * args.maptr_scale)
+        # rig 原生画幅(nuscenes = 1600×900,legacy = 1242×375)+ 逐通道 fov;显示侧只缩放
+        rig_w, rig_h = rig_frame(rig)[:2]
+        cams = build_surround_rig(world, ego, rig=rig)
+        # K 必须与上面挂的那套同画幅(corner 主点 ⇒ 画幅不同则 K 不同)
+        calibs = surround_calibs(rig, rig_w, rig_h)
+        print(f"[rig] {rig} @ {rig_w}×{rig_h}(--rig {args.rig} → 权重 {args.maptr_ckpt})")
+        disp_w = int(rig_w * args.maptr_scale)
+        disp_h = int(rig_h * args.maptr_scale)
     elif args.view == "grid6":
         # 纯显示环视:同一 rig 定义(只认 rig_spec 的两处),只降分辨率省带宽
         cams = build_surround_rig(world, ego, args.width, args.height, rig=rig)

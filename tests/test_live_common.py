@@ -32,7 +32,11 @@ if str(BIN) not in sys.path:  # bin/ 不是包(采集/可视化脚本),按脚本
     sys.path.insert(0, str(BIN))
 
 # `bin/` 不是包,静态分析跟不到上面那句运行时 `sys.path.insert` → 就地标注,不改全局 pyright 配置
-from live_common import compose_grid, compose_rows  # noqa: E402  # pyright: ignore[reportMissingImports]
+from live_common import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+    TILE_LABEL_BOTTOM,
+    compose_grid,
+    compose_rows,
+)
 
 # studio 真实的三层布局(与 `live_studio.GRID_ROWS` 同口径):相机 1242×375 / 第三方 640×360 / BEV 420×420
 CAM_W, CAM_H = 1242, 375
@@ -99,8 +103,12 @@ class TestComposeRowsNativePixels:
             for _, tile in row:
                 cell = np.asarray(img.crop((x, y, x + tile.width, y + tile.height)), float)
                 src = np.asarray(tile, float)
-                # 左上角标签会盖住几个像素 → 用"未覆盖区域完全相同"判等
-                assert np.array_equal(cell[20:, :], src[20:, :]), "格内容与源图不一致(被缩放/裁剪了)"
+                # 左上角标签会盖住几个像素 → 用"未覆盖区域完全相同"判等。
+                # 下沿取自 live_common.TILE_LABEL_BOTTOM(由字体实测得出),不写死魔数:
+                # 曾写死 20,后来角标换成含中文字形的真字体,墨迹下沿到 26 ⇒ 假失败。
+                assert np.array_equal(cell[TILE_LABEL_BOTTOM:, :], src[TILE_LABEL_BOTTOM:, :]), (
+                    "格内容与源图不一致(被缩放/裁剪了)"
+                )
                 x += tile.width
             y += max(t.height for _, t in row)
 

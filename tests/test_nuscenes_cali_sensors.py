@@ -571,11 +571,23 @@ class TestOfficialVsRepo:
         assert all(r.n_calib_for_channel == 1 for r in rows), "本仓只有一套标定"
         assert {v for r in rows for v in r.vehicles} == {"ad_ego@carla_town10"}
 
-    def test_repo_lidar_quat_is_identity(self):
-        """本仓写 LIDAR_TOP 四元数 = 单位(视线轴 = ego +x),官方是绕 z −90°。"""
+    def test_repo_lidar_quat_matches_official(self):
+        """本仓写 LIDAR_TOP 四元数 == 官方 n015 原值(含 1.4289° up 轴倾角)。
+
+        **本测试 2026-09-23 前测的是缺陷**(旧断言 `rotation == (1,0,0,0)`、`az_el == (0,0)`,
+        即"单位四元数 = 视线轴在 ego +x")。那不是本仓的选择而是 bug:`collect_nus.py` spawn
+        LiDAR 时**完全没设 rotation**,导出侧又写 `_quat(0.0)`。后果是 devkit 按"传感器系 =
+        ego 系"解释点云 ⇒ 整片点云绕 z 转 90°(`num_lidar_pts` 复现比值 1.0000 → 0.0854)。
+        现在两侧同源 `export.nuscenes.NUS_LIDAR_CALIB`,官方值 = 绕 z −89.879° + 1.4289° 倾角。
+        """
+        from autodrivedata.export.nuscenes import NUS_LIDAR_CALIB
+
         r = find_pose(self._repo_rows(), "LIDAR_TOP")
-        assert r.rotation == pytest.approx((1.0, 0.0, 0.0, 0.0), abs=1e-6)
-        assert r.az_el == pytest.approx((0.0, 0.0), abs=1e-6)
+        assert r.translation == pytest.approx(NUS_LIDAR_CALIB[0], abs=1e-9)
+        assert r.rotation == pytest.approx(NUS_LIDAR_CALIB[1], abs=1e-9)
+        assert r.rotation != pytest.approx((1.0, 0.0, 0.0, 0.0), abs=1e-3)  # 不是单位四元数
+        az, _ = r.az_el
+        assert az == pytest.approx(-89.879, abs=0.01)  # 与官方 n015 同(见 TestOfficialMini)
 
     def test_repo_camera_translations_match_official(self):
         """本仓相机平移抄自官方(逐字段一致);旋转亦然(见 export/nuscenes.NUS_CAMERA_CALIBS)。"""

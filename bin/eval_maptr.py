@@ -41,8 +41,14 @@ from autodrivedata.mapvec_schema import (
 )
 from autodrivedata.paths import project_path
 from maptr_impl.chamfer_gpu import chamfer_cost_matrix_cuda
-from maptr_impl.dataset import MAPTR_CLASSES, MapTRDataset
-from maptr_impl.model import MapTR
+from maptr_impl.dataset import (
+    MAPTR_CLASSES,
+    MapTRDataset,
+    parse_frame_range,
+    parse_segs,
+    select_frames,
+)
+from maptr_impl.model import MapTR, load_map_weights
 
 
 def _dump_preds(
@@ -100,10 +106,24 @@ def main() -> None:
     ap.add_argument("--root", required=True, help="图像根目录")
     ap.add_argument("--ckpt", required=True, help="train_maptr.py 输出的 state_dict")
     ap.add_argument("--frames", type=int, default=None, help="评估帧数(默认全部)")
-    ap.add_argument("--start", type=int, default=0, help="起始帧(留出集评估:训练 0..N-1,评估 --start N)")
+    ap.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="起始帧(在选择器过滤后的列表上;留出集评估:训练 0..N-1,评估 --start N)",
+    )
+    ap.add_argument("--seg", default=None, help="只评这些段(逗号分隔);路线级留出用")
+    ap.add_argument("--exclude-seg", default="", help="排除这些段(逗号分隔)")
+    ap.add_argument("--keep-in-seg", default=None, help="只评段内帧号区间 A:B(左闭右开);帧级留出用")
     ap.add_argument("--score-thr", type=float, default=0.2, help="实例得分阈值(sigmoid)")
     ap.add_argument("--sweep", default=None, help="逗号分隔阈值列表,单次推理出扫描表(如 0.1,0.2,0.3,0.4)")
     ap.add_argument("--match", choices=("auto", "cpu", "gpu"), default="auto", help="代价矩阵后端(默认 auto)")
+    ap.add_argument(
+        "--temporal-window",
+        type=int,
+        default=1,
+        help="时序窗口 K:必须与训练时一致(1 = 单帧);K>1 时每样本取本帧 + 前 K−1 帧",
+    )
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用;GPU 被占用时可 --device cpu)")
     ap.add_argument("--out-pred", default=None, help="预测落盘基路径:写 <path>.json + <path>.png(BEV 目检)")
     ap.add_argument(
@@ -127,15 +147,25 @@ def main() -> None:
 
     dev = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     infos = json.loads(Path(args.infos).read_text(encoding="utf-8"))
-    n = min(args.frames or len(infos), len(infos))
-    frames = list(range(args.start, min(args.start + n, len(infos))))
-    ds = MapTRDataset(infos, args.root, frames=frames)
-    print(f"[data] {len(frames)} 帧 × {len(ds.cam_names)} 相机")
+    # 段/帧号选择器先过滤,--start / --frames 再在**过滤后的列表上**截 ——
+    # 与 train_maptr 共用 select_frames,保证"训练排除了哪一段"与"评测只评哪一段"
+    # 是同一份划分逻辑(两处各写一遍必然漂移,而这是 AP 结论有效性的前提)
+    sel = select_frames(
+        infos, parse_segs(args.seg), parse_segs(args.exclude_seg) or (), parse_frame_range(args.keep_in_seg)
+    )
+    if not sel:
+        raise SystemExit("筛选后没有任何帧 —— 检查 --seg / --exclude-seg / --keep-in-seg")
+    n = min(args.frames or len(sel), len(sel))
+    frames = sel[args.start : args.start + n]
+    ds = MapTRDataset(infos, args.root, frames=frames, window=args.temporal_window)
+    if ds.dropped:
+        print(f"[data] 窗口 {args.temporal_window} 丢弃 {len(ds.dropped)} 帧(前驱不在本切分内)")
+    print(f"[data] {len(ds)} 帧 × {len(ds.cam_names)} 相机")
 
-    model = MapTR().to(dev)
-    model.load_state_dict(torch.load(args.ckpt, map_location=dev))
+    model = MapTR(temporal_window=args.temporal_window).to(dev)
+    load_map_weights(model, args.ckpt, dev)
     model.eval()
-    print(f"[model] {args.ckpt} 载入完成")
+    print(f"[model] {args.ckpt} 载入完成(窗口 {args.temporal_window})")
 
     sweep = [float(x) for x in args.sweep.split(",")] if args.sweep else []
     floor = min([args.score_thr, *sweep])  # 单次推理收全部 >floor 的实例,阈值纯后处理
@@ -145,8 +175,13 @@ def main() -> None:
     n_frame_files = oow_pred = oow_gt = 0
     with torch.no_grad():
         for i, item in enumerate(ds):
-            images = {n: t[None].to(dev) for n, t in item["images"].items()}
-            out, _ = model(images, item["pose"][None].to(dev), ds.calibs)
+            if isinstance(item["images"], list):  # 时序:旧 → 新的 K 帧
+                images = [{n: t[None].to(dev) for n, t in f.items()} for f in item["images"]]
+                pose = item["poses"][None].to(dev)
+            else:
+                images = {n: t[None].to(dev) for n, t in item["images"].items()}
+                pose = item["pose"][None].to(dev)
+            out, _ = model(images, pose, ds.calibs)
             logits = out["pred_logits"][0].float()  # (Nq, C+1)
             pts = out["pred_points"][0].float().cpu().numpy()  # (Nq, P, 2)
             scores = torch.sigmoid(logits).cpu().numpy()
@@ -158,10 +193,10 @@ def main() -> None:
                 inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
                 gts_by_class[c].extend(item["gt"][c])
                 if args.out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
-                    sel = sc_c > args.score_thr
+                    at_thr = sc_c > args.score_thr  # 勿叫 sel:外层 sel 是帧下标列表
                     frame_preds.extend(
                         make_instance(MAPTR_CLASSES[c], p, s)
-                        for s, p in zip(sc_c[sel].tolist(), pts[idx][sel], strict=True)
+                        for s, p in zip(sc_c[at_thr].tolist(), pts[idx][at_thr], strict=True)
                     )
             if args.out_frames:
                 info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
