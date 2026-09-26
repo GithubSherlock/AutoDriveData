@@ -39,7 +39,7 @@ EGO_HALF_WID = 0.8943
 # actor 的原点是车身长度中点,故俯视图上必须画出来:否则"挂点为什么在这儿"看不出来。
 ORIGIN_COLOR = (205, 55, 150)
 
-# 逐通道画色(与 `bin/viz_calib_check.CAM_COLOR` 同族:前后左右各一色,一眼分得开)
+# 逐通道画色(与 `autodrivedata.calib.viz_calib_check.CAM_COLOR` 同族:前后左右各一色,一眼分得开)
 CAM_COLOR: dict[str, tuple[int, int, int]] = {
     "CAM_FRONT": (0, 90, 200),
     "CAM_FRONT_LEFT": (0, 160, 110),

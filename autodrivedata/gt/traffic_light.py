@@ -10,7 +10,7 @@
   → `affected_lanes`(路口内管制车道)+ `stop_lanes`(停车线所在车道)。
 
 本模块**纯值、不 import carla**(包纪律:两 env 可单测);采集侧
-(bin/carla_common.traffic_light_frame)负责把 carla API 对象归一成本模块值对象。
+(autodrivedata.sim.carla_common.traffic_light_frame)负责把 carla API 对象归一成本模块值对象。
 落盘:KITTI root 扩展 `training/traffic_light/{fid}.json`。
 
 几何口径:`location` = **灯头**位置(actor 锚点 + 4.5m,投影/可视口径;

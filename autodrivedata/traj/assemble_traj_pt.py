@@ -15,7 +15,7 @@
 带 STEPS 间隔则生成 (n-50)//steps 个场景(去重叠)。
 
 用法:
-  python bin/assemble_traj_pt.py \
+  python -m autodrivedata.traj.assemble_traj_pt \
       --traj outputs/traj_town13/traj.json \
       --map-json training/map/Town13_full.json \
       --map Town13 \

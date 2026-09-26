@@ -16,7 +16,7 @@
 
 用法(必须先建好 gsplat 扩展,见 CLAUDE.md 环境注意):
   CUDA_HOME=/usr/local/cuda-11.8 TORCH_CUDA_ARCH_LIST=8.9 \
-    python bin/train_3dgs_mini.py [--iters 1500] [--tag ep1500] [--scale 0.05]
+    python -m autodrivedata.gs.train_3dgs_mini [--iters 1500] [--tag ep1500] [--scale 0.05]
 
 环境注意:gsplat 通过 torch JIT 一次性编译(sm_89 本机缓存)。每次进程启动时
 TORCH_CUDA_ARCH_LIST 必须与本机 arch 一致,否则 import 即抛 ValueError。

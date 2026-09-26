@@ -36,7 +36,7 @@
 
 ## 深度语义(光轴 z vs 射线距离)
 
-`bin/train_3dgs_mini.py:122` 把解码值**直接当相机系 z 用**,但那是**作者假设**不是证据
+`autodrivedata/gs/train_3dgs_mini.py:122` 把解码值**直接当相机系 z 用**,但那是**作者假设**不是证据
 (3DGS 从错误深度初始化也会收敛)。该语义是一阶效应:图像角落离轴角
 `atan(√(620²+186.5²)/621) ≈ 46.2°`,若是射线距离则 `D/z − 1 = sec θ − 1 = 0.444`
 (20 m 处 8.9 m)—— 在这种系统误差上做 cx 扫描是纯垃圾。故本模块另给 `depth_model_ratio`
@@ -247,7 +247,7 @@ def backproject_depth(
 ) -> np.ndarray:
     """图像坐标 (N,2) → 世界系点 (N,3):在 uv 处采深度、按光轴 z 语义反投影。
 
-    `bin/train_3dgs_mini.py:122` 的同一条链(`cam = ((u−cx)·z/f, (v−cy)·z/f, z)`),
+    `autodrivedata/gs/train_3dgs_mini.py:122` 的同一条链(`cam = ((u−cx)·z/f, (v−cy)·z/f, z)`),
     此处只是把它挪进纯值层并复用 `sample_bilinear_many` 的采样口径。有效值不足的点
     落在 NaN 上(调用方自行过滤)。
     """

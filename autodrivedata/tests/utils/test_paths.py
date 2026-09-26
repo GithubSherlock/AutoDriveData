@@ -73,7 +73,7 @@ class TestWeightPaths:
     _WEIGHT_ROOTS = ("", "models", "outputs/models")
 
     def _pt_literals(self):
-        """扫 bin/ 与 autodrivedata/ 下所有 project_path("*.pt") 字面量 → (源文件, 相对路径)。"""
+        """扫 `bin/`(迁移期遗留)与 `autodrivedata/` 下所有 project_path("*.pt") 字面量。"""
         for base in ("bin", "autodrivedata"):
             for src in sorted((paths.PROJECT_ROOT / base).rglob("*.py")):
                 if "__pycache__" in src.parts:

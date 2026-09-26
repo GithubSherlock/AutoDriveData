@@ -5,7 +5,7 @@
 本脚本只持续 `apply_control`(控制命令在下次 tick 生效),两者无冲突。
 ego 识别 = 挂着相机的车(cams 全部 attach_to=ego)。
 
-键盘映射与控制状态机在 `bin/live_common.KeyboardState`(两处共用一个实现,勿另立):
+键盘映射与控制状态机在 `autodrivedata.sim.live_common.KeyboardState`(两处共用一个实现,勿另立):
   w/s 油门 0.8 / 刹车 0.8 · a/d 转向 ∓0.45 · x 滑行 · 空格 手刹急停 · q 退出
 
 用法(与 view_stream 并行,另开一个服务器终端):

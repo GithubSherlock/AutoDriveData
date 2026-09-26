@@ -15,7 +15,7 @@ CARLA 的 BGRA 布局里 `arr[:, :, 0]` 是 **B**(高位,×65536)、`[:, :, 1]` 
 ⚠️ 两处旧注释都写错了(`autodrivedata/sim/collect_stereo.py:39` 写 `B + G·256 + R·256²`,
 其行 13 又写 `/255`),而**代码是对的**;本模块以代码 + 上述实测锚点为准。
 
-**深度语义 = 光轴 z 深度**(不是射线距离):`bin/train_3dgs_mini.py:122` 反投影时把
+**深度语义 = 光轴 z 深度**(不是射线距离):`autodrivedata/gs/train_3dgs_mini.py:122` 反投影时把
 解码值**直接当相机系 z 用**(`cam_pts = [(px−W/2)·zv/f, (py−H/2)·zv/f, zv]`)。
 ⚠️ 该结论**尚未由本仓的独立探针复核**:此前注释引用的 `bin/probe_depth_semantics.py`
 **并不存在于磁盘**(文档与代码不一致,已如实更正)。若要钉死,判据应是

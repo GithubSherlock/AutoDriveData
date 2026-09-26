@@ -11,6 +11,9 @@
 > - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
 >   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
 >   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
+> - **`autodrivedata/traj/`** —— 轨迹层(2 模块)、**`autodrivedata/gs/`** —— 3DGS 层(1 模块)。
+> - **★ `bin/` 与 `tests/` 两个顶层目录已消失**。`bin/` 最后 3 个文件迁走后删除;
+>   `tests/` 自阶段 7 起为空,同期删除。**全部可执行入口现在是 `python -m autodrivedata.<能力>.<模块>`**。
 > - **`autodrivedata/gt/`** —— GT 层(4 模块 + `export/` 子包),测试在 `autodrivedata/tests/gt/`。
 >   **`gt.py` 已改名 `gt/core.py`**;`export/` 从包根**移入** `gt/`(故
 >   `from autodrivedata.export import ...` → **`from autodrivedata.gt.export import ...`**)。

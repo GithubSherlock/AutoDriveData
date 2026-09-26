@@ -19,7 +19,7 @@ TemporalData(Data 子类,__inc__ 触发图感知 collate)。本脚本把既有 p
 
 用法(hivt env,无 GPU):
   CUDA_VISIBLE_DEVICES="" /root/autodl-tmp/envs/hivt/bin/python \
-      bin/convert_hivt_pt.py outputs/hivt_carla/train outputs/hivt_carla/val
+      autodrivedata/traj/convert_hivt_pt.py outputs/hivt_carla/train outputs/hivt_carla/val
 """
 
 from __future__ import annotations

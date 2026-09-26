@@ -60,7 +60,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 |---|---|---|
 | **autodrivedata**(本项目) | 3.11.16 | pycarla + ultralytics;采集 `bin/collect_*.py`、2D 评估 eval_2d_ab.py、3D 比对 eval_kitti.py、全部单测 |
 | **autolabel** `/root/miniconda3/envs/autolabel` | 3.11.15 | mmdet3d;3D 检测 `auto3dlabel run`、oracle 对比 |
-| **hivt** `/root/autodl-tmp/envs/hivt` | 3.8.20 | HiVT 复现栈(torch1.8.0 / pl1.5.2 / pyg1.7.2 / argoverse-api),CPU 推理。**未注册进 conda envs_dirs** → `conda info --envs` 看不到、`activate hivt` 失败,**只能用绝对路径调** `envs/hivt/bin/python`(见 [bin/convert_hivt_pt.py](bin/convert_hivt_pt.py) 用法头)。数据盘 2.5 G,勿删 |
+| **hivt** `/root/autodl-tmp/envs/hivt` | 3.8.20 | HiVT 复现栈(torch1.8.0 / pl1.5.2 / pyg1.7.2 / argoverse-api),CPU 推理。**未注册进 conda envs_dirs** → `conda info --envs` 看不到、`activate hivt` 失败,**只能用绝对路径调** `envs/hivt/bin/python`(见 [autodrivedata/traj/convert_hivt_pt.py](autodrivedata/traj/convert_hivt_pt.py) 用法头)。数据盘 2.5 G,勿删 |
 | **base** | 3.10.8 | conda 底座 + direnv;pycarla/ultralytics 已于 2026-09-10 迁出,不承担项目职责 |
 | ~~**maptr_official**~~ **已删**(2026-09-13 建 → 2026-09-14 终止,env 于 **2026-09-19 补删**,§5.12) | ~~3.8~~ | 官方 MapTR/MapQR 老栈(torch1.9.1+cu111 / mmcv-full1.4.0 / mmdet2.14.0)。**用户裁决整条官方复线中止**(41 h 训练预算仍过长)→ env 与产物已删、回收 15 G。**重建设路子**:`bin/setup_maptr_official.sh all` + Plan.md §5.12(含四个钉子/两处 bug/独立评测四坑/A′ 口径结论,知识都留在文档里) |
 

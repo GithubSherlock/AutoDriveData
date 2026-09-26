@@ -473,6 +473,30 @@ URL 带来的流名经 `html.escape` 再进 HTML。
    去改 `test_fonts.py`,又把已经改好的形式写回了旧的(规则不会再跑第二遍)。
    ⇒ **教训:替换脚本跑完之后的手工编辑,必须按新口径写;改完要再扫一次残留。**
 
+#### ★ 阶段 8 执行记录(已完成 2026-09-26)——**搬迁期结束**
+
+**搬迁**:`assemble_traj_pt.py` / `convert_hivt_pt.py` → `autodrivedata/traj/`;
+`train_3dgs_mini.py` → `autodrivedata/gs/`。
+
+**★ 结构性里程碑:`bin/` 与 `tests/` 两个顶层目录消失。**
+`bin/` 的最后 3 个文件迁走后已删;`tests/` 自阶段 7 起就空了,同期删除。
+顶层从「6 个源码目录 + 2 个散落目录」收敛为:**`autodrivedata/` 一个主包**
+(+ `tools/` 开放性工具、`docs/` 文档、`outputs/` 产物、`hdMapGitHub/` 上游)。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`,**0 失败**;ruff 干净。
+
+**发现**:
+
+1. **形态 11(`包/模块.属性` 散文写法)在源码里还有 4 处**,阶段 7 只清了文档里的:
+   `drive_ego.py`(`bin/live_common.KeyboardState`)、`rigviz.py`、`live_slam.py`、`traffic_light.py`。
+   它们的共性是**没有 `.py` 后缀**,所以正则 `bin/<m>.py` 抓不到。
+   ⇒ 已补扫 `bin/<模块>.<属性>` 这一形态。**后续任何搬迁都要连同这一形态一起扫。**
+2. `convert_hivt_pt.py` 的 `sys.path.insert(0, ".../hdMapGitHub/HiVT")` 是**绝对路径**,
+   移位后不受影响(实测复核)——**位置表达式要逐个判断"它算的是谁的位置"**,不能一律当成会断。
+
+**阶段 0–8 合计**:搬迁 **~150 个文件**、重写 **~600 行引用**、涉及 **11 类引用形态**;
+全程 `ruff` 干净、**收集项从 895 稳定推到 913 后一条未丢**、每阶段全量跑通。
+
 #### ★ 阶段 6 执行记录(已完成 2026-09-26)
 
 **搬迁**:**17** 模块 → `autodrivedata/perception/` + 9 测试 → `autodrivedata/tests/perception/`;

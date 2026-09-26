@@ -9,8 +9,8 @@
 **交付**:CARLA 轨迹 → HiVT(TemporalData)训练管线闭环,含 3D 赛道记录。
 
 - 采集:`autodrivedata/sim/collect_traj.py`(定速重发修复后)Town10 与 Town13 运动轨迹
-- 组装:`bin/assemble_traj_pt.py`(xodr centerline lane 切段,滑动窗口 50 帧)
-- 转换:`bin/convert_hivt_pt.py`(plain dict → TemporalData,全排列 edge_index + agent 朝向)
+- 组装:`autodrivedata/traj/assemble_traj_pt.py`(xodr centerline lane 切段,滑动窗口 50 帧)
+- 转换:`autodrivedata/traj/convert_hivt_pt.py`(plain dict → TemporalData,全排列 edge_index + agent 朝向)
 - 训练:HiVT-64,CPU(100 epoch)
 - 评估:minADE / minFDE / minMR K=6,与 Plan2.md §9.1 Argoverse 复现同工具链
 
@@ -128,7 +128,7 @@
 ## ✅ 3DGS 重建(教程 16,降档链路验证)
 
 **交付**:`autodrivedata/sim/collect_3dgs.py`(静态场景 360° 环绕采集,spectator 归位修复)+
-`bin/train_3dgs_mini.py`(gsplat mini 训练)。
+`autodrivedata/gs/train_3dgs_mini.py`(gsplat mini 训练)。
 
 - 采集:90 相机环绕(半径 6m)spawn 120 十字路口,RGB + 真值深度
 - 初始化:真值深度网格反投影 ~40k 点;位姿用 CARLA 真值(定位降级:pycolmap SfM

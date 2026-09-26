@@ -57,7 +57,7 @@ __all__ = ["LiveSlam", "SlamWorker", "ego_from_lidar0", "relative_transform"]
 
 
 def relative_transform(Ta: np.ndarray, Tb: np.ndarray) -> np.ndarray:
-    """T_ab = Ta⁻¹·Tb(链式 Δ 用;与 `bin/slam_odometry.relative_transform` 同式)。"""
+    """T_ab = Ta⁻¹·Tb(链式 Δ 用;与 `autodrivedata.slam.slam_odometry.relative_transform` 同式)。"""
     return np.linalg.inv(Ta) @ Tb
 
 
