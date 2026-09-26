@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import html
 import io
 import math
 import queue
@@ -349,7 +350,12 @@ def start_server(slots: dict[str, FrameSlot], port: int, host: str = "127.0.0.1"
             name = self.path[len("/stream/") :] if self.path.startswith("/stream/") else None
             slot = slots.get(name) if name else None
             if slot is None:
-                self.send_error(404, f"未知流;可选:{', '.join(slots)}")
+                # ⚠️ 中文只能进 `explain`(**body**,UTF-8),**绝不能进 `message`** ——
+                # 后者会被 `send_response` 拼进 HTTP **状态行**,而 `http.server` 用
+                # **latin-1** 编码状态行 ⇒ `UnicodeEncodeError` 抛在请求线程里,
+                # 客户端收到的是「连接被重置」而不是 404(实测:curl 得 0 字节)。
+                # `name` 来自 URL,进 HTML 前必须转义。
+                self.send_error(404, explain=f"未知流 {html.escape(name or '')!r};可选: {', '.join(slots)}")
                 return
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")

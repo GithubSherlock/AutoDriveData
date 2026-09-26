@@ -18,6 +18,9 @@ FoV 缩小得都看不到地面了"。数值判据(当时实测):拼图格与「
 from __future__ import annotations
 
 import math
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 import numpy as np
 import pytest
@@ -28,8 +31,10 @@ pytest.importorskip("carla")
 # 搬进包后不再需要 sys.path hack(这正是「tests/ 与 bin/ 必须一起搬」买到的东西)
 from autodrivedata.sim.live_common import (  # noqa: E402
     TILE_LABEL_BOTTOM,
+    FrameSlot,
     compose_grid,
     compose_rows,
+    start_server,
 )
 
 # studio 真实的三层布局(与 `live_studio.GRID_ROWS` 同口径):相机 1242×375 / 第三方 640×360 / BEV 420×420
@@ -362,3 +367,41 @@ class TestDrawHudSecondLine:
         lc.draw_hud(a, "x")
         lc.draw_hud(b, "x", warn=True)
         assert not np.array_equal(np.asarray(a), np.asarray(b))
+
+
+class TestUnknownStreamIs404NotACrash:
+    """回归:未知流名曾把**请求线程搞崩**,客户端拿到「连接被重置」而不是 404。
+
+    `send_error(code, message)` 的 `message` 会被 `send_response` 拼进 HTTP **状态行**,
+    而 `http.server` 用 **latin-1** 编码状态行 ⇒ 中文抛 `UnicodeEncodeError` 在请求线程里,
+    实测 curl 得 **0 字节**(而非 404 页面)。修法:中文走 `explain`(进 **body**,UTF-8)。
+    """
+
+    @staticmethod
+    def _serve() -> tuple[ThreadingHTTPServer, int]:
+        srv = start_server({"main": FrameSlot()}, port=0)  # port=0 ⇒ OS 分配,免撞端口
+        return srv, srv.server_address[1]
+
+    def test_unknown_slot_gets_404_with_chinese_body(self):
+        srv, port = self._serve()
+        try:
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/stream/nope", timeout=5)
+            assert ei.value.code == 404, "必须是 HTTP 404 —— 连接被重置说明状态行又炸了"
+            body = ei.value.read().decode("utf-8")
+            assert "未知流" in body, "中文说明应在 body(状态行只能放 ASCII)"
+            assert "main" in body, "报错应顺带列出可选流名,否则用户还得去翻代码"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_known_paths_still_work(self):
+        """反向:修 404 不该顺手把正常路径弄坏。"""
+        srv, port = self._serve()
+        try:
+            resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5)
+            assert resp.status == 200
+            assert b"/stream/main" in resp.read(), "索引页应列出该路流"
+        finally:
+            srv.shutdown()
+            srv.server_close()

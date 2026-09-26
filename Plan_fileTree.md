@@ -234,7 +234,8 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 > | 阶段 0 末 | 899 | +4:权重路径 / gitignore 三条 / PROJECT_ROOT / 相对 sys.path 的回归钉 |
 > | 阶段 1 末 | 910 | −1 摘旧守卫;+12 新层守卫(10 条自证 + 2 条包级) |
 > | **阶段 2 末** | **911** | +1:守卫「子目录须显式声明」判据缺陷的回归钉(见下) |
-> | 阶段 3–8 | 应恒为 **911** | 搬迁**不得**增删用例;变了就是丢了或重复收集 |
+> | **`send_error` 修复** | **913** | +2:未知流回 404 的回归钉(独立 commit,见阶段 2 记录末尾) |
+> | 阶段 3–8 | 应恒为 **913** | 搬迁**不得**增删用例;变了就是丢了或重复收集 |
 >
 > 3 个模块级跳过(`auto3dlabel.schema` 缺失)全程不变。
 >
@@ -327,11 +328,25 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
    搬进包后导入可解析,签名才可见。**同范围对比:42 → 49,增量全在 `reportArgumentType`(7→14),其余类型数量不变**
    ⇒ **净增 0 条真实错误**。
 
-**顺带发现一条预存缺陷(非本次引入)**:`live_common.py:352` 的
-`self.send_error(404, f"未知流;可选:{', '.join(slots)}")` 会把中文塞进 HTTP **状态行**,
-而 `http.server` 用 **latin-1** 编码状态行 ⇒ `UnicodeEncodeError`,请求线程崩、客户端收到 0 字节而非 404。
-`git show HEAD:bin/live_common.py` 确认搬迁前就是这样。**修法**:`send_error(404, "Unknown stream")` +
-中文改放 body。**未在本阶段修** —— 它不属于「搬迁」,按 §4.0「一个阶段一个关注点」应独立成 commit。
+#### 附带修掉一条预存缺陷(独立 commit,非本阶段)
+
+**症状**:`autodrivedata/sim/live_common.py` 的未知流分支
+`self.send_error(404, f"未知流;可选:{', '.join(slots)}")` 把中文塞进 HTTP **状态行**,
+而 `http.server` 用 **latin-1** 编码状态行 ⇒ `UnicodeEncodeError` 抛在请求线程里,
+客户端拿到的是**连接被重置**(实测 curl 0 字节)而**不是 404**。
+`git show HEAD:bin/live_common.py` 确认**搬迁前就是这样**,非本次引入。
+
+**修法**:中文改走 `send_error` 的 `explain` 参数(进 **body**,UTF-8 编码);
+URL 带来的流名经 `html.escape` 再进 HTML。
+
+**回归钉**:`TestUnknownStreamIs404NotACrash`(2 条)——
+① 请求不存在的槽名必须得 **HTTP 404 且 body 含中文与可选列表**,不是 `RemoteDisconnected`;
+② 反向:正常路径(索引页)不受影响。
+**已做反向自证**:临时还原修复前写法 ⇒ 测试红,报错正是
+`http.client.RemoteDisconnected` + `UnicodeEncodeError: 'latin-1' ... position 13-15`。
+
+> **注**:本条不属于「搬迁」,按 §4.0「一个阶段一个关注点」独立成 commit(阶段 2 已先提交,
+> 否则两者混在一起会让 `git revert` 阶段 2 时连带打掉这个修复)。
 
 ### 阶段 3..9 — 其余子树,每个一棵一 commit
 
