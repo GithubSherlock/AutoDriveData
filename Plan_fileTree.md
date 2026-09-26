@@ -394,7 +394,48 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 把**已经改好的** `from autodrivedata.calib import viz_rig_check` 二次替换成
 `from autodrivedata.calib from autodrivedata.calib import ...`(语法错)。**替换必须带幂等护栏**。
 
-### 阶段 9 — 文档同步 + 打包收口(不可省)
+#### ★ 阶段 4 执行记录(已完成 2026-09-26)——**全重构最大的一块**
+
+**搬迁**:29 模块 → `autodrivedata/map/`(`maptr_impl/`→`map/maptr/`、`maptr_official/`→`map/maptr_official/`
+**整包搬**,含 2 个官方栈编排脚本)+ 11 测试 → `autodrivedata/tests/map/`。
+引用重写 **约 200 行 / 40+ 文件**(含补扫阶段 2/3 的遗留)。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`(另 3 条模块级跳过),**0 失败**;ruff 干净。
+
+**★ 六个发现,其中三个是「必须先把含义数清楚」类的**:
+
+1. **`maptr_official` 在本仓有【三种含义】,盲替换会毁掉两种。** 实测:包引用 6 处、
+   **输出目录 `outputs/maptr_official/` 26 处**、**conda env 名 `/root/.../envs/maptr_official` 3 处**。
+   只有前者该改。**做法**:先分类计数,再用**逐条规则**(而非全局替换),改完用 `git diff | grep`
+   确认后两类**零改动**(实测 26/3 与 HEAD 逐字一致)。
+2. **幂等护栏失效一次**(`maptr_v1_carla.py:10` 出双前缀)。根因:护栏只检查**原始行**,
+   而同一行内规则 A 的输出恰含规则 B 的输入 ⇒ 二次命中。
+   **修法**:改为**前进式护栏**(每次替换前查匹配处的前缀是否已是新口径)。
+3. **shell 的深度陷阱(与 `parents[N]` 同族)**:`assemble_and_merge.sh` / `finalize_maptr_600.sh` 的
+   `cd "$(dirname "$0")/.."` 在 `bin/` 下是一级,搬到 `autodrivedata/map/` 后变两级 ⇒
+   **会 cd 到 `autodrivedata/` 而不是仓库根**。已改 `../..`。
+   ⇒ **搬迁清单必须包含「算自己位置的 shell 表达式」**,不只是 import 与路径字符串。
+4. **阶段 2/3 的 `.md` 引用没扫**(当时只扫 `.py`/`.sh`):CLAUDE.md / README / Plan2 / milestone2 里
+   一批命令与反引号路径仍是旧的。本次做了**全仓一次到位**的扫描(83 行 / 30 文件),
+   排除 `Plan.md`(冻结)与 `docs/testLog.md`(历史日志)。
+5. **测试的惰性 import 逃过 collection 检查**:`test_maptr_select.py` 在**方法体内** `import train_maptr`,
+   所以 `--collect-only` 计数正常、**跑起来才 `ModuleNotFoundError`**。
+   ⇒ **计数对账抓不到这类**,必须真跑全量(本次正是全量跑出来的)。
+6. **`ruff check` 抓到了我漏的一整类**:`from autodrivedata.opendrive import` 等 5 个
+   「从 `autodrivedata/` 根迁入 `map/`」的模块引用(35 处)。**ruff 是这次的重要安全网。**
+
+> **★ 给后续阶段的搬迁清单(把三次教训合并成一张表,照它扫一遍再动手)**:
+>
+> | # | 形态 | 三次各自的实例 |
+> |---|---|---|
+> | 1 | `import X` / `from X import` / `import X as Y` | 阶段 2 漏 `import live_studio` |
+> | 2 | `from <包> import X` / `from <包> import X as Y` | 阶段 3 漏 11 处 |
+> | 3 | `from autodrivedata.<m> import`(模块换家) | 阶段 4 漏 35 处(ruff 抓到的) |
+> | 4 | **路径字符串**(反引号散文 / docstring 用法示例 / shell) | 阶段 4 补扫 |
+> | 5 | **硬编码源码路径常量**(测试按路径读源码) | 阶段 3 的 `DRAWING_MODULES` |
+> | 6 | **算自己位置的表达式**(`Path(__file__).parents[N]` / `cd "$(dirname "$0")/.."`) | 阶段 3 + 阶段 4 |
+> | 7 | **方法体内的惰性 import**(逃过 `--collect-only`) | 阶段 4 |
+> | 8 | **同名多义**(包名 / 输出目录 / env 名) | 阶段 4 的 `maptr_official` |
 
 约 1000 个引用点中,**绝大多数是文档**。它们**不会报错**。
 

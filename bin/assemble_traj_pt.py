@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from autodrivedata.opendrive import parse_xodr
+from autodrivedata.map.opendrive import parse_xodr
 
 TOTAL_STEPS = 50  # HiVT 时间步:20 历史 + 30 未来
 HISTORY = 20
@@ -76,7 +76,7 @@ def load_map_centerlines(map_name: str) -> list[np.ndarray]:
 
 
 def road_to_xy_ego(road, lane, s):
-    from autodrivedata.opendrive import lane_centerline_t, road_to_xy
+    from autodrivedata.map.opendrive import lane_centerline_t, road_to_xy
 
     return road_to_xy(road, s, lane_centerline_t(road, s, lane.id))
 

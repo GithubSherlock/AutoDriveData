@@ -19,8 +19,8 @@
 外加"外参与权重训练数据逐字段一致"的布尔核对 —— **"数字变了"不是回归**。
 
 用法(需 CARLA 服务器 + outputs/maptr_*.pt):
-  PYTHONPATH=$PWD python bin/probe_rig_mount.py                       # ep512 + maptr_600 各测一轮
-  PYTHONPATH=$PWD python bin/probe_rig_mount.py --ckpt outputs/maptr_600.pt
+  python -m autodrivedata.calib.probe_rig_mount                       # ep512 + maptr_600 各测一轮
+  python -m autodrivedata.calib.probe_rig_mount --ckpt outputs/maptr_600.pt
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import numpy as np
 from PIL import ImageDraw
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.mapviz import PRED_COLOR, draw_projected_lines
+from autodrivedata.map.mapviz import PRED_COLOR, draw_projected_lines
 from autodrivedata.sim.carla_common import loc, rad, spawn_ego, sync_mode
 from autodrivedata.sim.live_common import (
     RIG_LEGACY,

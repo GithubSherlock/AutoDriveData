@@ -101,7 +101,7 @@ from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import calib_probe
 from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.live_slam import LiveSlam, SlamWorker
-from autodrivedata.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
+from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
 from autodrivedata.paths import project_path
 from autodrivedata.semantic import semantic_to_velodyne_bin
 from autodrivedata.sim.carla_common import (

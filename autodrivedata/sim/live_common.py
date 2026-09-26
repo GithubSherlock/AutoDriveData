@@ -61,13 +61,13 @@ from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
-from autodrivedata.mapviz import calib_from_fov
+from autodrivedata.map.mapviz import calib_from_fov
 from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
 
 if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --maptr 路径真需要
     import torch
 
-    from maptr_impl.model import MapTR
+    from autodrivedata.map.maptr.model import MapTR
 
 # ---------------------------------------------------------------- rig 口径表
 
@@ -704,14 +704,14 @@ def _rotation_from_matrix(R: np.ndarray) -> np.ndarray:
 
 
 def load_maptr(ckpt: str, device: str | None = None) -> tuple[MapTR, torch.device]:
-    """MapTR state_dict → eval 模式(与 `bin/eval_maptr.py` 同口径:num_vec/预处理都不改)。
+    """MapTR state_dict → eval 模式(与 `autodrivedata/map/eval_maptr.py` 同口径:num_vec/预处理都不改)。
 
     `torch`/`maptr_impl` 在此**延迟 import**:`live_common` 被 `drive_ego.py` 这类
     不用模型的路径 import,模块级拉 torch 会白等数秒。
     """
     import torch
 
-    from maptr_impl.model import MapTR
+    from autodrivedata.map.maptr.model import MapTR
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model = MapTR().to(dev)
@@ -729,11 +729,11 @@ def maptr_predict(
     calibs: dict,
     thr: float,
 ) -> list[list[np.ndarray]]:
-    """单帧 6 路环视 → 逐类预测折线(ego 系)。解码口径与 `bin/eval_maptr.py` 逐行一致。"""
+    """单帧 6 路环视 → 逐类预测折线(ego 系)。解码口径与 `autodrivedata/map/eval_maptr.py` 逐行一致。"""
     import torch
     from torchvision.transforms.functional import normalize, to_tensor
 
-    from maptr_impl.dataset import IMAGENET_MEAN, IMAGENET_STD
+    from autodrivedata.map.maptr.dataset import IMAGENET_MEAN, IMAGENET_STD
 
     imgs = {n: normalize(to_tensor(t), IMAGENET_MEAN, IMAGENET_STD)[None].to(dev) for n, t in images.items()}
     pose = torch.tensor([ego_g], dtype=torch.float32, device=dev)

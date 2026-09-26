@@ -65,7 +65,7 @@ import carla
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
 from autodrivedata.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
-from autodrivedata.mapviz import calib_from_fov
+from autodrivedata.map.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
 from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic

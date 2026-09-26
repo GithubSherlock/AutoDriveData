@@ -77,7 +77,7 @@ python bin/eval_attr.py --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
                         --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
 # 6. MapTR:逐帧推理 + chamfer AP + 逐帧契约落盘
-PYTHONPATH=$PWD python bin/eval_maptr.py --infos outputs/surround_train/map_infos.json \
+python -m autodrivedata.map.eval_maptr --infos outputs/surround_train/map_infos.json \
   --root outputs/surround_train --ckpt outputs/maptr_ep512.pt --start 200 --out-frames outputs/surround_pred
 
 # 7. 测试

@@ -58,7 +58,7 @@ median|e| 0.0003 m、center 下 0.023 m(~70×,六相机一致);A4 掩膜**索引
 
 推论:`(cx, shift)` 是一**对**,本模块量到的永远是**和** `cx + shift`。因此结论表述为
 "**在该约定下量得的图像坐标主点**",谁与约定打架谁就错 —— 这正是
-[autodrivedata/mapviz.py](../../autodrivedata/mapviz.py) `intrinsics_from_k` 的病根
+[autodrivedata/map/mapviz.py](../../autodrivedata/map/mapviz.py) `intrinsics_from_k` 的病根
 (只抄 fx、把 cx/cy 丢掉重算,等于用一个约定量出的 cx 去配另一个约定)。
 """
 

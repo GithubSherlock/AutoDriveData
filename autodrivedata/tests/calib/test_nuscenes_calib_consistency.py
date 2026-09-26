@@ -257,7 +257,7 @@ class TestCameraFovMatchesIntrinsics:
 class TestFovCriterionShape:
     """判据 ⑥ 的**几何/取帧口径**钉(2026-09-23 两个实测坑的回归锁,纯静态、不连 CARLA)。
 
-    `bin/verify_nus_calib.py` 模块级**不 import carla**(只在 `run_live` 里惰性 import),
+    `autodrivedata/calib/verify_nus_calib.py` 模块级**不 import carla**(只在 `run_live` 里惰性 import),
     故 `import verify_nus_calib` 在哪个 env 都成立(本文件自身仍走模块头的 `importorskip`,
     与同目录其它采集器测试同款)。钉的是两个**只看代码看不出来、跑起来才暴露**的坑:
 
@@ -274,7 +274,7 @@ class TestFovCriterionShape:
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.FunctionDef) and node.name == "_rendered_fov":
                 return node
-        raise AssertionError("bin/verify_nus_calib.py 里找不到 `_rendered_fov`")
+        raise AssertionError("autodrivedata/calib/verify_nus_calib.py 里找不到 `_rendered_fov`")
 
     def test_tick_only_inside_drain(self):
         fn = self._fov_fn()

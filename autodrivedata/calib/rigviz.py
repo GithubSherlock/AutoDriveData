@@ -15,7 +15,7 @@
 
 ⚠️ **图上的方位角是 `az_nus`(0°=车头,+ = 左)**,与官网标定表同口径;屏幕映射为
 `x_screen = −sin(az)`、`y_screen = −cos(az)`(nus 的 y 左 → CARLA 的 y 右 → 屏幕 x 右),
-故 az 增大在屏幕上是**逆时针**,与 `bin/viz_calib_check.sheet_geometry` 同一约定。
+故 az 增大在屏幕上是**逆时针**,与 `autodrivedata.calib.viz_calib_check.sheet_geometry` 同一约定。
 """
 
 from __future__ import annotations

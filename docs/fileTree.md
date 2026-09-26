@@ -11,6 +11,11 @@
 > - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
 >   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
 >   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
+> - **`autodrivedata/map/`** —— 地图层(29 模块),测试在 `autodrivedata/tests/map/`。
+>   **`maptr_impl/` → `autodrivedata/map/maptr/`**、**`maptr_official/` → `autodrivedata/map/maptr_official/`**
+>   (顶层这两个包**已不存在**)。故 `from maptr_impl.model import MapTR` 现在是
+>   **`from autodrivedata.map.maptr.model import MapTR`**。
+>   ⚠️ 别把**输出目录** `outputs/maptr_official/` 与 **env 名** `/root/.../envs/maptr_official` 当成包名改。
 >
 > **本文档的目录表尚未逐行重排**(排在重构的收尾阶段)——下面涉及 `bin/` 的各表可能仍列着已迁走的条目,
 > **以磁盘为准**。全部阶段完成后会按新树重写 §1–§5。
@@ -133,7 +138,7 @@ AutoDriveData/
 | `collect_kitti.py` | 静态采集:ego 静止 + 摆 NPC + 同步模式 → KITTI root(raw + GT) |
 | `collect_drive.py` | 动态采集:ego autopilot + TM 车流 + 行人 → KITTI 序列 |
 | `collect_ab_route.py` | P1 A/B 专用:ego 定速直行 + 路侧静置车(固定位置,帧级配对) |
-| `collect_nus.py` | nuScenes 迷你集:6 相机 + LiDAR + 5 雷达。**全传感器标定「渲染位姿 = 声明位姿」同源**(2026-09-23,§P-M.7):相机走 `NUS_CAMERA_RIG`(逐相机 6DoF 挂点)+ 逐通道蓝图 `fov`;LiDAR 走官方挂点 + 由四元数**导出**的姿态(`LIDAR_ROT` 不手抄);雷达偏航 `−az_nus` **由 `NUS_RADAR_OFFSETS` 导出**。历史缺陷(已删 `CAM_YAW_OFFSET` 镜像表 / 雷达猜测表 / LiDAR 无 rotation)见模块头注的对照表。判据复现器 = `bin/verify_nus_calib.py`。**挂点原点**:位置/姿态全走 `geometry.nus_ego_translation` + `nus_ego_rotation`(后轴,§P-M.10);挂传感器前先让车静置收敛(`ego_settle`,实测 8 tick),`ego_pose` 写全 6DoF |
+| `collect_nus.py` | nuScenes 迷你集:6 相机 + LiDAR + 5 雷达。**全传感器标定「渲染位姿 = 声明位姿」同源**(2026-09-23,§P-M.7):相机走 `NUS_CAMERA_RIG`(逐相机 6DoF 挂点)+ 逐通道蓝图 `fov`;LiDAR 走官方挂点 + 由四元数**导出**的姿态(`LIDAR_ROT` 不手抄);雷达偏航 `−az_nus` **由 `NUS_RADAR_OFFSETS` 导出**。历史缺陷(已删 `CAM_YAW_OFFSET` 镜像表 / 雷达猜测表 / LiDAR 无 rotation)见模块头注的对照表。判据复现器 = `autodrivedata/calib/verify_nus_calib.py`。**挂点原点**:位置/姿态全走 `geometry.nus_ego_translation` + `nus_ego_rotation`(后轴,§P-M.10);挂传感器前先让车静置收敛(`ego_settle`,实测 8 tick),`ego_pose` 写全 6DoF |
 | `collect_surround.py` | 环视 6 相机采集(nuScenes 布局)→ 图像 + 内外参 + 逐帧 ego 位姿 |
 | `collect_surround_micro.py` | 环视微采样(10 帧)→ 相机布局对照微实验 |
 | `collect_static_gt.py` | 静态目标/道路特征 GT(地图查询源,含 overlay 目检图) |

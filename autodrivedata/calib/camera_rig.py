@@ -39,7 +39,7 @@
 修法 = **把换算显式写出来**,`geometry.nus_mount_to_carla`(x 加原点差 + y 翻号)是**唯一**换算点;
 `nus_camera_rig()` 与 `export/nuscenes` 的雷达/LiDAR 挂点都吃它。常量值与其**实测来源**
 (双偏航自解 + 整车自洽校验)写在 `geometry.NUS_EGO_ORIGIN_X` 头注,并在
-`bin/verify_nus_calib.py` 判据⑩ 于实机上**复测比对**。
+`autodrivedata/calib/verify_nus_calib.py` 判据⑩ 于实机上**复测比对**。
 
 ## 姿态为什么不能只留 yaw
 
@@ -277,7 +277,7 @@ def coverage_table(
 
     ⚠️ 本表只说"水平方位角上盖没盖住",**不说地面能不能看见** —— 相机装在 1.5 m 高、
     55° 水平 FoV 时近场地面反而进不了画幅(见 §P-M.9 的地面可见距离)。判据分工:
-    重叠/盲区看本表,"画幅里有没有自身车体"看实例分割实测(`bin/rig_check.py`)。
+    重叠/盲区看本表,"画幅里有没有自身车体"看实例分割实测(`autodrivedata/calib/rig_check.py`)。
 
     扇区按方位角**全局排布**求并/交,不假定相机名的字典序 = 方位序 —— 两代 rig 的
     相机名顺序都与方位顺序无关(wide 的后三路是 145/180/215,名字却叫 BACK_LEFT/BACK/BACK_RIGHT)。

@@ -75,7 +75,7 @@ def encode_depth(depth_m: np.ndarray) -> np.ndarray:
 # `CENTER`(索引 i 覆盖 [i, i+1),中心在 i+0.5)是 **torch 侧**的约定
 # (`grid_sample(align_corners=False)`、FPN 特征图、gsplat)——**不是 CARLA 的**。
 # ⇒ 采样 CARLA 渲染出的图(深度/语义/实例分割/RGB)默认走 `CORNER`;
-#   采样 torch 特征图时调用方显式传 `CENTER`(如 `maptr_impl/gkt.py` 的 grid 归一化)。
+#   采样 torch 特征图时调用方显式传 `CENTER`(如 `autodrivedata/map/maptr/gkt.py` 的 grid 归一化)。
 CONVENTION_CORNER = "corner"  # CARLA 光栅:索引 i 即连续坐标 i
 CONVENTION_CENTER = "center"  # torch 光栅:索引 i 的中心在连续坐标 i + 0.5
 

@@ -42,14 +42,14 @@
 | `--live` | ⑦ **画幅内自身车体像素**(instance_seg 里数 ego 的 actor id) | 逐通道 = 0 px |
 | `--live` | ⑧ **相邻相机的共同可见方位**(重叠带正中摆锥 → 两路掩膜都命中) | 每对都被两路看见 |
 
-⑦⑧ 的实现落在 `bin/rig_check.py`(同一套相机跑两条判据),那里还记了两条判据的边界:
+⑦⑧ 的实现落在 `autodrivedata/calib/rig_check.py`(同一套相机跑两条判据),那里还记了两条判据的边界:
 窄重叠区不摆锥、以及"方位轴重叠"与"有限距离下共同可见"因**挂点视差**而不等(实测差 1.7°)。
 
 用法:
-  python bin/verify_nus_calib.py --offline                       # ③④⑤(不需 CARLA)
+  python -m autodrivedata.calib.verify_nus_calib --offline                       # ③④⑤(不需 CARLA)
   bash tools/carla_server.sh start
-  python bin/verify_nus_calib.py --live                          # ①②⑥⑦⑧(需 CARLA)
-  python bin/verify_nus_calib.py --rig wide --offline --live --dataroot outputs/nus_mini_wide
+  python -m autodrivedata.calib.verify_nus_calib --live                          # ①②⑥⑦⑧(需 CARLA)
+  python -m autodrivedata.calib.verify_nus_calib --rig wide --offline --live --dataroot outputs/nus_mini_wide
 """
 
 from __future__ import annotations
@@ -663,7 +663,7 @@ def run_live(host: str, port: int) -> dict[str, Any]:
         rep["criterion_9_world_pose_chain"] = chain
         rep["criterion_6_rendered_fov"] = _rendered_fov(world, ego, pc)
 
-        # ⑦⑧ 同一套 instance_seg 相机:零车体像素 + 相邻共视(实现见 `bin/rig_check.py`)
+        # ⑦⑧ 同一套 instance_seg 相机:零车体像素 + 相邻共视(实现见 `autodrivedata/calib/rig_check.py`)
         from autodrivedata.calib import rig_check
 
         probe = rig_check.instance_probe(world, ego, RIG)

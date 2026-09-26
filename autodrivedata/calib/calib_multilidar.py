@@ -10,7 +10,7 @@
 输出:outputs/multilidar/icp_result.json(两分支的判据 + 曲线)。
 
 用法:
-  PYTHONPATH=$PWD python bin/calib_multilidar.py [--frames 0,1]
+  python -m autodrivedata.calib.calib_multilidar [--frames 0,1]
 """
 
 from __future__ import annotations

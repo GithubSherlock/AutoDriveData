@@ -20,7 +20,7 @@ LiDAR 无旋转。现在**每一项都由同一份官方常量导出**:
 | 5 雷达 | `NUS_RADAR_OFFSETS` 的 CARLA 镜像 | `NUS_RADAR_OFFSETS` 原值 | `export/nuscenes` |
 
 相机蓝图 `fov` 逐通道由**该 rig 的 K** 反推(官方 rig:64.31–64.96°,CAM_BACK 89.34°)——
-否则"标定说 64°、图像是 90°"又是同一类声明≠渲染。判据(全数值)见 `bin/verify_nus_calib.py`。
+否则"标定说 64°、图像是 90°"又是同一类声明≠渲染。判据(全数值)见 `autodrivedata/calib/verify_nus_calib.py`。
 
 ★ **ego 原点(2026-09-23,Plan2 §P-M.10)**:上表的"声明"列全部是 **nuScenes ego 系**,
 其原点 = **后轴中心在地面**;而 CARLA 车辆 actor 的原点 = **车身长度中点**。故

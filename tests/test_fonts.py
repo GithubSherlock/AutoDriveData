@@ -31,7 +31,7 @@ DRAWING_MODULES: tuple[str, ...] = (
     "autodrivedata/calib/probe_calib.py",
     "autodrivedata/sim/carla_common.py",
     "autodrivedata/sim/collect_static_gt.py",
-    "autodrivedata/mapviz.py",
+    "autodrivedata/map/mapviz.py",
     "autodrivedata/calib/calib_live.py",
 )
 # 画文字的函数名(`<obj>.text(...)` / `stamp(...)` / `fonts.draw_text(...)` / HUD 构造器)

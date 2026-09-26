@@ -13,13 +13,13 @@
 
 **为什么图不能替代 `verify_nus_calib`**:这张图证明的是"这一段画面里没有车体",
 而"声明 ≠ 渲染"这类失效模式(§P-M.7)在图上**看不见** —— 只有判据 ①⑥ 的数值能抓。
-本脚本复用 `bin/rig_check.py` 的同一套相机与同一份读数,故两者口径不会分叉。
+本脚本复用 `autodrivedata/calib/rig_check.py` 的同一套相机与同一份读数,故两者口径不会分叉。
 
 **布局图的分区是硬坐标**(见 `rigviz.draw_rig_layout`),这里只负责喂数据与落盘。
 
 用法:
-  python bin/viz_rig_check.py                          # 只出配置图(不需 CARLA)
-  python bin/viz_rig_check.py --rig wide --live        # 配置图 + 实拍图 + 报告
+  python -m autodrivedata.calib.viz_rig_check                          # 只出配置图(不需 CARLA)
+  python -m autodrivedata.calib.viz_rig_check --rig wide --live        # 配置图 + 实拍图 + 报告
 """
 
 from __future__ import annotations
@@ -296,7 +296,7 @@ def main() -> int:
     layout.save(layout_path)
     rep: dict[str, Any] = {
         "rig": args.rig,
-        "generated_by": "bin/viz_rig_check.py",
+        "generated_by": "autodrivedata/calib/viz_rig_check.py",
         "layout_png": str(layout_path.relative_to(root)),
         "layout_size": list(layout.size),
         "coverage": coverage_of(args.rig),

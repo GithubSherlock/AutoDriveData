@@ -37,7 +37,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | 12 | 点云地面提取 | `autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合) | ✅ |
 | 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(欧氏聚类) | ✅ |
 | 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `bin/slam_odometry.py` + `bin/slam_backend.py` + `bin/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
-| 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `bin/calib_multilidar.py` | ✅ |
+| 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `autodrivedata/calib/calib_multilidar.py` | ✅ |
 | 16 | 3DGS 重建 | `autodrivedata/sim/collect_3dgs.py`(环绕采集)+ `bin/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
 
 图例:✅ = 链路已交付(详见 §7);「已有」= 补全前本仓已具备;「缺口」= 见 §8 遗留缺口。
@@ -123,7 +123,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - 输出 `outputs/mono_distance/results.json`;单测 tests/test_mono_depth.py 10 passed
 
 ### P-E 多雷达标定(教程 15)——✅ 链路已通 + 判据修复
-- `autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy,零 carla/零 open3d)+ `bin/calib_multilidar.py`(注入已知误差 → 判据)+ tests/test_multilidar.py 4 passed
+- `autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy,零 carla/零 open3d)+ `autodrivedata/calib/calib_multilidar.py`(注入已知误差 → 判据)+ tests/test_multilidar.py 4 passed
 - **修复**:收敛 = converged(增量阈值)∧ rmse_final<0.05m ∧ **overlap≥0.6** ∧ **plausible(t<5m、r<30°)**
 - **实测**:small(0.1rad/0.1m)**converged**(overlap 0.991、iter 5、恢复 t 0.15m/r 5.7°);large(1.2rad/2m)**not_converged**(overlap 仍 0.991,recovered t 10.26m/r 68.8° 被 plausible 否决)→ RMSE 对平面场景天然低,overlap+合理性双闸分开真伪标定
 - 输出 `outputs/multilidar/icp_result.json`
@@ -330,7 +330,7 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 - 引入时点:`SENSOR_MOUNTS` 与 108.6/−110.8 布局在 commit `38cfe90`(2026-09-16)引入,
   **该 commit 未改 `autodrivedata/sim/view_stream.py`** ⇒ 旧 rig 一直是 ep512 的正确口径。
 
-**A/B 探针**(`bin/probe_rig_mount.py`,同一 ego 位姿同一 tick 帧,只变 rig):
+**A/B 探针**(`autodrivedata/calib/probe_rig_mount.py`,同一 ego 位姿同一 tick 帧,只变 rig):
 
 | 权重 @ rig | 预测实例 | 段 | 品红 px | 光轴以上 |
 |---|---|---|---|---|
@@ -356,7 +356,7 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 |---|---|---|
 | `autodrivedata/live_slam.py` | 新增(纯值) | `LiveSlam.push/snapshot`(链式约定逐字复用 `slam_odometry`)+ `map_in_ego_frame`/`traj_in_ego_frame`(LiDAR-0 系 → 当前 ego 系)+ **`SlamWorker`**(有界丢旧队列 + 帧间隙止损) |
 | `autodrivedata/sim/live_studio.py` | 改 | `--slam` 挂语义 LiDAR → `SlamWorker`;BEV 槽画地图点(灰)+ 轨迹(青);HUD 显式报滞后;`--slam-report` 落验收 JSON;`finally` 先 join 再销毁 world |
-| `autodrivedata/mapviz.py` | 改 | `bev_points`(散点,批量像素)/ `bev_trajectory`(只连窗内相邻点)/ `bev_window_mask`(窗口判据单一来源) |
+| `autodrivedata/map/mapviz.py` | 改 | `bev_points`(散点,批量像素)/ `bev_trajectory`(只连窗内相邻点)/ `bev_window_mask`(窗口判据单一来源) |
 | `tests/test_live_slam.py` | 新增 | 26 passed:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ 滞后有界/止损/同步模式 |
 
 #### P-L.2 在线 SLAM 的两条原计划前提**都不成立**(2026-09-20 决定性实验)
@@ -555,7 +555,7 @@ studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全�
 两处 calib dict 里 `sensor2ego` 硬编码的 `0.0, 0.0`、`live_common`/`view_stream`/`live_studio`/
 `probe_rig_mount` 的 rig 名与文档。
 
-#### P-M.2 七锚自证探针(`bin/probe_calib.py` → `outputs/calib_check/report.json`)
+#### P-M.2 七锚自证探针(`autodrivedata/calib/probe_calib.py` → `outputs/calib_check/report.json`)
 
 **判据全数值,不目检。** 静态 ego、训练口径全分辨率(1242×375)、spawn 6 RGB + 6 depth + LiDAR +
 施工锥;`verdict` 七项**全 true**:
@@ -584,7 +584,7 @@ B = 采样 **torch** 栅格(FPN 特征图 / `grid_sample(align_corners=False)` /
 
 #### P-M.3 全局口径统一
 
-- [autodrivedata/mapviz.py](autodrivedata/mapviz.py) `intrinsics_from_k` 改为**直读 K 的 cx/cy**
+- [autodrivedata/map/mapviz.py](autodrivedata/map/mapviz.py) `intrinsics_from_k` 改为**直读 K 的 cx/cy**
   (旧实现只读 fx、把 cx/cy 丢掉重算 —— 纯缺陷,与主点裁决无关,必须修)
 - fov→fx 公式收敛到 `mapviz.calib_from_fov` **全仓唯一落点**(消除 `collect_surround*` 里的内联重复实现)
 - **已导出的 KITTI `calib.txt` P2 不动**,只统一代码侧新导出的口径
@@ -628,7 +628,7 @@ z 0.7818 ⇒ z≈1.556)高 **0.023 m** ⇒ 相当一部分画面被**自己的�
 
 **交付文件**:`autodrivedata/calib_live.py`(新)、`tests/test_calib_live.py`(新,51 用例)、
 `autodrivedata/sim/live_studio.py`、`autodrivedata/sim/live_common.py`(`build_surround_rig(kind=)` + `draw_hud(y=)`)、
-`bin/probe_calib.py`。产物 `outputs/calib_check/{report.json,overlay.png,live.json}`。
+`autodrivedata/calib/probe_calib.py`。产物 `outputs/calib_check/{report.json,overlay.png,live.json}`。
 
 **回归测试(本次新增/扩展,三条锁)**:
 
@@ -899,7 +899,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 | 相机内参 vs 官方 n015 | 逐通道 fx/cx/cy **< 0.01 px** | 落盘 `calibrated_sensor.json` 直读 |
 | 渲染 FOV vs 蓝图 fov | 逐通道 **< 0.1°**(轴目标物掩膜质心回归 fx) | `probe_calib.py` A4 同法 |
 
-**★ 验收结果(2026-09-23 实测,六条全过)**——复现器 `bin/verify_nus_calib.py`
+**★ 验收结果(2026-09-23 实测,六条全过)**——复现器 `autodrivedata/calib/verify_nus_calib.py`
 (落 `outputs/nus_calib_check/report.json`),重采 `outputs/nus_mini`(2 scene / 3 sample):
 
 | 判据 | 修前 | 修后 | 阈值 | 结论 |
@@ -943,7 +943,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 
 ```bash
 # 修后:六条判据的**唯一复现器**(离线 ③④⑤ + 在线 ①②⑥,落 outputs/nus_calib_check/report.json)
-PYTHONPATH=$PWD python bin/verify_nus_calib.py --offline --live
+python -m autodrivedata.calib.verify_nus_calib --offline --live
 python -m autodrivedata.sim.collect_nus --frames 2      # 重采(需 CARLA)
 bash autodrivedata/sim/smoke_radar_collect.sh                           # devkit 直读四判据
 ```
@@ -1012,11 +1012,11 @@ bash autodrivedata/sim/smoke_radar_collect.sh                           # devkit
 **两条独立成因,只修一条都不够**(这是本条的要点):
 
 1. 本机 `fc-list` 查不到**任何**中文字体(只有 DejaVu / Quicksand / Ubuntu 三族),
-   而 [bin/viz_calib_check.py](bin/viz_calib_check.py) 绘制时硬写 `ImageFont.truetype(DejaVuSans-Bold)`;
+   而 [autodrivedata/calib/viz_calib_check.py](autodrivedata/calib/viz_calib_check.py) 绘制时硬写 `ImageFont.truetype(DejaVuSans-Bold)`;
 2. **PIL 没有字体回退链** —— `ImageDraw.text()` 只吃单个 `font` 对象(Pillow 12.3.0 无
    `font_chain`/`font_stack`)。**不传 `font=` 就用内置位图字体**,同样整行豆腐、而且只有 ~11 px。
-   [autodrivedata/sim/live_common.py](autodrivedata/sim/live_common.py)(HUD/拼图标签,**4 处**)、[autodrivedata/mapviz.py](autodrivedata/mapviz.py)、
-   [bin/probe_calib.py](bin/probe_calib.py)、[autodrivedata/sim/carla_common.py](autodrivedata/sim/carla_common.py)、
+   [autodrivedata/sim/live_common.py](autodrivedata/sim/live_common.py)(HUD/拼图标签,**4 处**)、[autodrivedata/map/mapviz.py](autodrivedata/map/mapviz.py)、
+   [autodrivedata/calib/probe_calib.py](autodrivedata/calib/probe_calib.py)、[autodrivedata/sim/carla_common.py](autodrivedata/sim/carla_common.py)、
    [autodrivedata/sim/collect_static_gt.py](autodrivedata/sim/collect_static_gt.py) 原本全属这一类。**"修了 DejaVu 就完事"是错的。**
 
 **判据(全数值,不目检,不依赖非本项目依赖)**:新建 [autodrivedata/fonts.py](autodrivedata/fonts.py)
@@ -1041,7 +1041,7 @@ Droid 仍缺 4 个码位(`−` U+2212 / `∘` U+2218 / `⚠` U+26A0 / `⁻` U+20
 —— "看起来正常"的假绿比报错更危险。
 
 **改动落点**:新建 `fonts.py`(`font_path`/`has_cjk`/`missing`/`sanitize`/`get_font`/`draw_text`/`width`/`bbox`/`diagnostics`);
-[bin/viz_calib_check.py](bin/viz_calib_check.py) 删掉 `_font()` 与 `DejaVu` 常量、全部 `d.text` 改走 `fonts.draw_text`;
+[autodrivedata/calib/viz_calib_check.py](autodrivedata/calib/viz_calib_check.py) 删掉 `_font()` 与 `DejaVu` 常量、全部 `d.text` 改走 `fonts.draw_text`;
 上列 5 个绘制文件同样迁移。回归钉 [tests/test_fonts.py](tests/test_fonts.py) —— 最强的一条是
 `test_distinct_cjk_chars_paint_distinct_pixels`(两个不同汉字**画布上必须像素不同**;豆腐块下它们逐像素相同),
 外加 **AST 根因钉** `test_no_module_draws_with_a_bare_text_call`(不许再出现不带 `font=` 的 `d.text(...)`)。
@@ -1108,7 +1108,7 @@ wide 的 K 由**渲染反推**(`fx=(w/2)/tan(hfov/2)`、`cx=(w−1)/2`、`cy=(h�
   两个正侧方盲区是"前视 55° + 后视不越 90°"的**结构性代价**(唯一杠杆是前视加宽:FL ≥ 70° 时 90.165° 恰好接上,
   或后视允许越 90° 而**支付车体像素**)—— 本轮按用户 spec 不动,**如实报出**。
 
-**验收(八条判据,全数值;`bin/verify_nus_calib.py --rig wide --offline --live` → `outputs/nus_calib_check/report_wide.json`)**:
+**验收(八条判据,全数值;`autodrivedata/calib/verify_nus_calib.py --rig wide --offline --live` → `outputs/nus_calib_check/report_wide.json`)**:
 
 | 判据 | 结果 |
 |---|---|
@@ -1120,7 +1120,7 @@ wide 的 K 由**渲染反推**(`fx=(w/2)/tan(hfov/2)`、`cx=(w−1)/2`、`cy=(h�
 | ⑦ **画幅内自身车体像素** | 六路 **全 0 px**(instance_seg 里数 ego 自己的 actor id) |
 | ⑧ **相邻共视** | 后三路成对可见,共同可见带宽 **66.5 / 66.5 / 29.0°**;前视对 0.1561° < 阈值 ⇒ **如实 `skipped`,不假装测过** |
 
-**⑦⑧ 的实现**(`bin/rig_check.py`)与**两条边界**:
+**⑦⑧ 的实现**(`autodrivedata/calib/rig_check.py`)与**两条边界**:
 
 - ⑦ 用**实例分割**数 `ego.id` 的像素 —— 解析上限那条不等式用的是"盒模型 + 无畸变"两个近似,
   只有渲染侧逐像素计数才是直接证据。**对照**:官方 rig 同一探针实测 `CAM_BACK = 619189 px = 42.9992%`
@@ -1139,7 +1139,7 @@ wide 的 K 由**渲染反推**(`fx=(w/2)/tan(hfov/2)`、`cx=(w−1)/2`、`cy=(h�
   故 ⑧ 报的是 `common_band_deg`(沿重叠带用声明内参逐点判两路是否都落画幅内,取最长连续段),
   不是方位轴重叠。**只看方位轴会系统性高估重叠**。
 
-**交付物**(用户要的两方面;`bin/viz_rig_check.py`,两代 rig 各一套 → `outputs/calib_check/`):
+**交付物**(用户要的两方面;`autodrivedata/calib/viz_rig_check.py`,两代 rig 各一套 → `outputs/calib_check/`):
 
 - `rig_layout_{nuscenes,wide}.png`:**配置图**(俯视挂点 + 视锥 / 方位环,重叠橙、盲区红带度数 / 数字表
   `通道 · 挂点 x,y,z · 方位角 · FoV · az ± fov/2`)。纯值落点(`autodrivedata/rigviz.py`,不碰 CARLA 就能出)。
@@ -1203,7 +1203,7 @@ CAM_FRONT/BACK 的中点在车体中心,**但会让 ego 原点与真实后轴错
 wide rig 的后三路 `x` 是 **CARLA 口径的 −1.9000**(车身最后点之后 4.7 cm,§P-M.9),故常量改名
 `NUS_WIDE_REAR_X_CARLA`;它落盘的 nus 侧值 = **−0.6437**(= −1.9000 − (−1.2563))。
 
-**两条新判据**(`bin/verify_nus_calib.py`)——**为什么必须要新判据**:①(实挂 vs 声明)与②(雷达实挂 vs 声明)
+**两条新判据**(`autodrivedata/calib/verify_nus_calib.py`)——**为什么必须要新判据**:①(实挂 vs 声明)与②(雷达实挂 vs 声明)
 都相对**同一个 ego** 比,**在结构上对原点误差是盲的**;①②全绿而整组传感器偏 1.2563 m 是可能的。
 
 - **⑨ 世界系链**:`declared = 落盘表 ⊕ 实测后轴位姿` vs `rendered = CARLA 实挂经共轭`,12 路逐位比;
@@ -1230,7 +1230,7 @@ wide rig 的后三路 `x` 是 **CARLA 口径的 −1.9000**(车身最后点之�
    `2·sin(0.0642°)`。回归 `test_ego_rotation_is_the_matrix_conjugate_not_yaw_only` **按矩阵相等**判
    —— 比四元数向量会被 `±q` 骗过。
 
-**验收**(`bin/verify_nus_calib.py --offline --live` → `outputs/nus_calib_check/report.json` /
+**验收**(`autodrivedata/calib/verify_nus_calib.py --offline --live` → `outputs/nus_calib_check/report.json` /
 `report_wide.json`;**十条判据全过**,两代 rig 各跑一遍):
 
 | 判据 | 修正前 | 修正后 |
@@ -1252,7 +1252,7 @@ CAM_BACK 样本 `n = 11 < 20` ⇒ **报「无数据」而不是 `0.000`**(§P-M.
 - 另记一条**与原点无关的平台边界**:`RADAR_FRONT` 落在 a2 前保险杠**外侧 0.30 m**(`+2.1557` vs `+1.8527`),
   因为 a2(3.705 m)比官方用的 Zoe(4.084 m)**短 0.38 m** —— 任何刚体映射都修不掉,**如实报出**。
 
-**交付物**(用户要求的两张图;`bin/viz_rig_check.py` → `outputs/calib_check/`,两代 rig 各一套):
+**交付物**(用户要求的两张图;`autodrivedata/calib/viz_rig_check.py` → `outputs/calib_check/`,两代 rig 各一套):
 
 - `rig_layout_nuscenes.png`:俯视图新增**后轴标记线**(洋红,label「nuScenes 原点 · 后轴」)
   + **空心灰圈 = 修正前挂点位置**(整体后移 1.2563 m 落到后轴线上,一眼看出改了什么;
@@ -1298,7 +1298,7 @@ wide 后三路 x 的 CARLA 口径与 nus 口径**两处都钉**)、`tests/test_e
 2. **任何"实挂 vs 声明"判据先 tick** —— 快照陈旧(`get_transform()` 在 tick 前全为 0)会假报。
 3. 写盘一律经 `paths.project_path()`;产物落 `outputs/`。
 
-**验收口径(唯一)**:`bin/verify_nus_calib.py --offline --live` —— **十条判据**,**两代 rig 各跑一遍**。
+**验收口径(唯一)**:`autodrivedata/calib/verify_nus_calib.py --offline --live` —— **十条判据**,**两代 rig 各跑一遍**。
 ⑨⑩ 是挂点原点误差的**唯一**探针(①② 相对同一个 ego 比,对该误差**结构上盲**);
 **判据不达标如实报数字,不调阈值凑过**。
 
@@ -1395,7 +1395,7 @@ batch 16 对照见下)、**0.343 s/样本** ⇒ 500 帧/epoch = 2.85 min。**128
 | `maptr_impl/model.py` | `forward` 按 `isinstance(images, list)` 分派;历史帧走 `torch.no_grad()`(= 推理期 memory bank 语义,激活显存 ≈ 单帧 + K−1 个小 BEV);`fusion` 插在 **GKT 与 head 之间 ⇒ head 一行未动**;`proj` 零初始化 ⇒ 第 0 步与单帧模型**逐位相同**(`torch.equal` 钉) |
 | `maptr_impl/model.py` | `load_map_weights` 单落点:`unexpected` 一律报错(时序权重跑单帧模型会把 AP 差异显示成"时序没用");`missing` 只有全 `fusion.*` 才放行(单帧 → 时序 = **有意**热启动) |
 | `maptr_impl/dataset.py` | `history_windows` 唯一落点(窗口 = 池下标元组,旧 → 新,**末元素 = 目标帧**);`window=1` 返回结构**逐字节不变** |
-| `bin/train_maptr.py` / `bin/eval_maptr.py` | `--temporal-window`(**两侧必须同值**)+ `ds.dropped` 报数 |
+| `autodrivedata/map/train_maptr.py` / `autodrivedata/map/eval_maptr.py` | `--temporal-window`(**两侧必须同值**)+ `ds.dropped` 报数 |
 
 **两条错法的误差律**(2026-09-24,`outputs/surround_v2` 的 **200 对真实相邻帧**实测,格宽 0.3 m):
 **漏转置**(用 `R_prev` 代 `R_prevᵀ`)∝ `2·|w|·sin(ψ_prev)`,中位 **138 格 = 41 m**、95% 分位 227 格
@@ -1589,7 +1589,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
   - **生产口径**(`--detector yolo`):YOLO 检测框 → 配 GT 投影框 IoU 贪心(match_dets_to_gt,conf 降序)
     → **131 命中**/147 GT(漏检 39);mean err 10.53%(vs 基线 8.56,模型框抖动如实上升)、z10_20 36% <10%
   - 产物 `outputs/mono_distance/results.json`(project)/ `results_yolo.json`(yolo)
-- **P-E 多雷达标定**(教程 15):`autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy)+ `bin/calib_multilidar.py`
+- **P-E 多雷达标定**(教程 15):`autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy)+ `autodrivedata/calib/calib_multilidar.py`
   - 修复:收敛 = converged(增量阈值)∧ rmse_final<0.05m ∧ **overlap≥0.6** ∧ **plausible(t<5m、r<30°)**
   - 实测:small(0.1rad/0.1m)**converged**(overlap 0.991、iter 5、恢复 t 0.15m/r 5.7°);
     large(1.2rad/2m)**not_converged**(overlap 仍 0.991,recovered t 10.26m/r 68.8° 被 plausible 否决)

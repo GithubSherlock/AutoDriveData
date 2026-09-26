@@ -41,7 +41,7 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
+from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import (
     draw_traffic_lights,

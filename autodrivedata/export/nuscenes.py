@@ -301,7 +301,7 @@ def _quat_of(q: tuple[float, float, float, float]) -> list[float]:
 
 def camera_k(cam: str, rig: str = NUS_RIG_DEFAULT) -> tuple[float, float, float]:
     """该 rig 的逐通道 `(fx, cx, cy)`。给"按声明口径把世界点投回画幅"的探针用
-    (判据 ⑦⑧ 的 in-FOV 诊断:`bin/rig_check.py`)。`camera_intrinsic()` 是它的落盘形式。"""
+    (判据 ⑦⑧ 的 in-FOV 诊断:`autodrivedata/calib/rig_check.py`)。`camera_intrinsic()` 是它的落盘形式。"""
     return _intrinsics(rig)[cam]
 
 

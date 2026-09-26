@@ -7,7 +7,7 @@
   覆盖差异一眼可见。
 
 用法:
-  python bin/viz_layout_cmp.py --a outputs/surround_micro_legacy --b outputs/surround_micro_official
+  python -m autodrivedata.calib.viz_layout_cmp --a outputs/surround_micro_legacy --b outputs/surround_micro_official
 
 注:两个微采样目录(surround_micro_legacy / surround_micro_official)已于 2026-09-20
 清理删除(§P-L.1 结论已归档),本脚本因此没有在库的默认输入 —— 用前先重采:
@@ -23,8 +23,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata.mapvec import MAPTR_CLASSES
-from autodrivedata.mapviz import (
+from autodrivedata.map.mapvec import MAPTR_CLASSES
+from autodrivedata.map.mapviz import (
     GT_COLOR,
     cam_pose,
     draw_projected_lines,

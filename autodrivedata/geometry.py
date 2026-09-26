@@ -206,7 +206,7 @@ def carla_yaw_to_nus_yaw(yaw_carla: float) -> float:
 # 而是把"声明(nus 系)"与"渲染(CARLA 系)"之间的这一条换算**显式写出来**。
 #
 # 常量值 = `vehicle.audi.a2` 后轴在 CARLA actor 系里的 x(米),**实测**:
-#   - 双偏航自解(与轴系约定无关,见 `bin/verify_nus_calib.py` 判据⑩):
+#   - 双偏航自解(与轴系约定无关,见 `autodrivedata/calib/verify_nus_calib.py` 判据⑩):
 #     `W(ψ) = C + R(ψ)·w₀` 取 ψ 与 ψ+90° 两档解出 4 个轮子的 w₀ 与 C
 #     ⇒ 前后轴 x = **+1.2502 / −1.2563**,轴距 2.5065(四轮解出的 C 互差 2e-06 m)
 #   - 自洽校验:轴距 2.5065 + 前悬(=前轴到前保险杠 1.8527−1.2502=0.6025)

@@ -103,7 +103,7 @@
 ## ✅ 多雷达标定判据(教程 15)
 
 **交付**:`autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy,零 carla/零 open3d)+
-`bin/calib_multilidar.py`(注入已知误差 → 判据)+ `tests/test_multilidar.py`(4 passed)。
+`autodrivedata/calib/calib_multilidar.py`(注入已知误差 → 判据)+ `tests/test_multilidar.py`(4 passed)。
 
 - 收敛判据:**converged(增量阈值)且 rmse_final<0.05m 且 overlap≥0.6 且 plausible(t<5m、r<30°)**
 - overlap = 变换后源点在参考云 0.3m 近邻内的比例——真伪标定的分水岭
@@ -269,7 +269,7 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 `surround_train/map_infos.json` 是 legacy、`surround_p3`/`surround_town13` 是 official,
 且 `maptr_600/map_infos.json` 帧 0-199 为 legacy、帧 200-599 为 official。
 `--rig {auto,official,legacy}` 中 `auto` 按权重名选(默认喂对);A/B 探针
-`bin/probe_rig_mount.py` 量化错配代价(ep512 legacy 122711 px vs official 135989 px)。
+`autodrivedata/calib/probe_rig_mount.py` 量化错配代价(ep512 legacy 122711 px vs official 135989 px)。
 详见 Plan2.md §P-L.1。
 
 > ⚠️ **2026-09-22 订正**:`official` 那一代 rig **本身是错的**(偏航漏了 `yaw_carla = −az_nus`
@@ -339,7 +339,7 @@ BACK_LEFT/RIGHT 差 217.2°),pitch/roll 还硬编码 0。**前/后相机因光�
 `autodrivedata/camera_rig.py` 从官方四元数单点导出(导出前**归一化**:官方值模长
 0.99994~1.00005,不归一化矩阵非正交)。
 
-**七锚自证 `bin/probe_calib.py`**(判据全数值,不目检)→ `outputs/calib_check/report.json`,
+**七锚自证 `autodrivedata/calib/probe_calib.py`**(判据全数值,不目检)→ `outputs/calib_check/report.json`,
 A0–A6 **全 true**:A0 光轴 vs 官方方位角 `7.1e-15°` / A1 侧别 4/4 同侧 / A2 四方位锥四对全 match /
 A3 LiDAR-平面-深度图交叉验证 median |e| **0.0003–0.0009 m** / A4 轴目标物掩膜质心 `cx = 620.5`、
 `fx_est 621.6 px`、残差 max **0.200 px** / A5 实挂 vs 规格 平移 `3.8e-06 m` 偏航 `4.5e-05°` /
@@ -380,7 +380,7 @@ CAM_BACK 落在车身中部时的读数;修正后重测**六路 `near_fraction` 
 雷达 `−az_nus` 由 `NUS_RADAR_OFFSETS` 导出;LiDAR 走官方挂点 + 由四元数**导出**的 `LIDAR_ROT`
 (不手抄);内参换逐通道官方 n015 K。LiDAR/雷达落盘表与官方**逐位相同**。
 
-**六条验收判据全过**(`bin/verify_nus_calib.py`,修前 → 修后):① 相机实挂 vs 声明 平移 `4.3e-06 m` /
+**六条验收判据全过**(`autodrivedata/calib/verify_nus_calib.py`,修前 → 修后):① 相机实挂 vs 声明 平移 `4.3e-06 m` /
 偏航 `3.9e-05°`(修前 0.52–1.17 m、0.15–126.40°)② 雷达实挂 `2.9e-05°`(修前四路差 93.89–135.98°)
 ③ 雷达点进自身 FOV `0.86/0.81/0.85/0.91/0.90`(修前 `0.0000/0.0000/0.0011/0.0015`)④ LiDAR 复现
 `num_lidar_pts` **1.0000**(修前 0.0854)⑤ 内参偏差 **0.0 px**(修前 32–473 px)⑥ 渲染 FOV dev
@@ -428,7 +428,7 @@ rig 落在 `autodrivedata/camera_rig.py`(`NUS_WIDE_*`;**前三个与官方逐位
 5.89° **整个消失**;判重叠要按有限距离算(`rig_check.common_band`),**锥心必须抬 0.45 m**(否则侧视
 相机擦车顶被自车挡,读数变成"有没有被自车挡")。
 
-**交付物**(`bin/viz_rig_check.py` → `outputs/calib_check/`):`rig_layout_{nuscenes,wide}.png`(俯视挂点
+**交付物**(`autodrivedata/calib/viz_rig_check.py` → `outputs/calib_check/`):`rig_layout_{nuscenes,wide}.png`(俯视挂点
 +视锥 / 方位环重叠橙·盲区红带 / 数字表 `通道·挂点·方位角·FoV·az±fov/2`)、`views_{rig}.png`(六视角
 **原生像素**拼图 + 线性方位尺 + 车体像素就地染品红)、`report_{rig}.json`。**图不能替代
 `verify_nus_calib`** ——「声明 ≠ 渲染」在图上看不见(§P-M.7)。两处踩坑:跨 0° 扇区写 `az % 360`
@@ -475,7 +475,7 @@ rig 落在 `autodrivedata/camera_rig.py`(`NUS_WIDE_*`;**前三个与官方逐位
 
 **三条不变量**:① spawn 与落盘由**同一份常量**导出(「表对了、图错了」只查表全绿、只目检也全绿);
 ② 任何"实挂 vs 声明"判据**先 tick**;③ 写盘经 `paths.project_path()`。
-**验收唯一口径** = `bin/verify_nus_calib.py --offline --live` 的**十条判据、两代 rig 各跑一遍**
+**验收唯一口径** = `autodrivedata/calib/verify_nus_calib.py --offline --live` 的**十条判据、两代 rig 各跑一遍**
 (⑨⑩ 是原点误差的唯一探针);**图不能替代它**。
 
 **本口径下作废的旧结论**(防照旧文档"修正"回去):❌「CAM_BACK 自遮挡 = 平台边界」(§P-M.4);
