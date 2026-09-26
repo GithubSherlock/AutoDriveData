@@ -28,7 +28,7 @@ AutoDriveData/
 ├── tools/                           # 开放性工具:不含本项目领域知识(见 §4)
 ├── docs/                            # 文档(见 §5)
 │
-└── outputs/ training/ lightning_logs/ hdMapGitHub/ auto3dlabel/   # 【未入库】产物与上游克隆(见 §6/§7)
+└── outputs/ logs/ training/ lightning_logs/ hdMapGitHub/ auto3dlabel/  # 【未入库】产物/运行日志/上游克隆(§6/§7)
 ```
 
 **依赖方向(硬纪律)**:`utils/` `gt/` `slam/` 不许依赖兄弟能力包;**依赖单向 AutoDriveData → AutoLabel,禁止反向**。
@@ -46,11 +46,18 @@ AutoDriveData/
 | `perception/` | 17 | 检测 / 单双目 / 雷达 / 语义 / 点云 | **不 import carla** |
 | `gt/` | 6 | 动态目标 + 静态目标 + 灯态 + 落盘导出 | **纯值** |
 | `traj/` `gs/` | 3 | 轨迹组装转换 / 3DGS 训练 | 许 torch,禁 carla |
-| `utils/` | 3 | `geometry` `paths` `fonts` | **纯值** |
+| `utils/` | 4 | `geometry` `paths` `fonts` `runlog` | **纯值** |
 | `tests/` | 48 | 与能力目录镜像(见 §3) | 不设限 |
 
 **命名约定**:模块与所在目录同名时改叫 **`core.py`**(`calib/core.py`、`slam/core.py`、`gt/core.py`)——
 避免 `autodrivedata.calib.calib` 这类自反名。
+
+**运行留痕(2026-09-27)**:每个**训练 / 推理 / 评估**入口跑一次就在 `logs/` 落**三件套**
+(stem 相同:`<能力>_<模块>_<时间戳>.log` 全量文本 / `.jsonl` 逐迭代指标 / `.json` 汇总),
+口径与关法见下方 [`utils/runlog.py`](#utils--通用件4) 行,落点见 §6。
+下表标 **落 `logs/` 三件套** 的**恰好 16 个**,即用户裁决的覆盖范围;
+**采集器(`sim/collect_*`)、数据组装(`map/assemble_*` / `merge_train_infos`)、标定探针(`calib/*`)不在其中** ——
+它们的产物自带逐帧索引,留痕价值低于上述三类。
 
 ### `sim/` — CARLA 仿真交互层 + 全部采集器(23)
 
@@ -118,11 +125,11 @@ AutoDriveData/
 | `convert_mapvec.py` | 地图矢量 → MapTRv2 annotation 口径 |
 | `export_mapvec.py` | 地图矢量导出全量/帧级裁剪 json + BEV overlay |
 | `prepare_official_dataset.py` | 环视数据 → 官方栈可直吃的 nuScenes 形状数据集(已终止线) |
-| `train_maptr.py` | MapTR 训练入口(单帧过拟合 = 正确性锚点;多帧 = 常规训练)。`--seg` / `--exclude-seg` / `--keep-in-seg` 走 `select_frames`(`--frames 0` = 筛后不截断);`--temporal-window K` = MapTRv2 时序版(与 `eval_maptr.py` **必须同值**),训练集丢弃数经 `ds.dropped` 上报;**长训一律 `--lr-halve 0`** —— 默认 12 会让 128 ep 后半程 lr 归零,平台是 lr 死掉不是收敛;过拟合闸门由 `is_single_frame_anchor(n_samples)` 判定,**按实际训练样本数而不是 `--frames` 标志**(`--frames 0` 是"不截断",按标志判会把 400 帧训练误判成单帧锚点并打假 FAIL + 退出码 1,见 §P-M.12) |
-| `eval_maptr.py` | MapTR 评估:权重 → 逐帧推理 → 四类 chamfer AP(+ 逐帧契约落盘)。选择器与 `train_maptr` **同一份实现**(`select_frames`),`--start` / `--frames` 在**过滤后**的列表上再截(§P-M.12) |
-| `eval_official_metric.py` | A′ 口径复算:并排算"自实现 chamfer AP"与"官方 eval_map" |
-| `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板 |
-| `probe_mapvec_oracle.py` | 离线 xodr 解析 vs CARLA 运行时几何对账(0.00cm 验收) |
+| `train_maptr.py` | MapTR 训练入口(单帧过拟合 = 正确性锚点;多帧 = 常规训练)。`--seg` / `--exclude-seg` / `--keep-in-seg` 走 `select_frames`(`--frames 0` = 筛后不截断);`--temporal-window K` = MapTRv2 时序版(与 `eval_maptr.py` **必须同值**),训练集丢弃数经 `ds.dropped` 上报;**长训一律 `--lr-halve 0`** —— 默认 12 会让 128 ep 后半程 lr 归零,平台是 lr 死掉不是收敛;过拟合闸门由 `is_single_frame_anchor(n_samples)` 判定,**按实际训练样本数而不是 `--frames` 标志**(`--frames 0` 是"不截断",按标志判会把 400 帧训练误判成单帧锚点并打假 FAIL + 退出码 1,见 §P-M.12) · 落 `logs/` 三件套 |
+| `eval_maptr.py` | MapTR 评估:权重 → 逐帧推理 → 四类 chamfer AP(+ 逐帧契约落盘)。选择器与 `train_maptr` **同一份实现**(`select_frames`),`--start` / `--frames` 在**过滤后**的列表上再截(§P-M.12) · 落 `logs/` 三件套 |
+| `eval_official_metric.py` | A′ 口径复算:并排算"自实现 chamfer AP"与"官方 eval_map" · 落 `logs/` 三件套 |
+| `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板 · 落 `logs/` 三件套 |
+| `probe_mapvec_oracle.py` | 离线 xodr 解析 vs CARLA 运行时几何对账(0.00cm 验收) · 落 `logs/` 三件套 |
 | `probe_mapvec_proj.py` | 矢量投影回 6 视角图像的路面性验收(数值诊断) |
 | `assemble_and_merge.sh` | 组装 + 合并 infos 的批量编排 |
 | `finalize_maptr_600.sh` | 600 帧扩数据轮的收尾编排 |
@@ -161,7 +168,7 @@ AutoDriveData/
 | `slam_odometry.py` | SLAM 前端:逐帧 velodyne → 链式位姿 `T_k = P_{k-1}·inv(T_delta)`(双出口契约见 `slam.py`) |
 | `slam_backend.py` | SLAM 后端:关键帧 + ScanContext 回环候选 + 双 yaw ICP 验证 + PGO(边存点映射 `Z_ij`) |
 | `slam_diff_test.py` | 前端位对齐对拍:numpy vs `slam_cpp` 同一 `(prev,cur,init,seed)` 下比单次 ICP |
-| `eval_slam.py` | SLAM 精度评估:LiDAR 系位姿 → ego 系(手性共轭 `M·T·M` + 杆臂 `inv(L)`)→ ATE/RPE |
+| `eval_slam.py` | SLAM 精度评估:LiDAR 系位姿 → ego 系(手性共轭 `M·T·M` + 杆臂 `inv(L)`)→ ATE/RPE · 落 `logs/` 三件套 |
 | `build_accum_map.py` | 累积语义建图(多帧 velodyne → 全局语义地图) |
 | `probe_scan_to_map.py` | **B2 实测**:oracle GT 局部地图下 scan-to-map vs scan-to-scan(结论:误差随地图深度 K 单调变差 1.05×→2.75×,重新体素化救不回 → 不建 ikd-Tree 前端;含代价/谱/地面占比三条机制证据) |
 
@@ -180,14 +187,14 @@ AutoDriveData/
 | `multilidar.py` | 多雷达标定:point-to-plane ICP + overlap/plausible 判据 |
 | `ground.py` | 点云地面提取:RANSAC 平面拟合 + 网格法双路线 |
 | `cluster.py` | 点云聚类障碍物检测:欧氏聚类 + 3D 包围盒 |
-| `finetune_synth.py` | 合成 KITTI → pointpillars_kitti 微调(复用 AutoLabel train3d) |
-| `eval_2d_ab.py` | P1 逆光 A/B:冻结 YOLO11s 在两个 KITTI root 的 2D AP 对比 |
-| `eval_attr.py` | 失效归因评估:多跑 × 距离/框高/TTC 网格 + 漏检画像 |
-| `eval_kitti.py` | GT vs AutoLabel 伪标签比对报表(比对层 CLI) |
-| `mono_distance.py` | 单目测距评估(检测框 → 距离,与 KITTI GT 真距对照) |
+| `finetune_synth.py` | 合成 KITTI → pointpillars_kitti 微调(复用 AutoLabel train3d) · 落 `logs/` 三件套 |
+| `eval_2d_ab.py` | P1 逆光 A/B:冻结 YOLO11s 在两个 KITTI root 的 2D AP 对比 · 落 `logs/` 三件套 |
+| `eval_attr.py` | 失效归因评估:多跑 × 距离/框高/TTC 网格 + 漏检画像 · 落 `logs/` 三件套 |
+| `eval_kitti.py` | GT vs AutoLabel 伪标签比对报表(比对层 CLI) · 落 `logs/` 三件套 |
+| `mono_distance.py` | 单目测距评估(检测框 → 距离,与 KITTI GT 真距对照) · 落 `logs/` 三件套 |
 | `extract_ground.py` | 地面提取(逐帧点云 → 地面/非地面分离 + 统计) |
-| `cluster_obstacles.py` | 聚类障碍物检测(地面分割 → 聚类 → 3D bbox) |
-| `sem_bev.py` | 语义 BEV:图像 → YOLOPv2 + YOLO11s-seg → BEV 鸟瞰 |
+| `cluster_obstacles.py` | 聚类障碍物检测(地面分割 → 聚类 → 3D bbox) · 落 `logs/` 三件套 |
+| `sem_bev.py` | 语义 BEV:图像 → YOLOPv2 + YOLO11s-seg → BEV 鸟瞰 · 落 `logs/` 三件套 |
 
 ### `gt/` — GT 生成(3 + `export/` 子包)
 
@@ -203,16 +210,16 @@ AutoDriveData/
 
 | 文件 | 职责 |
 |---|---|
-| `assemble_traj_pt.py` | CARLA 轨迹 → HiVT TemporalData 组装(纯值) |
-| `convert_hivt_pt.py` | plain dict → HiVT TemporalData(在 hivt env 跑) |
+| `assemble_traj_pt.py` | CARLA 轨迹 → HiVT TemporalData 组装(纯值) · 落 `logs/` 三件套 |
+| `convert_hivt_pt.py` | plain dict → HiVT TemporalData(在 hivt env 跑) · 落 `logs/` 三件套 |
 
 ### `gs/` — 3DGS(1)
 
 | 文件 | 职责 |
 |---|---|
-| `train_3dgs_mini.py` | 3DGS mini 训练(gsplat 光栅化) |
+| `train_3dgs_mini.py` | 3DGS mini 训练(gsplat 光栅化) · 落 `logs/` 三件套 |
 
-### `utils/` — 通用件(3)
+### `utils/` — 通用件(4)
 
 **准入判据**:无项目领域语义、无 carla/torch 依赖;超过 6 个文件即视为 junk drawer。
 
@@ -221,6 +228,7 @@ AutoDriveData/
 | `geometry.py` | 坐标转换唯一落点:CARLA 系 ↔ KITTI 相机系 ↔ nuScenes 系。`CARLA_TO_NUS`(对合)/ `nus_camera_rotation_to_carla`(相机自身系另需 `CARLA_TO_CAM`)/ **`nus_sensor_rotation_to_carla`**(LiDAR/雷达自身系与 nus 同轴序 ⇒ 两侧同阵,对纯 yaw 即 `yaw_carla = −az_nus`,6DoF 连 pitch/roll 一起正确翻过去)。`quat_normalize` 的头注归因订正:非单位来自**手抄 4 位小数**。**挂点原点单点真值**(§P-M.10):`NUS_EGO_ORIGIN_X = -1.2563`(CARLA actor 原点在**车身中点**、nus 官方表在**后轴中心** ⇒ 整套 12 路传感器偏前 1.2563 m)+ `nus_ego_translation` / `carla_actor_origin_to_nus_ego`(**只收 6DoF 三元组**,yaw-only 入口会静默丢掉 0.0642° 悬架俯仰)+ `nus_ego_rotation`(全 6DoF `ego_pose.rotation`;**UE 左手口径 ⇒ 正确分解是 `Rz(−yaw)·Ry(−pitch)·Rx(+roll)`,原样代入会静默反号**)+ `CARLA_CAM_TO_NUS_CAM`(相机**局部**基重排 `[e1,−e2,e0]`,正交但 **det = −1**;与全局基翻转相乘才抵消。拿 `M·R·M` 比相机会得到**恒 120° 的假误差**) |
 | `fonts.py` | **覆盖层文本的唯一字体落点**(PIL 唯一依赖,不 import carla):`font_path()` 按「`AUTODRIVEDATA_FONT` → 系统 CJK → **CARLA 随包 `DroidSansFallback.ttf`** → DejaVu 兜底(并 warn)」解析;**能画中文吗 = 渲染探针**(`U+10FFFF` 的像素签名 = 该字体的 `.notdef` 签名,某字签名与它相同即豆腐块;`has_cjk` 要求 `文相机字` 四签名互不相同)——**不看文件名、不看 `fc-list`、不依赖 fontTools**。`sanitize` 把字体缺的码位(`REPLACE` 表,实测只 4 个)换成等价 ASCII、兜底 `?`,**绝不留豆腐块**;`get_font`/`draw_text`/`width`/`bbox`/`wrap`(按**实测像素宽**折行 —— 单行画超画布会被 PIL 静默裁掉,见 §P-M.9)是全部绘制的入口。**两条独立成因都在这解决**:① 本机字体族**一个 CJK 字形都没有**而代码硬写 DejaVu;② **PIL 没有字体回退链**,`ImageDraw.text()` 不传 `font=` 就用内置位图字体(同样无 CJK 且只有 ~11 px)。见 Plan2.md §P-M.8 |
 | `paths.py` | 项目路径锚定(`project_path()`:相对路径 = 相对项目根) |
+| `runlog.py` | **每次训练/推理的运行留痕唯一落点**(只用 stdlib,不 import carla/torch)。`run(script)` 上下文管理器 → `logs/<能力>_<模块>_<YYYYmmdd-HHMMSS>.{log,jsonl,json}` **三件同 stem**:`.log` = **tee `sys.stdout`/`sys.stderr` 的全量文本**(头块 `script/started/argv/cwd/git(dirty 计数)/python+env/gpu(型号+显存+驱动+CUDA)/host`;尾块 产物表 + highlights;异常写完整 traceback 且**照常抛出**,`SystemExit.code != 0` 记 `status=\"failed\"`)+ `.jsonl` = `metric(step, **kv)` **逐行 flush** 的机读指标 + `.json` = 汇总(env 指纹 / `inputs` / `artifacts`(**≤512 MiB 全量 sha256**,超限只记 `bytes` 并 note)/ highlights / notes / `exit_code`)。另有 `logs/latest/<能力>_<模块>.<ext>` **相对软链**指向最新一次。**三条已踩的坑**:① `_Tee` 必须 `__getattr__` **全量代理**(`isatty`/`fileno`/`encoding` —— tqdm/ultralytics 会直接问,只实现 `write`/`flush` 在非 tty 跑法里炸);② 退出时恢复**构造时抓的那个流对象**而非 `sys.__stdout__`(pytest `capsys` 会替换 `sys.stdout`,写错就把外层捕获**永久**破坏);③ 环境指纹**只在头块采一次**并复用(`_summary()` 重采会让 `.json["gpu"]` 与同一跑的 `.log` 头块不一致)。`env` 名按 **`envs/<name>` 路径段**反解 —— `sys.prefix == sys.base_prefix` 在本机**是错的判据**(env 真身在数据盘、软链进 `envs/`)。关掉:`--no-runlog`(扫 `sys.argv` **字面量**,因为 `start()` 早于 argparse)或 `AUTODRIVEDATA_RUNLOG=0`。**注意 `convert_hivt_pt.py` 以文件路径在 hivt env 跑,脚本自带项目根 `sys.path` 引导**(否则 `import autodrivedata` 必炸) |
 
 ## 3 `tests/` — 单测与 oracle 对比(autodrivedata env)
 
@@ -230,6 +238,7 @@ AutoDriveData/
 | 类别 | 文件 | 说明 |
 |---|---|---|
 | 纯值库单测 | `test_geometry.py` `test_calib.py` `test_gt.py` `test_compare.py` `test_paths.py` `test_scenarios.py` `test_static_gt.py` `test_traffic_light.py` `test_semantic.py` `test_radar.py` | 手算断言,不依赖 carla / AutoLabel |
+| 运行日志 | `test_runlog.py` | 三件套契约的**纯值**回归钉(不依赖 carla/torch/GPU)。`TestHeader` 钉头块 `script`/`started` 正则/`argv`/`cwd`,**且指纹只采一次**(monkeypatch 计数器 —— 重采会让同一跑的 `.json["gpu"]` 与 `.log` 头块不一致);`TestTee` 钉 `print()` 进 `.log` + **`__getattr__` 全量代理**(`isatty`/`encoding` 与内层流一致)+ **恢复的是构造时那个对象**(`sys.stdout` 身份相等,自证 `capsys` 不被破坏);`TestRegistries` 钉**同名重复登记去重**(同一文件登记两次只留一行 —— `inputs` 是"读了哪些"的**集合**,不是调用流水账)+ 不存在的路径记 `missing` **不虚报** + `artifact_dir` 的 `n_files`/`bytes_total`;`TestFailure` 钉 `ValueError` → traceback 进 `.log` / `status="error"` / **异常照常抛出**,`SystemExit(1)` → `exit_code=1` / `status="failed"`;`TestSwitches` 钉 `AUTODRIVEDATA_RUNLOG=0` 与 `sys.argv` 里的 `--no-runlog` 都**一个文件不建**;`TestFingerprint` 钉无 CUDA / 非 git 下取 `null` 而**不抛** |
 | **层守卫** | `test_layer_guard.py` | **包纪律的可执行版本**(docs/refactor-2026-09.md §3):`LAYER_RULES` = 目录 → 禁止 import 的三方名,最长前缀匹配。旧版(`test_paths.py` 的整包禁令)的两个洞已堵:**马甲库**(`ultralytics`/`mmdet3d`/`mmcv`/`lightning` 会拉起 torch 但字面无 torch)、**字面量动态导入**(`importlib.import_module("x")`)。`TestPackageLayers` 扫真实包 + 强制新子目录必须显式声明;`TestLayerGuardSelfCheck` 用**合成源码注入**做立论自证(12 条:抓得住三类违规,且规则能区分、不是"见 carla 就红") |
 | **文档守卫** | `test_docs.py` | **「文档/入口不腐」的可执行判据**(2026-09-26 重构后补 —— 那次 21 条引用失效**全是静默的**,只有照着做的人拿到 `FileNotFoundError`;失效模式与 `paths.py::parents[1]` 同族:写的时候对、挪了之后静默错)。三类:① `CLAUDE.md`/`README.md`/`docs/fileTree.md` 的 markdown 链接目标必须存在;② 同三份文档里的 `python -m autodrivedata.<...>` 必须 `find_spec` 可解析;③ **包内 `.py` docstring 的 markdown 链接**必须存在。**第三类是第一版的漏网** —— 只扫 `.md` 时,`utils/fonts.py` 等处的 **16 条**坏链在「全文档坏链 0」的结论下整体逃检 ⇒ **判据的覆盖范围本身也是判据的一部分**。每条各带一条**扫描器自证**(防正则腐化后空过)。只判机械可判者:docstring 里的裸文件名不算路径;形如**方括号后紧跟圆括号单位**的**单位注记**(如米/像素、度、yaw=0)由后缀白名单滤掉(不加会多 9 条假阳性)。**`.`md` 侧不加白名单** —— 那里 `]` + `(` 就是 Markdown 链接,写它就是真坏链(本行的初版用实例演示,当场把守卫测红) |
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
@@ -295,6 +304,15 @@ AutoDriveData/
 | `models/` | 推理权重(YOLOPv2 等) | 下载/转换 |
 | `nus_mini*` | nuScenes 迷你集(含 L3 雷达口径变体)。**⚠️ 两个旧产物已标废弃**(2026-09-23,§P-M.7):`nus_mini`(已重采覆盖,现 36M)——旧版是「**表对了、图错了**」(相机挂 LiDAR 挂点 + 镜像偏航、雷达偏航差 94–136°、LiDAR 无 rotation)⇒ 不存在"改几行标定就能救"的路径,与 §P-M.5 对 MapTR 权重的处置同口径。**2026-09-23 又重采一次**(§P-M.10 挂点原点:旧版 12 路全偏前 1.2563 m、`ego_pose` 丢悬架俯仰) | `collect_nus.py` |
 | `nus_calib_check/` | `collect_nus` 验收判据的复现报告:`report.json`(**修后**逐判据 pass + 原始数字,含 LiDAR 单位阵消融对照 1.0000→0.1684)+ `report_prefix.json`(**修前**基线,三条离线判据全 ✗ 的固化证据)+ **`report_wide.json`**(wide rig;**十条判据**,③④ 为与相机无关的不变项,⑨⑩ = §P-M.10 新增) | `verify_nus_calib.py` |
+
+### `logs/` — 运行日志(顶层独立目录,**不是产物**)
+
+> 【未入库】,已被 `.gitignore` 忽略(回归钉 `test_paths.py::test_logs_dir_is_ignored`)。
+
+16 个训练/推理/评估入口**每次跑都落三件套**(同 stem;语义见 `utils/runlog.py` 行):
+`<能力>_<模块>_<YYYYmmdd-HHMMSS>.log`(全量 stdout 文本)/ `.jsonl`(逐迭代指标)/ `.json`(环境指纹 + 入参 + 产物表带 sha256 + 结论)。
+`logs/latest/<能力>_<模块>.<ext>` 是**相对软链**,指向该脚本最近一次 —— `tail -f` 用它。
+**增量式、不滚动**(每次一份):先看实际增长速度,嫌多再议清理,**本轮不做**。
 
 **可否删**:数据集与权重删前先确认 Plan2.md §5「数据资产」是否仍被引用。
 

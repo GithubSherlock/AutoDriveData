@@ -50,6 +50,7 @@ from autodrivedata.perception.attribution import (
     norm_cls,
     ttc_s,
 )
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 DELTA_S = 0.1  # 同步模式固定步长(同 carla_common.sync_mode / 各采集器)
@@ -261,27 +262,42 @@ def main() -> None:
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", default=None, help="把原始归因记录落 JSON(备查/复算)")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
-    if args.json:
-        args.json = str(project_path(args.json))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
-    model = YOLO(args.weight)
-    names = model.names
-    results: dict[str, list[GtRecord]] = {}
-    dump: dict[str, list[dict]] = {}
-    for name, root, speed in args.runs:
-        if name in results:
-            raise SystemExit(f"--run 名字重复: {name}")
-        recs, speeds = run_one(root, speed, model, names, args.conf, args.iou, args.limit)
-        report_run(name, root, speed, recs, speeds)
-        results[name] = recs
-        dump[name] = [asdict(r) for r in recs]
+    with runlog.run("autodrivedata.perception.eval_attr") as rl:
+        rl.input(args.weight, "weight")
+        for name, root, speed in args.runs:
+            # 每个 --run 的速度是 TTC 归一化的分母,也是"跨速度不许比检出率"这条
+            # 红线的依据 —— 输入侧连同速度一起留痕,否则事后看不出比的是不是同速
+            rl.input(root, f"run:{name}")
+            rl.note(f"run {name}: root={root} 速度={speed} m/s")
+        if args.json:
+            args.json = str(project_path(args.json))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
-    report_grid(results, lambda r: r.distance_m, DISTANCE_EDGES, "距离分箱检出率网格", "m")
-    report_grid(results, lambda r: r.height_px, HEIGHT_EDGES, "框高分箱检出率网格", "px")
-    if args.json:
-        Path(args.json).write_text(json.dumps(dump, ensure_ascii=False, indent=1))
-        print(f"\n[json] {Path(args.json).resolve()}")
+        model = YOLO(args.weight)
+        names = model.names
+        results: dict[str, list[GtRecord]] = {}
+        dump: dict[str, list[dict]] = {}
+        for name, root, speed in args.runs:
+            if name in results:
+                raise SystemExit(f"--run 名字重复: {name}")
+            recs, speeds = run_one(root, speed, model, names, args.conf, args.iou, args.limit)
+            report_run(name, root, speed, recs, speeds)
+            results[name] = recs
+            dump[name] = [asdict(r) for r in recs]
+
+        report_grid(results, lambda r: r.distance_m, DISTANCE_EDGES, "距离分箱检出率网格", "m")
+        report_grid(results, lambda r: r.height_px, HEIGHT_EDGES, "框高分箱检出率网格", "px")
+        rl.highlight("conf", args.conf)
+        rl.highlight("iou", args.iou)
+        for name, recs in results.items():
+            rl.highlight(f"n_gt/{name}", len(recs))
+            rl.highlight(f"recall/{name}", round(sum(1 for r in recs if r.matched) / max(len(recs), 1), 4))
+        if args.json:
+            Path(args.json).write_text(json.dumps(dump, ensure_ascii=False, indent=1))
+            print(f"\n[json] {Path(args.json).resolve()}")
+            rl.artifact(args.json, "attribution-raw")
 
 
 if __name__ == "__main__":

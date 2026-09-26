@@ -42,6 +42,7 @@ import numpy as np
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.perception import attribution as attr
 from autodrivedata.perception.mono_depth import box_to_ground_distance
+from autodrivedata.utils import runlog
 from autodrivedata.utils.geometry import box_2d_from_3d, mono_depth_from_box
 from autodrivedata.utils.paths import project_path
 
@@ -302,69 +303,83 @@ def main() -> None:
     ap.add_argument("--yolo-weight", default=DEFAULT_YOLO_WEIGHT, help="YOLO 权重(KITTI 微调模型)")
     ap.add_argument("--yolo-conf", type=float, default=0.25, help="YOLO 置信度阈值")
     ap.add_argument("--iou-thr", type=float, default=0.5, help="YOLO 框与 GT 投影框匹配 IoU 阈值")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    root = project_path(args.root)
-    cam_k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90)
-    image_2 = root / "training" / "image_2"
-    label_2 = root / "training" / "label_2"
-    calib = root / "training" / "calib"
+    with runlog.run("autodrivedata.perception.mono_distance") as rl:
+        rl.input(args.root, "kitti-root")
+        if args.detector == "yolo":
+            rl.input(args.yolo_weight, "yolo-weight")
+        root = project_path(args.root)
+        cam_k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90)
+        image_2 = root / "training" / "image_2"
+        label_2 = root / "training" / "label_2"
+        calib = root / "training" / "calib"
 
-    match_stats: dict | None = None
-    if args.detector == "project":
-        res = eval_mono_distance(
-            image_2,
-            label_2,
-            calib,
-            max_frames=args.max_frames,
-            camera=cam_k,
-            cam_z=CAM_Z,
-            cam_yaw_rad=CAM_YAW_RAD,
-        )
-    else:
-        # 生产口径:YOLO 推理(懒加载,仅此分支才触 torch/ultralytics)
-        import torch
+        match_stats: dict | None = None
+        if args.detector == "project":
+            res = eval_mono_distance(
+                image_2,
+                label_2,
+                calib,
+                max_frames=args.max_frames,
+                camera=cam_k,
+                cam_z=CAM_Z,
+                cam_yaw_rad=CAM_YAW_RAD,
+            )
+        else:
+            # 生产口径:YOLO 推理(懒加载,仅此分支才触 torch/ultralytics)
+            import torch
 
-        if not torch.cuda.is_available():
-            raise SystemExit("--detector yolo 需要 CUDA(YOLO 推理 device=0);基线用 --detector project")
-        if _YOLO_IMPORT_ERR is not None:
-            raise RuntimeError(f"ultralytics 导入失败:{_YOLO_IMPORT_ERR}")
-        model = cast(Any, YOLO)(args.yolo_weight)  # ultralytics 导入失败已被上面 SystemExit 拦截
-        names = model.names
-        yolo_dets = _yolo_detect_frames(image_2, model, names, conf=args.yolo_conf, limit=args.max_frames)
-        rows, match_stats = _yolo_rows(
-            label_2,
-            calib,
-            yolo_dets,
-            camera=cam_k,
-            cam_z=CAM_Z,
-            cam_yaw_rad=CAM_YAW_RAD,
-            iou_thr=args.iou_thr,
-        )
-        res = {"rows": rows, "n_rows": len(rows)}
+            if not torch.cuda.is_available():
+                raise SystemExit("--detector yolo 需要 CUDA(YOLO 推理 device=0);基线用 --detector project")
+            if _YOLO_IMPORT_ERR is not None:
+                raise RuntimeError(f"ultralytics 导入失败:{_YOLO_IMPORT_ERR}")
+            model = cast(Any, YOLO)(args.yolo_weight)  # ultralytics 导入失败已被上面 SystemExit 拦截
+            names = model.names
+            yolo_dets = _yolo_detect_frames(image_2, model, names, conf=args.yolo_conf, limit=args.max_frames)
+            rows, match_stats = _yolo_rows(
+                label_2,
+                calib,
+                yolo_dets,
+                camera=cam_k,
+                cam_z=CAM_Z,
+                cam_yaw_rad=CAM_YAW_RAD,
+                iou_thr=args.iou_thr,
+            )
+            res = {"rows": rows, "n_rows": len(rows)}
 
-    summary = _summarize(res)
-    out = {
-        "root": str(root),
-        "real_car_height_m": REAL_CAR_HEIGHT_M,
-        "detector": args.detector,
-        "yolo_weight": args.yolo_weight if args.detector == "yolo" else None,
-        "yolo_conf": args.yolo_conf if args.detector == "yolo" else None,
-        "iou_thr": args.iou_thr if args.detector == "yolo" else None,
-        "match_stats": match_stats,
-        "summary": summary,
-        "rows": res["rows"],
-    }
-    out_path = project_path(args.json)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary = _summarize(res)
+        out = {
+            "root": str(root),
+            "real_car_height_m": REAL_CAR_HEIGHT_M,
+            "detector": args.detector,
+            "yolo_weight": args.yolo_weight if args.detector == "yolo" else None,
+            "yolo_conf": args.yolo_conf if args.detector == "yolo" else None,
+            "iou_thr": args.iou_thr if args.detector == "yolo" else None,
+            "match_stats": match_stats,
+            "summary": summary,
+            "rows": res["rows"],
+        }
+        out_path = project_path(args.json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"== 单目测距对比({len(res['rows'])} 框,GT 真距,detector={args.detector}) ==")
-    if match_stats:
-        print(f"  匹配: {match_stats}")
-    for m, st in summary["methods"].items():
-        print(f"{m}: {st}")
-    print(f"→ {out_path}")
+        print(f"== 单目测距对比({len(res['rows'])} 框,GT 真距,detector={args.detector}) ==")
+        if match_stats:
+            print(f"  匹配: {match_stats}")
+        for m, st in summary["methods"].items():
+            print(f"{m}: {st}")
+        print(f"→ {out_path}")
+        # **detector 必须与误差数字一起留痕**:project 档是"GT 框投影"的诚实上界,
+        # yolo 档才是生产口径 —— 两者混在同一份日志里比数字,是最典型的误读。
+        rl.highlight("detector", args.detector)
+        rl.highlight("n_rows", len(res["rows"]))
+        for name, st in summary["methods"].items():
+            for key in ("mean_err_pct", "z10_20_mean_err_pct"):
+                if st.get(key) is not None:
+                    rl.highlight(f"err/{name}/{key}", st[key])
+        rl.artifact(out_path, "mono-distance")
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ import numpy as np
 import torch
 
 from autodrivedata.map.opendrive import parse_xodr
+from autodrivedata.utils import runlog
 
 TOTAL_STEPS = 50  # HiVT 时间步:20 历史 + 30 未来
 HISTORY = 20
@@ -196,56 +197,67 @@ def main() -> None:
     ap.add_argument("--out", required=True, help="输出 processed 目录(HiVT dataset 同构)")
     ap.add_argument("--steps", type=int, default=1, help="滑窗步长(>1 去重叠)")
     ap.add_argument("--samples-per-map", type=int, default=250, help="每张图最多生成场景数")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    traj = json.loads(Path(args.traj).read_text())
-    frames = traj["frames"]
-    meta = traj["meta"]
-    n_agents = meta["n_agents"]
+    with runlog.run("autodrivedata.traj.assemble_traj_pt") as rl:
+        rl.input(args.traj, "traj-json")
+        traj = json.loads(Path(args.traj).read_text())
+        frames = traj["frames"]
+        meta = traj["meta"]
+        n_agents = meta["n_agents"]
 
-    # 组装 N×F×2 轨迹矩阵
-    agents_xy = np.zeros((n_agents, len(frames), 2), dtype=np.float64)
-    agents_yaw = np.zeros((n_agents, len(frames)), dtype=np.float64)
-    for fi, f in enumerate(frames):
-        for a in f["agents"]:
-            agents_xy[a["id"]][fi] = (a["x"], a["y"])
-            agents_yaw[a["id"]][fi] = a["yaw"]
+        # 组装 N×F×2 轨迹矩阵
+        agents_xy = np.zeros((n_agents, len(frames), 2), dtype=np.float64)
+        agents_yaw = np.zeros((n_agents, len(frames)), dtype=np.float64)
+        for fi, f in enumerate(frames):
+            for a in f["agents"]:
+                agents_xy[a["id"]][fi] = (a["x"], a["y"])
+                agents_yaw[a["id"]][fi] = a["yaw"]
 
-    centerlines = load_map_centerlines(args.map)
-    print(f"[lane] {args.map} centerline 折线 {len(centerlines)} 条")
+        centerlines = load_map_centerlines(args.map)
+        print(f"[lane] {args.map} centerline 折线 {len(centerlines)} 条")
 
-    out = Path(args.out)
-    (out / "processed").mkdir(parents=True, exist_ok=True)
+        out = Path(args.out)
+        (out / "processed").mkdir(parents=True, exist_ok=True)
 
-    # 滑窗:起点 0..n-50,步长 steps;跳过含全零帧(车已消失)的窗口
-    n_frames = len(frames)
-    n_scenes = 0
-    for s0 in range(0, n_frames - TOTAL_STEPS + 1, args.steps):
-        if n_scenes >= args.samples_per_map:
-            break
-        win = slice(s0, s0 + TOTAL_STEPS)
-        # 有效窗口:至少 ego 全程在位,且未来 30 帧内 ego 仍有位移(≤2 有效 = 纯停车段,
-        # 训练学不到东西还引入全零目标;滑窗假设"窗口内车活着")
-        if np.abs(agents_xy[0][win]).sum() < 1e-6:
-            continue
-        egof = agents_xy[0][s0 + HISTORY : s0 + TOTAL_STEPS]
-        if int(((egof[:, 0] == 0.0) & (egof[:, 1] == 0.0)).sum()) >= FUTURE - 2:
-            continue
-        scene = build_scene(
-            [agents_xy[j][win] for j in range(n_agents)],
-            [agents_yaw[j][win] for j in range(n_agents)],
-            centerlines,
-            av_idx=0,
-        )
-        seq_id = f"{args.map}_{s0:05d}"
-        scene["seq_id"] = int(s0)
-        torch.save(scene, out / "processed" / f"{seq_id}.pt")
-        # HiVT dataset len() = len(os.listdir(raw_dir)),processed 名 = raw 名去后缀
-        # → 每个 .pt 必须配同名 .csv 占位(raw 目录),否则 len()=0(空数据集)。
-        (out / "data").mkdir(parents=True, exist_ok=True)
-        (out / "data" / f"{seq_id}.csv").touch()
-        n_scenes += 1
-    print(f"[done] {args.out}/processed: {n_scenes} 场景(map={args.map}, 滑窗步长={args.steps})")
+        # 滑窗:起点 0..n-50,步长 steps;跳过含全零帧(车已消失)的窗口
+        n_frames = len(frames)
+        n_scenes = 0
+        for s0 in range(0, n_frames - TOTAL_STEPS + 1, args.steps):
+            if n_scenes >= args.samples_per_map:
+                break
+            win = slice(s0, s0 + TOTAL_STEPS)
+            # 有效窗口:至少 ego 全程在位,且未来 30 帧内 ego 仍有位移(≤2 有效 = 纯停车段,
+            # 训练学不到东西还引入全零目标;滑窗假设"窗口内车活着")
+            if np.abs(agents_xy[0][win]).sum() < 1e-6:
+                continue
+            egof = agents_xy[0][s0 + HISTORY : s0 + TOTAL_STEPS]
+            if int(((egof[:, 0] == 0.0) & (egof[:, 1] == 0.0)).sum()) >= FUTURE - 2:
+                continue
+            scene = build_scene(
+                [agents_xy[j][win] for j in range(n_agents)],
+                [agents_yaw[j][win] for j in range(n_agents)],
+                centerlines,
+                av_idx=0,
+            )
+            seq_id = f"{args.map}_{s0:05d}"
+            scene["seq_id"] = int(s0)
+            torch.save(scene, out / "processed" / f"{seq_id}.pt")
+            # HiVT dataset len() = len(os.listdir(raw_dir)),processed 名 = raw 名去后缀
+            # → 每个 .pt 必须配同名 .csv 占位(raw 目录),否则 len()=0(空数据集)。
+            (out / "data").mkdir(parents=True, exist_ok=True)
+            (out / "data" / f"{seq_id}.csv").touch()
+            n_scenes += 1
+        print(f"[done] {args.out}/processed: {n_scenes} 场景(map={args.map}, 滑窗步长={args.steps})")
+        # 场景数受 `--samples-per-map` 上限截断 —— 这个是"覆盖了多少"的核心数字;
+        # 不记它,事后无法区分"这图就这么多窗口"与"被上限砍了"
+        rl.highlight("n_scenes", n_scenes)
+        rl.highlight("map", args.map)
+        rl.highlight("steps", args.steps)
+        rl.highlight("samples_per_map", args.samples_per_map)
+        rl.highlight("n_centerlines", len(centerlines))
+        rl.artifact_dir(out / "processed", "hivt-processed")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,11 @@
   python -m autodrivedata.map.eval_maptr --infos outputs/surround_train/map_infos.json \
       --root outputs/surround_train --ckpt outputs/maptr_ep512.pt \
       --start 200 --out-frames outputs/surround_pred      # → outputs/surround_pred/{token}.json
+
+**AP 口径的唯一落点**:`evaluate()` 是纯函数形态的实现,`main()` 只是它的 argparse 壳。
+`train_maptr --eval-*` 训练尾部的自动评估**调用同一个 `evaluate()`** ——
+chamfer AP 若抄成第二份,两处必然漂移,而"同一权重在两个脚本里报出不同 AP"是最难查的失效。
+每次运行落 `logs/` 三件套(脚本/时间/argv/git/GPU + 输入产物 + mAP 等结论),`--no-runlog` 关。
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from autodrivedata.map.mapvec_schema import (
     make_instance,
     out_of_window,
 )
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 
@@ -100,6 +106,198 @@ def _dump_preds(
     plt.close(fig)
 
 
+def evaluate(
+    *,
+    infos: str,
+    root: str,
+    ckpt: str,
+    frames: int | None = None,
+    start: int = 0,
+    seg: str | None = None,
+    exclude_seg: str = "",
+    keep_in_seg: str | None = None,
+    score_thr: float = 0.2,
+    sweep: str | None = None,
+    match: str = "auto",
+    temporal_window: int = 1,
+    device: str | None = None,
+    out_pred: str | None = None,
+    out_frames: str | None = None,
+    rl: runlog.RunLogger | None = None,
+    highlight_prefix: str = "",
+) -> dict:
+    """推理 + chamfer AP —— **AP 口径的唯一落点**。
+
+    抽成显式 kwarg 的函数(而不是留在 `main()` 里)是为了让 `train_maptr` 训练结束后
+    的自动评估能**调用同一份实现**:chamfer AP 若抄成第二份,两处必然漂移,
+    而"同一权重在不同脚本里报出不同 AP"是最难查的一类结论失效。
+
+    `rl` 给定则把输入/产物/结论登记进**调用方的**日志(传 `None` = 全程 no-op)。
+    被 `train_maptr` 调用时本函数的 `print()` 落在**训练的**日志里 —— 不另开一份,
+    这样"训练 → 留出评估"是一条完整的时间线。
+
+    返回 `{"mAP", "aps", "classes", "n_frames", "score_thr", "backend", "n_pred", "n_gt"}`。
+    """
+    if match == "cpu":
+        cost_fn, backend = chamfer_cost_matrix, "cpu"
+    elif match == "gpu":
+        cost_fn, backend = chamfer_cost_matrix_cuda, "gpu"
+    else:
+        cost_fn, backend = (
+            (chamfer_cost_matrix_cuda, "gpu") if torch.cuda.is_available() else (chamfer_cost_matrix, "cpu")
+        )
+
+    if rl is not None:
+        # 输入的 ckpt 必须留痕:权重同名覆盖是常态,"这份 AP 是哪份权重出的"全靠它
+        rl.input(ckpt, "ckpt")
+        rl.input(infos, "infos")
+        rl.input(root, "root")
+
+    if out_pred:
+        out_pred = str(project_path(out_pred))  # 产物锚定项目根(不随 cwd 漂移)
+    if out_frames:
+        out_frames = str(project_path(out_frames))
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    meta = json.loads(Path(infos).read_text(encoding="utf-8"))
+    # 段/帧号选择器先过滤,--start / --frames 再在**过滤后的列表上**截 ——
+    # 与 train_maptr 共用 select_frames,保证"训练排除了哪一段"与"评测只评哪一段"
+    # 是同一份划分逻辑(两处各写一遍必然漂移,而这是 AP 结论有效性的前提)
+    sel = select_frames(meta, parse_segs(seg), parse_segs(exclude_seg) or (), parse_frame_range(keep_in_seg))
+    if not sel:
+        raise SystemExit("筛选后没有任何帧 —— 检查 --seg / --exclude-seg / --keep-in-seg")
+    n = min(frames or len(sel), len(sel))
+    frame_list = sel[start : start + n]
+    ds = MapTRDataset(meta, root, frames=frame_list, window=temporal_window)
+    if ds.dropped:
+        print(f"[data] 窗口 {temporal_window} 丢弃 {len(ds.dropped)} 帧(前驱不在本切分内)")
+    print(f"[data] {len(ds)} 帧 × {len(ds.cam_names)} 相机")
+
+    model = MapTR(temporal_window=temporal_window).to(dev)
+    load_map_weights(model, ckpt, dev)
+    model.eval()
+    print(f"[model] {ckpt} 载入完成(窗口 {temporal_window})")
+
+    sweep_list = [float(x) for x in sweep.split(",")] if sweep else []
+    floor = min([score_thr, *sweep_list])  # 单次推理收全部 >floor 的实例,阈值纯后处理
+    inst_by_class: list[list[tuple[float, np.ndarray]]] = [[] for _ in MAPTR_CLASSES]
+    gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
+    t0 = time.perf_counter()
+    n_frame_files = oow_pred = oow_gt = 0
+    with torch.no_grad():
+        for i, item in enumerate(ds):
+            if isinstance(item["images"], list):  # 时序:旧 → 新的 K 帧
+                images = [{n: t[None].to(dev) for n, t in f.items()} for f in item["images"]]
+                pose = item["poses"][None].to(dev)
+            else:
+                images = {n: t[None].to(dev) for n, t in item["images"].items()}
+                pose = item["pose"][None].to(dev)
+            out, _ = model(images, pose, ds.calibs)
+            logits = out["pred_logits"][0].float()  # (Nq, C+1)
+            pts = out["pred_points"][0].float().cpu().numpy()  # (Nq, P, 2)
+            scores = torch.sigmoid(logits).cpu().numpy()
+            frame_preds: list[MapVecInstance] = []
+            for c in range(len(MAPTR_CLASSES)):
+                idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
+                sc_c = scores[idx, c + 1]
+                keep = sc_c > floor
+                inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
+                gts_by_class[c].extend(item["gt"][c])
+                if out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
+                    at_thr = sc_c > score_thr  # 勿叫 sel:外层 sel 是帧下标列表
+                    frame_preds.extend(
+                        make_instance(MAPTR_CLASSES[c], p, s)
+                        for s, p in zip(sc_c[at_thr].tolist(), pts[idx][at_thr], strict=True)
+                    )
+            if out_frames:
+                info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
+                rec = MapVecFramePred(
+                    frame=int(info["frame"]),
+                    token=str(info["token"]),
+                    score_thr=score_thr,
+                    ckpt=ckpt,
+                    preds=tuple(frame_preds),
+                    gts=tuple(
+                        make_instance(MAPTR_CLASSES[c], g)
+                        for c in range(len(MAPTR_CLASSES))
+                        for g in item["gt"][c]
+                    ),
+                )
+                dump_frame(rec, out_frames)
+                n_frame_files += 1
+                oow_pred += out_of_window(rec)
+                oow_gt += gt_out_of_window(rec)
+            if (i + 1) % 50 == 0:
+                print(f"[infer] {i + 1}/{len(frame_list)} 帧 ({time.perf_counter() - t0:.1f}s)")
+
+    def _at(thr: float) -> tuple[list[list], list[float], float]:
+        """按阈值过滤实例 → (逐类折线, 逐类 AP, mAP)。代价矩阵与阈值无关,每档重算。"""
+        preds = [[p for s, p in items if s > thr] for items in inst_by_class]
+        aps_, m_ = chamfer_ap_per_class(preds, gts_by_class, cost_fn=cost_fn)
+        return preds, aps_, m_
+
+    t1 = time.perf_counter()
+    if sweep_list:
+        print(f"[eval] score 阈值扫描 后端={backend}")
+        print("   " + "thr".rjust(5) + "   mAP".ljust(11) + "  ".join(n.rjust(11) for n in MAPTR_CLASSES))
+        for thr in sweep_list:
+            preds_s, aps_s, m_s = _at(thr)
+            counts = "/".join(str(len(p)) for p in preds_s)
+            print(
+                f"  {thr:5.2f}   {m_s:<11.4f}" + "  ".join(f"{a:11.4f}" for a in aps_s) + f"   pred={counts}"
+            )
+    preds_by_class, aps, mAP = _at(score_thr)
+    scores_by_class = [[s for s, _ in items if s > score_thr] for items in inst_by_class]
+    print(f"[eval] score_thr={score_thr} 后端={backend} 匹配 {time.perf_counter() - t1:.1f}s")
+    for cls_name, ap_, preds, gts in zip(MAPTR_CLASSES, aps, preds_by_class, gts_by_class, strict=True):
+        print(f"  {cls_name:14s} AP={ap_:.4f}  (pred {len(preds)} / gt {len(gts)})")
+    print(f"  {'mAP':14s} = {mAP:.4f}")
+
+    if out_pred:
+        _dump_preds(
+            out_pred,
+            infos,
+            ckpt,
+            score_thr,
+            preds_by_class,
+            scores_by_class,
+            gts_by_class,
+        )
+        print(f"[out] 预测落盘 {out_pred}.json / {out_pred}.png")
+
+    if out_frames:
+        print(
+            f"[out] 逐帧契约落盘 {n_frame_files} 个文件 → {out_frames}/{{token}}.json"
+            f"(越窗点 pred {oow_pred} / gt {oow_gt})"
+        )
+
+    if rl is not None:
+        # 结论数字登记到**调用方的**日志:单独跑 = 评测日志;被 train_maptr 调用 = 训练日志
+        # `highlight_prefix` 让训练日志里这条叫 `holdout_mAP` —— 不加前缀的话,训练日志的
+        # `mAP` 与训练损失并列,极易被读成"训练期算出来的 AP"(它其实是留出集的)。
+        rl.highlight(f"{highlight_prefix}mAP", round(mAP, 4))
+        for cls_name, ap_ in zip(MAPTR_CLASSES, aps, strict=True):
+            rl.highlight(f"{highlight_prefix}AP/{cls_name}", round(ap_, 4))
+        rl.highlight(f"{highlight_prefix}score_thr", score_thr)
+        rl.highlight(f"{highlight_prefix}n_frames", len(frame_list))
+        if out_pred:
+            rl.artifact(f"{out_pred}.json", "pred")
+            rl.artifact(f"{out_pred}.png", "pred-figure")
+        if out_frames:
+            rl.artifact_dir(out_frames, "pred-frames")
+
+    return {
+        "mAP": mAP,
+        "aps": aps,
+        "classes": list(MAPTR_CLASSES),
+        "n_frames": len(frame_list),
+        "score_thr": score_thr,
+        "backend": backend,
+        "n_pred": [len(p) for p in preds_by_class],
+        "n_gt": [len(g) for g in gts_by_class],
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--infos", required=True, help="B2 组装 infos json")
@@ -131,133 +329,27 @@ def main() -> None:
         default=None,
         help="逐帧预测落盘目录:<DIR>/{token}.json(mapvec_pred/1 契约,GT 同文件携带;供 AutoLabel 消费)",
     )
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
-    for name in ("out_pred", "out_frames"):
-        if getattr(args, name):
-            setattr(args, name, str(project_path(getattr(args, name))))  # 产物锚定项目根(不随 cwd 漂移)
 
-    if args.match == "cpu":
-        cost_fn, backend = chamfer_cost_matrix, "cpu"
-    elif args.match == "gpu":
-        cost_fn, backend = chamfer_cost_matrix_cuda, "gpu"
-    else:
-        cost_fn, backend = (
-            (chamfer_cost_matrix_cuda, "gpu") if torch.cuda.is_available() else (chamfer_cost_matrix, "cpu")
-        )
-
-    dev = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    infos = json.loads(Path(args.infos).read_text(encoding="utf-8"))
-    # 段/帧号选择器先过滤,--start / --frames 再在**过滤后的列表上**截 ——
-    # 与 train_maptr 共用 select_frames,保证"训练排除了哪一段"与"评测只评哪一段"
-    # 是同一份划分逻辑(两处各写一遍必然漂移,而这是 AP 结论有效性的前提)
-    sel = select_frames(
-        infos, parse_segs(args.seg), parse_segs(args.exclude_seg) or (), parse_frame_range(args.keep_in_seg)
-    )
-    if not sel:
-        raise SystemExit("筛选后没有任何帧 —— 检查 --seg / --exclude-seg / --keep-in-seg")
-    n = min(args.frames or len(sel), len(sel))
-    frames = sel[args.start : args.start + n]
-    ds = MapTRDataset(infos, args.root, frames=frames, window=args.temporal_window)
-    if ds.dropped:
-        print(f"[data] 窗口 {args.temporal_window} 丢弃 {len(ds.dropped)} 帧(前驱不在本切分内)")
-    print(f"[data] {len(ds)} 帧 × {len(ds.cam_names)} 相机")
-
-    model = MapTR(temporal_window=args.temporal_window).to(dev)
-    load_map_weights(model, args.ckpt, dev)
-    model.eval()
-    print(f"[model] {args.ckpt} 载入完成(窗口 {args.temporal_window})")
-
-    sweep = [float(x) for x in args.sweep.split(",")] if args.sweep else []
-    floor = min([args.score_thr, *sweep])  # 单次推理收全部 >floor 的实例,阈值纯后处理
-    inst_by_class: list[list[tuple[float, np.ndarray]]] = [[] for _ in MAPTR_CLASSES]
-    gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
-    t0 = time.perf_counter()
-    n_frame_files = oow_pred = oow_gt = 0
-    with torch.no_grad():
-        for i, item in enumerate(ds):
-            if isinstance(item["images"], list):  # 时序:旧 → 新的 K 帧
-                images = [{n: t[None].to(dev) for n, t in f.items()} for f in item["images"]]
-                pose = item["poses"][None].to(dev)
-            else:
-                images = {n: t[None].to(dev) for n, t in item["images"].items()}
-                pose = item["pose"][None].to(dev)
-            out, _ = model(images, pose, ds.calibs)
-            logits = out["pred_logits"][0].float()  # (Nq, C+1)
-            pts = out["pred_points"][0].float().cpu().numpy()  # (Nq, P, 2)
-            scores = torch.sigmoid(logits).cpu().numpy()
-            frame_preds: list[MapVecInstance] = []
-            for c in range(len(MAPTR_CLASSES)):
-                idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
-                sc_c = scores[idx, c + 1]
-                keep = sc_c > floor
-                inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
-                gts_by_class[c].extend(item["gt"][c])
-                if args.out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
-                    at_thr = sc_c > args.score_thr  # 勿叫 sel:外层 sel 是帧下标列表
-                    frame_preds.extend(
-                        make_instance(MAPTR_CLASSES[c], p, s)
-                        for s, p in zip(sc_c[at_thr].tolist(), pts[idx][at_thr], strict=True)
-                    )
-            if args.out_frames:
-                info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
-                rec = MapVecFramePred(
-                    frame=int(info["frame"]),
-                    token=str(info["token"]),
-                    score_thr=args.score_thr,
-                    ckpt=args.ckpt,
-                    preds=tuple(frame_preds),
-                    gts=tuple(
-                        make_instance(MAPTR_CLASSES[c], g)
-                        for c in range(len(MAPTR_CLASSES))
-                        for g in item["gt"][c]
-                    ),
-                )
-                dump_frame(rec, args.out_frames)
-                n_frame_files += 1
-                oow_pred += out_of_window(rec)
-                oow_gt += gt_out_of_window(rec)
-            if (i + 1) % 50 == 0:
-                print(f"[infer] {i + 1}/{len(frames)} 帧 ({time.perf_counter() - t0:.1f}s)")
-
-    def _at(thr: float) -> tuple[list[list], list[float], float]:
-        """按阈值过滤实例 → (逐类折线, 逐类 AP, mAP)。代价矩阵与阈值无关,每档重算。"""
-        preds = [[p for s, p in items if s > thr] for items in inst_by_class]
-        aps_, m_ = chamfer_ap_per_class(preds, gts_by_class, cost_fn=cost_fn)
-        return preds, aps_, m_
-
-    t1 = time.perf_counter()
-    if sweep:
-        print(f"[eval] score 阈值扫描 后端={backend}")
-        print("   " + "thr".rjust(5) + "   mAP".ljust(11) + "  ".join(n.rjust(11) for n in MAPTR_CLASSES))
-        for thr in sweep:
-            preds_s, aps_s, m_s = _at(thr)
-            counts = "/".join(str(len(p)) for p in preds_s)
-            print(
-                f"  {thr:5.2f}   {m_s:<11.4f}" + "  ".join(f"{a:11.4f}" for a in aps_s) + f"   pred={counts}"
-            )
-    preds_by_class, aps, mAP = _at(args.score_thr)
-    scores_by_class = [[s for s, _ in items if s > args.score_thr] for items in inst_by_class]
-    print(f"[eval] score_thr={args.score_thr} 后端={backend} 匹配 {time.perf_counter() - t1:.1f}s")
-    for cls_name, ap_, preds, gts in zip(MAPTR_CLASSES, aps, preds_by_class, gts_by_class, strict=True):
-        print(f"  {cls_name:14s} AP={ap_:.4f}  (pred {len(preds)} / gt {len(gts)})")
-    print(f"  {'mAP':14s} = {mAP:.4f}")
-
-    if args.out_pred:
-        _dump_preds(
-            args.out_pred,
-            args.infos,
-            args.ckpt,
-            args.score_thr,
-            preds_by_class,
-            scores_by_class,
-            gts_by_class,
-        )
-        print(f"[out] 预测落盘 {args.out_pred}.json / {args.out_pred}.png")
-
-    if args.out_frames:
-        print(
-            f"[out] 逐帧契约落盘 {n_frame_files} 个文件 → {args.out_frames}/{{token}}.json"
-            f"(越窗点 pred {oow_pred} / gt {oow_gt})"
+    with runlog.run("autodrivedata.map.eval_maptr") as rl:
+        evaluate(
+            infos=args.infos,
+            root=args.root,
+            ckpt=args.ckpt,
+            frames=args.frames,
+            start=args.start,
+            seg=args.seg,
+            exclude_seg=args.exclude_seg,
+            keep_in_seg=args.keep_in_seg,
+            score_thr=args.score_thr,
+            sweep=args.sweep,
+            match=args.match,
+            temporal_window=args.temporal_window,
+            device=args.device,
+            out_pred=args.out_pred,
+            out_frames=args.out_frames,
+            rl=rl,
         )
 
 

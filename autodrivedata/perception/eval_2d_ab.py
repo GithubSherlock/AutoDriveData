@@ -27,6 +27,7 @@ from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
 from autodrivedata.perception.attribution import box_iou2d
+from autodrivedata.utils import runlog
 
 GT_CLASSES = ("Car", "Pedestrian", "Cyclist")
 COCO_FALLBACK = {
@@ -161,20 +162,35 @@ def main() -> None:
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    model = YOLO(args.weight)
-    names = model.names
-    print("YOLO names:", names)
-    ra = report(Path(args.root_a), model, names, args.conf, args.iou, args.limit)
-    rb = report(Path(args.root_b), model, names, args.conf, args.iou, args.limit)
-    delta = rb - ra
-    verdict = (
-        f"B 侧更低 → {Path(args.root_b).name} 掉点成立"
-        if delta < -0.01
-        else ("B 侧更高" if delta > 0.01 else "两测持平")
-    )
-    print(f"\nΔ mAP (B−A) = {delta:+.3f} —— {verdict}")
+    with runlog.run("autodrivedata.perception.eval_2d_ab") as rl:
+        rl.input(args.weight, "weight")  # 权重同名覆盖是常态,不记就没法回溯这份 Δ 是哪份权重出的
+        rl.input(args.root_a, "root-a")
+        rl.input(args.root_b, "root-b")
+        model = YOLO(args.weight)
+        names = model.names
+        print("YOLO names:", names)
+        ra = report(Path(args.root_a), model, names, args.conf, args.iou, args.limit)
+        rb = report(Path(args.root_b), model, names, args.conf, args.iou, args.limit)
+        delta = rb - ra
+        verdict = (
+            f"B 侧更低 → {Path(args.root_b).name} 掉点成立"
+            if delta < -0.01
+            else ("B 侧更高" if delta > 0.01 else "两测持平")
+        )
+        print(f"\nΔ mAP (B−A) = {delta:+.3f} —— {verdict}")
+        # 无产物脚本:结论就是这两个数与它们的差 —— 断点只看 Δ 不看 conf 会重蹈
+        # "AP 数字离开阈值无意义"的坑,故 conf/iou 与 Δ 一起留痕
+        rl.highlight("mAP_A", round(ra, 4))
+        rl.highlight("mAP_B", round(rb, 4))
+        rl.highlight("delta_mAP_B_minus_A", round(delta, 4))
+        rl.highlight("conf", args.conf)
+        rl.highlight("iou", args.iou)
+        rl.highlight("root_a", Path(args.root_a).name)
+        rl.highlight("root_b", Path(args.root_b).name)
+        rl.note(f"判据:{verdict}")
 
 
 if __name__ == "__main__":

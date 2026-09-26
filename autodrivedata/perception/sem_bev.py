@@ -38,6 +38,7 @@ import numpy as np
 import torch
 
 from autodrivedata.map.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose, intrinsics_from_k
+from autodrivedata.utils import runlog
 from autodrivedata.utils.geometry import (
     ground_intersection,  # noqa: F401 — 语义 BEV 与采集/实时流共用同一投影
 )
@@ -190,109 +191,127 @@ def main() -> None:
         "--gpu", action="store_true", help="用 GPU(autodrivedata env torch 无 CUDA 驱动,默认 CPU)"
     )
     ap.add_argument("--imgsz", type=int, default=640, help="YOLOPv2 推理尺寸")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    root = Path(args.root)
-    out = project_path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    if YOLO is None:
-        raise SystemExit("ultralytics 未装(autodrivedata env)")
+    with runlog.run("autodrivedata.perception.sem_bev") as rl:
+        rl.input(args.root, "nus-root")
+        root = Path(args.root)
+        out = project_path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        if YOLO is None:
+            raise SystemExit("ultralytics 未装(autodrivedata env)")
 
-    # 解析帧范围
-    frames: list[int] = []
-    for tok in args.frames.split(","):
-        tok = tok.strip()
-        if "-" in tok:
-            a, b = tok.split("-")
-            frames.extend(range(int(a), int(b) + 1))
-        else:
-            frames.append(int(tok))
-
-    device = torch.device("cuda" if args.gpu and torch.cuda.is_available() else "cpu")
-    print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
-
-    # 模型
-    yolo11 = YOLO(str(project_path("models/yolo11s-seg.pt")))  # 权重落点 = models/
-    # TorchScript archive:autodrivedata env torch 无 CUDA 驱动,jit.load 会做 CUDA 探测
-    # 失败(驱动 12.4 vs torch cu130)→ 用 torch.load(weights_only=False) 直接载权重图。
-    ckpt = torch.load(str(project_path("outputs/models/yolopv2.pt")), map_location="cpu", weights_only=False)
-    yolopv2 = ckpt.to(device).float().eval()
-
-    # 标定 + 姿态
-    calib = json.loads((root / "calib.json").read_text())
-    ego_poses = json.loads((root / "ego_pose.json").read_text())
-    cams = ["CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_BACK", "CAM_BACK_LEFT", "CAM_BACK_RIGHT"]
-    cam_dirs = {c: c.lower().replace("cam_", "cam_") for c in cams}  # cam_front ...
-    cam_dirs = {c: c.lower() for c in cams}
-
-    # 图尺寸(从第一张图读)
-    first_img = next((root / cam_dirs[cams[0]]).glob("*.png"))
-    size = (int(cv2.imread(str(first_img)).shape[1]), int(cv2.imread(str(first_img)).shape[0]))
-    print(f"[data] {root} | {len(frames)} 帧 × {len(cams)} 相机 | img {size[0]}x{size[1]}")
-
-    for fid in frames:
-        token = f"{fid:06d}"
-        ep = ego_poses[token] if token in ego_poses else ego_poses[fid]
-        ego = [ep["x"], ep["y"], ep["z"], ep["yaw"], ep["pitch"], ep["roll"]]
-        bev_h = int((BEV_Y[1] - BEV_Y[0]) / BEV_PX)
-        bev_w = int((BEV_X[1] - BEV_X[0]) / BEV_PX)
-        bev = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
-        ground_z = ego[2] - GROUND_Z_OFF
-
-        panels = {}
-        for cam in cams:
-            d = cam_dirs[cam]
-            p = root / d / f"{token}.png"
-            if not p.exists():
-                continue
-            img = cv2.imread(str(p))
-            intrinsics, se = init_camera(calib[cam], size)
-            world_cam = cam_pose(ego, se)
-            # YOLOPv2:da + ll
-            _, da, llm = yolopv2_predict(yolopv2, img, device, args.imgsz)
-            # YOLO11:实例掩膜(车/人/卡车/巴士)
-            res = yolo11.predict(img, conf=0.35, verbose=False)[0]
-            obj_mask = np.zeros(size[::-1], dtype=bool)
-            if res.masks is not None and res.boxes is not None:
-                cls = res.boxes.cls.cpu().numpy()
-                for i, c in enumerate(cls):
-                    if int(c) in DETECT_CLS:
-                        m = res.masks.data[i].cpu().numpy()
-                        if m.shape != size[::-1]:
-                            m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
-                        obj_mask |= m > 0.5
-            project_mask_to_bev(da, world_cam, intrinsics, ground_z, ego, bev, DA_COLOR)
-            project_mask_to_bev(llm, world_cam, intrinsics, ground_z, ego, bev, LL_COLOR)
-            project_mask_to_bev(obj_mask, world_cam, intrinsics, ground_z, ego, bev, OBJ_COLOR)
-            # 预览面板(每相机分割原图 + 掩膜投影)
-            h, w = size[1], size[0]
-            panel = np.hstack(
-                [
-                    cv2.resize(img, (w, h)),
-                    cv2.cvtColor(cv2.resize((da * 255).astype(np.uint8), (w, h)), cv2.COLOR_GRAY2BGR),
-                ]
-            )
-            panels[cam] = panel
-
-        bev_path = out / f"bev_{token}.png"
-        cv2.imwrite(str(bev_path), bev)
-        print(f"[{token}] bev 写出 {bev_path}")
-
-        # 全览:上 6 相机面板 + 下 BEV
-        cell = 480
-        row = []
-        for cam in cams:
-            if cam in panels:
-                panel = panels[cam]
-                row.append(cv2.resize(panel, (cell, cell)))
+        # 解析帧范围
+        frames: list[int] = []
+        for tok in args.frames.split(","):
+            tok = tok.strip()
+            if "-" in tok:
+                a, b = tok.split("-")
+                frames.extend(range(int(a), int(b) + 1))
             else:
-                row.append(np.zeros((cell, cell, 3), dtype=np.uint8))
-        top = np.hstack(row)
-        bottom = cv2.resize(bev, (cell * len(cams), cell * len(cams) * bev.shape[0] // bev.shape[1]))
-        comp = np.vstack([top, bottom])
-        comp_path = out / f"panel_{token}.png"
-        cv2.imwrite(str(comp_path), comp)
-    print(f"[done] 语义 BEV → {out}")
+                frames.append(int(tok))
+
+        device = torch.device("cuda" if args.gpu and torch.cuda.is_available() else "cpu")
+        print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
+
+        # 模型
+        yolo11 = YOLO(str(project_path("models/yolo11s-seg.pt")))  # 权重落点 = models/
+        # TorchScript archive:autodrivedata env torch 无 CUDA 驱动,jit.load 会做 CUDA 探测
+        # 失败(驱动 12.4 vs torch cu130)→ 用 torch.load(weights_only=False) 直接载权重图。
+        ckpt = torch.load(
+            str(project_path("outputs/models/yolopv2.pt")), map_location="cpu", weights_only=False
+        )
+        yolopv2 = ckpt.to(device).float().eval()
+
+        # 标定 + 姿态
+        calib = json.loads((root / "calib.json").read_text())
+        ego_poses = json.loads((root / "ego_pose.json").read_text())
+        cams = [
+            "CAM_FRONT",
+            "CAM_FRONT_LEFT",
+            "CAM_FRONT_RIGHT",
+            "CAM_BACK",
+            "CAM_BACK_LEFT",
+            "CAM_BACK_RIGHT",
+        ]
+        cam_dirs = {c: c.lower().replace("cam_", "cam_") for c in cams}  # cam_front ...
+        cam_dirs = {c: c.lower() for c in cams}
+
+        # 图尺寸(从第一张图读)
+        first_img = next((root / cam_dirs[cams[0]]).glob("*.png"))
+        size = (int(cv2.imread(str(first_img)).shape[1]), int(cv2.imread(str(first_img)).shape[0]))
+        print(f"[data] {root} | {len(frames)} 帧 × {len(cams)} 相机 | img {size[0]}x{size[1]}")
+
+        for fid in frames:
+            token = f"{fid:06d}"
+            ep = ego_poses[token] if token in ego_poses else ego_poses[fid]
+            ego = [ep["x"], ep["y"], ep["z"], ep["yaw"], ep["pitch"], ep["roll"]]
+            bev_h = int((BEV_Y[1] - BEV_Y[0]) / BEV_PX)
+            bev_w = int((BEV_X[1] - BEV_X[0]) / BEV_PX)
+            bev = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
+            ground_z = ego[2] - GROUND_Z_OFF
+
+            panels = {}
+            for cam in cams:
+                d = cam_dirs[cam]
+                p = root / d / f"{token}.png"
+                if not p.exists():
+                    continue
+                img = cv2.imread(str(p))
+                intrinsics, se = init_camera(calib[cam], size)
+                world_cam = cam_pose(ego, se)
+                # YOLOPv2:da + ll
+                _, da, llm = yolopv2_predict(yolopv2, img, device, args.imgsz)
+                # YOLO11:实例掩膜(车/人/卡车/巴士)
+                res = yolo11.predict(img, conf=0.35, verbose=False)[0]
+                obj_mask = np.zeros(size[::-1], dtype=bool)
+                if res.masks is not None and res.boxes is not None:
+                    cls = res.boxes.cls.cpu().numpy()
+                    for i, c in enumerate(cls):
+                        if int(c) in DETECT_CLS:
+                            m = res.masks.data[i].cpu().numpy()
+                            if m.shape != size[::-1]:
+                                m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
+                            obj_mask |= m > 0.5
+                project_mask_to_bev(da, world_cam, intrinsics, ground_z, ego, bev, DA_COLOR)
+                project_mask_to_bev(llm, world_cam, intrinsics, ground_z, ego, bev, LL_COLOR)
+                project_mask_to_bev(obj_mask, world_cam, intrinsics, ground_z, ego, bev, OBJ_COLOR)
+                # 预览面板(每相机分割原图 + 掩膜投影)
+                h, w = size[1], size[0]
+                panel = np.hstack(
+                    [
+                        cv2.resize(img, (w, h)),
+                        cv2.cvtColor(cv2.resize((da * 255).astype(np.uint8), (w, h)), cv2.COLOR_GRAY2BGR),
+                    ]
+                )
+                panels[cam] = panel
+
+            bev_path = out / f"bev_{token}.png"
+            cv2.imwrite(str(bev_path), bev)
+            print(f"[{token}] bev 写出 {bev_path}")
+
+            # 全览:上 6 相机面板 + 下 BEV
+            cell = 480
+            row = []
+            for cam in cams:
+                if cam in panels:
+                    panel = panels[cam]
+                    row.append(cv2.resize(panel, (cell, cell)))
+                else:
+                    row.append(np.zeros((cell, cell, 3), dtype=np.uint8))
+            top = np.hstack(row)
+            bottom = cv2.resize(bev, (cell * len(cams), cell * len(cams) * bev.shape[0] // bev.shape[1]))
+            comp = np.vstack([top, bottom])
+            comp_path = out / f"panel_{token}.png"
+            cv2.imwrite(str(comp_path), comp)
+        print(f"[done] 语义 BEV → {out}")
+        # 目录产物:记文件数 + 总字节(逐张哈希没有意义,BEV 是中间可观测量)
+        rl.highlight("n_frames", len(frames))
+        rl.highlight("n_cams", len(cams))
+        rl.highlight("imgsz", args.imgsz)
+        rl.highlight("device", str(device))
+        rl.artifact_dir(out, "sem-bev")
 
 
 if __name__ == "__main__":

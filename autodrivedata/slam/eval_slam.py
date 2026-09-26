@@ -31,6 +31,7 @@ import numpy as np
 
 from autodrivedata.gt.export.kitti import pose_path, read_pose
 from autodrivedata.slam.slam_eval import LIDAR_LEVER, M_FLIP, eval_trajectory, lidar_pose_to_ego
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 
@@ -51,53 +52,69 @@ def main() -> None:
     ap.add_argument("--gt", default="outputs/kitti_slam", help="GT KITTI root(pose/ 所在)")
     ap.add_argument("--out", default=None, help="评估结果落盘(经 project_path);默认不写")
     ap.add_argument("--no-lever", action="store_true", help="跳过杆臂补偿(仅诊断用)")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    doc = json.loads(Path(args.traj).read_text())
-    frames = [int(f["frame"]) for f in doc["traj"]]
-    est_lidar = [np.array(f["T"], dtype=np.float64) for f in doc["traj"]]
-    gt = load_gt(Path(args.gt), frames)
+    with runlog.run("autodrivedata.slam.eval_slam") as rl:
+        rl.input(args.traj, "slam-traj")
+        rl.input(args.gt, "gt-root")
+        doc = json.loads(Path(args.traj).read_text())
+        frames = [int(f["frame"]) for f in doc["traj"]]
+        est_lidar = [np.array(f["T"], dtype=np.float64) for f in doc["traj"]]
+        gt = load_gt(Path(args.gt), frames)
 
-    if args.no_lever:
-        est = [M_FLIP @ T @ M_FLIP for T in est_lidar]
-    else:
-        est = [lidar_pose_to_ego(T) for T in est_lidar]
+        if args.no_lever:
+            est = [M_FLIP @ T @ M_FLIP for T in est_lidar]
+        else:
+            est = [lidar_pose_to_ego(T) for T in est_lidar]
 
-    res = eval_trajectory(est, gt)
-    a = res["ate_aligned"]
-    r = res["rpe"]
+        res = eval_trajectory(est, gt)
+        a = res["ate_aligned"]
+        r = res["rpe"]
 
-    print(f"[eval] {args.traj} | {len(frames)} 帧 | 杆臂 {'off' if args.no_lever else 'on'}")
-    print(
-        f"  ATE(对齐) {a['rmse_m']:.4f} m | 尺度 {a['scale']:.5f} | "
-        f"mean {a['mean_m']:.4f} max {a['max_m']:.4f} final {a['final_m']:.4f}"
-    )
-    print(f"  ATE(不对齐) {res['ate_raw']['rmse_m']:.4f} m")
-    for k, v in r.items():
+        print(f"[eval] {args.traj} | {len(frames)} 帧 | 杆臂 {'off' if args.no_lever else 'on'}")
         print(
-            f"  RPE {k}: 平移 {v['trans_rmse_m']:.4f} m / 旋转 {v['rot_rmse_deg']:.4f}° "
-            f"| 每米 {v['trans_per_m']:.6f}"
+            f"  ATE(对齐) {a['rmse_m']:.4f} m | 尺度 {a['scale']:.5f} | "
+            f"mean {a['mean_m']:.4f} max {a['max_m']:.4f} final {a['final_m']:.4f}"
         )
-    print(f"  GT 路径长 {r['d1']['gt_path_m']:.2f} m | 相对 {a['rmse_m'] / r['d1']['gt_path_m'] * 100:.3f}%")
-
-    if args.out:
-        out = project_path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            json.dumps(
-                {
-                    "traj_in": args.traj,
-                    "gt_root": args.gt,
-                    "n_frames": len(frames),
-                    "lever_arm": None if args.no_lever else LIDAR_LEVER.tolist(),
-                    "convention": "ego_pose = M·T_lidar·M @ inv(L), M = diag(1,-1,1,1)",
-                    **res,
-                },
-                indent=2,
-                ensure_ascii=False,
+        print(f"  ATE(不对齐) {res['ate_raw']['rmse_m']:.4f} m")
+        for k, v in r.items():
+            print(
+                f"  RPE {k}: 平移 {v['trans_rmse_m']:.4f} m / 旋转 {v['rot_rmse_deg']:.4f}° "
+                f"| 每米 {v['trans_per_m']:.6f}"
             )
+        print(
+            f"  GT 路径长 {r['d1']['gt_path_m']:.2f} m | 相对 {a['rmse_m'] / r['d1']['gt_path_m'] * 100:.3f}%"
         )
-        print(f"  → {out}")
+
+        # ATE 是"SLAM 好不好"的唯一结论数字;`--no-lever` 必须与数字一起留痕 ——
+        # 跳过杆臂补偿会让 ATE 翻 2.5×(实测),不记开关的 ATE 事后不可比。
+        rl.highlight("ate_aligned_rmse_m", round(a["rmse_m"], 4))
+        rl.highlight("ate_raw_rmse_m", round(res["ate_raw"]["rmse_m"], 4))
+        rl.highlight("scale", round(a["scale"], 5))
+        rl.highlight("rpe_d1_trans_rmse_m", round(r["d1"]["trans_rmse_m"], 4))
+        rl.highlight("n_frames", len(frames))
+        rl.highlight("lever_arm", not args.no_lever)
+
+        if args.out:
+            out = project_path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                json.dumps(
+                    {
+                        "traj_in": args.traj,
+                        "gt_root": args.gt,
+                        "n_frames": len(frames),
+                        "lever_arm": None if args.no_lever else LIDAR_LEVER.tolist(),
+                        "convention": "ego_pose = M·T_lidar·M @ inv(L), M = diag(1,-1,1,1)",
+                        **res,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            print(f"  → {out}")
+            rl.artifact(out, "slam-eval")
 
 
 if __name__ == "__main__":

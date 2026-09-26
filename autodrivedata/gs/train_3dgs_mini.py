@@ -37,6 +37,7 @@ from PIL import Image
 from torch import nn
 
 from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 _DOWNSAMPLE = 2  # 1242x375 → 621x187
@@ -193,105 +194,129 @@ def main() -> None:
     ap.add_argument("--tag", default="")
     ap.add_argument("--val-frames", type=str, default="0", help="留出帧(不参与训练,逗号分隔,全局序)")
     ap.add_argument("--scale", type=float, default=0.05, help="高斯初始尺度(米,默认 0.05)")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    dev = "cuda"
-    torch.manual_seed(0)
-    np.random.seed(0)
-    capture = project_path(args.capture)
-    poses, f, H, W, cx, cy, viewmats_all, ks_all = _load_poses_and_cams(capture)
-    n = len(poses)
-    viewmats_all, ks_all = viewmats_all.to(dev), ks_all.to(dev)
+    with runlog.run("autodrivedata.gs.train_3dgs_mini") as rl:
+        rl.input(args.capture, "capture")
+        dev = "cuda"
+        torch.manual_seed(0)
+        np.random.seed(0)
+        capture = project_path(args.capture)
+        poses, f, H, W, cx, cy, viewmats_all, ks_all = _load_poses_and_cams(capture)
+        n = len(poses)
+        viewmats_all, ks_all = viewmats_all.to(dev), ks_all.to(dev)
 
-    val_idx = [int(x) for x in args.val_frames.split(",")]
-    train_idx = [i for i in range(n) if i not in val_idx]
-    imgs = _load_images(capture, poses, H, W).to(dev)
+        val_idx = [int(x) for x in args.val_frames.split(",")]
+        train_idx = [i for i in range(n) if i not in val_idx]
+        imgs = _load_images(capture, poses, H, W).to(dev)
 
-    points = _depth_init_points(capture, poses, viewmats_all, H, W, f, cx, cy).to(dev)
-    n_init = points.shape[0]
-    means = nn.Parameter(points.detach().clone())
-    scales = nn.Parameter(torch.full((n_init, 3), args.scale, device=dev))
-    quats = nn.Parameter(torch.tensor([[1.0, 0, 0, 0]], device=dev).repeat(n_init, 1))
-    opac = nn.Parameter(torch.full((n_init,), 0.5, device=dev).log())
-    col = nn.Parameter(torch.rand(n_init, 3, device=dev) * 0.5)
-    optim = torch.optim.Adam([{"params": [means, quats, scales, opac, col], "lr": 1e-3}])
+        points = _depth_init_points(capture, poses, viewmats_all, H, W, f, cx, cy).to(dev)
+        n_init = points.shape[0]
+        means = nn.Parameter(points.detach().clone())
+        scales = nn.Parameter(torch.full((n_init, 3), args.scale, device=dev))
+        quats = nn.Parameter(torch.tensor([[1.0, 0, 0, 0]], device=dev).repeat(n_init, 1))
+        opac = nn.Parameter(torch.full((n_init,), 0.5, device=dev).log())
+        col = nn.Parameter(torch.rand(n_init, 3, device=dev) * 0.5)
+        optim = torch.optim.Adam([{"params": [means, quats, scales, opac, col], "lr": 1e-3}])
 
-    def render(idx) -> torch.Tensor:
-        out = gsplat.rasterization(
-            means,
-            quats,
-            scales,
-            opac.sigmoid().clamp(max=0.9),
-            col,
-            viewmats_all[idx],
-            ks_all[idx],
-            W,
-            H,
-            near_plane=0.1,
-            far_plane=1000.0,
-        )
-        return out[0]
-
-    best_val = float("inf")
-    for it in range(args.iters):
-        optim.zero_grad()
-        bidx = torch.tensor(np.random.choice(train_idx, _N_VIEWS_PER_STEP, replace=False)).to(dev)
-        rend = render(bidx)
-        loss = F.mse_loss(rend, imgs[bidx])
-        loss.backward()
-        optim.step()
-        if it % 200 == 0 or it == args.iters - 1:
-            with torch.no_grad():
-                vloss = F.mse_loss(render(val_idx), imgs[val_idx]).item()
-            best_val = min(best_val, vloss)
-            print(
-                f"[iter {it}/{args.iters}] train {loss.item():.4f} | val psnr {-10 * math.log10(max(vloss, 1e-8)):.2f}",
-                flush=True,
+        def render(idx) -> torch.Tensor:
+            out = gsplat.rasterization(
+                means,
+                quats,
+                scales,
+                opac.sigmoid().clamp(max=0.9),
+                col,
+                viewmats_all[idx],
+                ks_all[idx],
+                W,
+                H,
+                near_plane=0.1,
+                far_plane=1000.0,
             )
+            return out[0]
 
-    # 全帧评估 + 留出帧 PSNR
-    with torch.no_grad():
-        rend_all = render(list(range(n)))
-    psnrs = np.array([-10 * math.log10(max(F.mse_loss(rend_all[i], imgs[i]).item(), 1e-8)) for i in range(n)])
+        best_val = float("inf")
+        for it in range(args.iters):
+            optim.zero_grad()
+            bidx = torch.tensor(np.random.choice(train_idx, _N_VIEWS_PER_STEP, replace=False)).to(dev)
+            rend = render(bidx)
+            loss = F.mse_loss(rend, imgs[bidx])
+            loss.backward()
+            optim.step()
+            if it % 200 == 0 or it == args.iters - 1:
+                with torch.no_grad():
+                    vloss = F.mse_loss(render(val_idx), imgs[val_idx]).item()
+                best_val = min(best_val, vloss)
+                print(
+                    f"[iter {it}/{args.iters}] train {loss.item():.4f} | val psnr {-10 * math.log10(max(vloss, 1e-8)):.2f}",
+                    flush=True,
+                )
+                # **每 200 步那条也进 .jsonl**(与打印同节奏):3DGS 的指标是 PSNR 不是 mAP,
+                # 按脚本实际指标落,不套 mAP 字段凑格式
+                rl.metric(
+                    it,
+                    iter=it,
+                    train_loss=round(loss.item(), 6),
+                    val_psnr=round(-10 * math.log10(max(vloss, 1e-8)), 3),
+                )
 
-    tag = f"_{args.tag}" if args.tag else ""
-    out_dir = project_path("outputs/3dgs")
-    for name, arr in (("means", means), ("scales", scales), ("col", col), ("opac", opac.sigmoid())):
-        np.save(out_dir / f"{name}{tag}.npy", arr.detach().cpu().numpy())
-    (out_dir / f"gaussians{tag}.ply").write_bytes(
-        _standard_ply(
-            means.detach().cpu().numpy(),
-            col.detach().cpu().numpy(),
-            opac.sigmoid().detach().cpu().numpy(),
-            scales.detach().cpu().numpy(),
+        # 全帧评估 + 留出帧 PSNR
+        with torch.no_grad():
+            rend_all = render(list(range(n)))
+        psnrs = np.array(
+            [-10 * math.log10(max(F.mse_loss(rend_all[i], imgs[i]).item(), 1e-8)) for i in range(n)]
         )
-    )
 
-    result = {
-        "n_gaussians": n_init,
-        "n_frames": n,
-        "n_train": len(train_idx),
-        "psnr_all_mean": round(float(psnrs.mean()), 2),
-        "psnr_all_min": round(float(psnrs.min()), 2),
-        "psnr_val": {str(i): round(float(psnrs[i]), 2) for i in val_idx},
-        "iters": args.iters,
-        "init": "truth-depth 网格反投影",
-        "init_std": args.scale,
-    }
-    (out_dir / f"train_result{tag}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        tag = f"_{args.tag}" if args.tag else ""
+        out_dir = project_path("outputs/3dgs")
+        for name, arr in (("means", means), ("scales", scales), ("col", col), ("opac", opac.sigmoid())):
+            np.save(out_dir / f"{name}{tag}.npy", arr.detach().cpu().numpy())
+        (out_dir / f"gaussians{tag}.ply").write_bytes(
+            _standard_ply(
+                means.detach().cpu().numpy(),
+                col.detach().cpu().numpy(),
+                opac.sigmoid().detach().cpu().numpy(),
+                scales.detach().cpu().numpy(),
+            )
+        )
 
-    # 对比图:上=帧0(留出),下=训练集末帧(取中后帧保证多样);左 GT | 中 渲染 | 右 差值放大
-    def to_uint8(t: torch.Tensor) -> np.ndarray:
-        return (t.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        result = {
+            "n_gaussians": n_init,
+            "n_frames": n,
+            "n_train": len(train_idx),
+            "psnr_all_mean": round(float(psnrs.mean()), 2),
+            "psnr_all_min": round(float(psnrs.min()), 2),
+            "psnr_val": {str(i): round(float(psnrs[i]), 2) for i in val_idx},
+            "iters": args.iters,
+            "init": "truth-depth 网格反投影",
+            "init_std": args.scale,
+        }
+        (out_dir / f"train_result{tag}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
 
-    panes = []
-    for i in (val_idx[0], n - 1):
-        gt, rd = to_uint8(imgs[i]), to_uint8(rend_all[i])
-        diff = np.abs(gt.astype(np.float32) - rd.astype(np.float32))
-        diff = (diff / (diff.max() + 1e-6) * 255).astype(np.uint8)
-        panes.append(np.concatenate([gt, rd, diff], axis=1))
-    Image.fromarray(np.concatenate(panes, axis=0)).save(out_dir / f"render_compare{tag}.png")
-    print(f"[done] psnr_all={result['psnr_all_mean']} val={result['psnr_val']} | {out_dir.resolve()}")
+        # 对比图:上=帧0(留出),下=训练集末帧(取中后帧保证多样);左 GT | 中 渲染 | 右 差值放大
+        def to_uint8(t: torch.Tensor) -> np.ndarray:
+            return (t.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+
+        panes = []
+        for i in (val_idx[0], n - 1):
+            gt, rd = to_uint8(imgs[i]), to_uint8(rend_all[i])
+            diff = np.abs(gt.astype(np.float32) - rd.astype(np.float32))
+            diff = (diff / (diff.max() + 1e-6) * 255).astype(np.uint8)
+            panes.append(np.concatenate([gt, rd, diff], axis=1))
+        Image.fromarray(np.concatenate(panes, axis=0)).save(out_dir / f"render_compare{tag}.png")
+        print(f"[done] psnr_all={result['psnr_all_mean']} val={result['psnr_val']} | {out_dir.resolve()}")
+        rl.highlight("psnr_all_mean", result["psnr_all_mean"])
+        rl.highlight("psnr_all_min", result["psnr_all_min"])
+        rl.highlight("best_val_loss", round(best_val, 6))
+        rl.highlight("n_gaussians", n_init)
+        rl.highlight("iters", args.iters)
+        rl.highlight("tag", args.tag)
+        for name in ("means", "scales", "col", "opac"):
+            rl.artifact(out_dir / f"{name}{tag}.npy", f"gaussians-{name}")
+        rl.artifact(out_dir / f"gaussians{tag}.ply", "gaussians-ply")
+        rl.artifact(out_dir / f"train_result{tag}.json", "train-result")
+        rl.artifact(out_dir / f"render_compare{tag}.png", "render-compare")
 
 
 if __name__ == "__main__":

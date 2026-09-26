@@ -25,6 +25,7 @@ from autodrivedata.perception.compare import (
     load_pred_labels,
     report_text,
 )
+from autodrivedata.utils import runlog
 
 
 def load_scores(review_json: Path, pred: list[Box7]) -> dict[int, float]:
@@ -59,30 +60,40 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=0, help="限制前 N 帧(0=全量)")
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--classes", nargs="+", default=["Car", "Pedestrian", "Cyclist"])
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    root = Path(args.root)
-    pred_dir = Path(args.pred)
-    gt_dir = root / "training" / "label_2"
-    labels_dir = pred_dir / "labels"
-    reviews_dir = pred_dir / "reviews"
-    fids = sorted(p.stem for p in gt_dir.glob("*.txt"))
-    if args.frames > 0:
-        fids = fids[: args.frames]
-    if not fids:
-        raise SystemExit(f"无 GT 帧: {gt_dir}")
+    with runlog.run("autodrivedata.perception.eval_kitti") as rl:
+        rl.input(args.root, "kitti-root")
+        rl.input(args.pred, "autolabel-pred")
+        root = Path(args.root)
+        pred_dir = Path(args.pred)
+        gt_dir = root / "training" / "label_2"
+        labels_dir = pred_dir / "labels"
+        reviews_dir = pred_dir / "reviews"
+        fids = sorted(p.stem for p in gt_dir.glob("*.txt"))
+        if args.frames > 0:
+            fids = fids[: args.frames]
+        if not fids:
+            raise SystemExit(f"无 GT 帧: {gt_dir}")
 
-    frames: dict[str, tuple[list[Box7], list[Box7]]] = {}
-    for fid in fids:
-        gt = load_gt_labels(gt_dir / f"{fid}.txt")
-        pred = load_pred_labels(labels_dir / f"{fid}.txt")
-        scores = load_scores(reviews_dir / f"{fid}_review.json", pred)
-        for j in range(len(pred)):
-            pred[j].conf = scores.get(j, 0.85)  # 未进 review = accepted,阈值之上
-        frames[fid] = (gt, pred)
+        frames: dict[str, tuple[list[Box7], list[Box7]]] = {}
+        for fid in fids:
+            gt = load_gt_labels(gt_dir / f"{fid}.txt")
+            pred = load_pred_labels(labels_dir / f"{fid}.txt")
+            scores = load_scores(reviews_dir / f"{fid}_review.json", pred)
+            for j in range(len(pred)):
+                pred[j].conf = scores.get(j, 0.85)  # 未进 review = accepted,阈值之上
+            frames[fid] = (gt, pred)
 
-    rep = evaluate_frames(frames, classes=args.classes, iou_thresh=args.iou)
-    print(report_text(rep, args.iou))
+        rep = evaluate_frames(frames, classes=args.classes, iou_thresh=args.iou)
+        print(report_text(rep, args.iou))
+        # **无产物**脚本:价值全在"结论文本 + 参数 + 环境"被留痕 ——
+        # 逐类 AP 只活在终端回滚里,是现在最容易丢的一类结论。
+        rl.highlight("iou", args.iou)
+        rl.highlight("n_frames", len(fids))
+        for name, st in rep.per_class.items():
+            rl.highlight(f"AP/{name}", round(st.ap, 4))
 
 
 if __name__ == "__main__":

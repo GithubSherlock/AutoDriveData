@@ -485,6 +485,43 @@ rig 落在 `autodrivedata/camera_rig.py`(`NUS_WIDE_*`;**前三个与官方逐位
 ❌ wide rig 用 ⑦ 对官方 rig 的区分度(§P-M.9);❌「官网 55/110/180 是 FoV」(那是方位角)。
 ✅ 保留「rig 必须与权重训练数据一致」(§P-L.1)—— **全部旧权重仍不可复用**。
 
+## ✅ 运行日志三件套:训练/推理入口统一落 `logs/`(2026-09-27,Plan2.md §P-M.13)
+
+**动因**:54 个可执行入口**全部只 `print()`**,留痕靠 shell 里临时 `| tee` ⇒ 跑过就无痕、产物无法
+回溯到"哪次跑/哪份参数/哪个代码版本";且用户**刚换到 RTX 4080 SUPER 服务器**,显存 12 G → 32 G 会让
+`auto_tune_batch_size` 选到**不同的 batch** ⇒ **新旧 AP 不可比**,而旧日志里**没记 GPU**。
+
+**用户裁决**:覆盖 = **训练 3 + 推理/评估 13 = 16 个脚本**(采集器 / 数据组装 / 标定探针**不在内**);
+形态 = **三件套 `.log` + `.jsonl` + `.json`**;训练期 = **loss 逐迭代 + 训练结束自动评一次 mAP**;
+环境指纹 = git rev+dirty / GPU 型号+显存+CUDA / conda env+python / **完整 argv + 起始 cwd**。
+
+| 落点(`logs/`,同 stem) | 内容 |
+|---|---|
+| `<能力>_<模块>_<时间戳>.log` | **tee `sys.stdout`/`sys.stderr` 的全量文本**。头块 = script / started / argv / cwd / git / python+env / **GPU+显存+驱动+CUDA** / host;尾块 = 产物表 + highlights;异常写完整 traceback 且**照常抛出** |
+| `.jsonl` | `metric(step, **kv)` **逐行 flush** 的机读指标(逐 epoch 的 loss/lr,或每 200 步的 PSNR) |
+| `.json` | 汇总:env 指纹 / `inputs` / `artifacts`(**≤512 MiB 全量 sha256**) / highlights / notes / `exit_code` |
+| `logs/latest/<能力>_<模块>.<ext>` | **相对软链**指向该脚本最近一次(方便 `tail -f` 上一跑) |
+
+**关**:`--no-runlog`(扫 `sys.argv` 字面量 —— `start()` 早于 argparse)或 `AUTODRIVEDATA_RUNLOG=0`。
+新模块 [`autodrivedata/utils/runlog.py`](../autodrivedata/utils/runlog.py) 只用 stdlib(`utils/` 是 `_PURE` 层);
+回归钉 `autodrivedata/tests/utils/test_runlog.py`。
+
+**口径不变量**:`train_maptr --eval-*` 复用 `eval_maptr.evaluate()`,**绝不把 chamfer AP 抄一份**。
+重构后帧级留出 `mAP = 0.3043` **逐位未变**(`--score-thr 0.2 --exclude-seg seg4 --keep-in-seg 80:100`)。
+
+**★ 跨机器比较的先决条件**:`.json` 的 `highlights.batch` **对不上就别比 AP**(显存变 ⇒ 自适应 batch 变);
+`.log` 头块的 GPU 型号/显存/CUDA/driver + git rev 是归属依据。已写进 CLAUDE.md 红线。
+
+**逐脚本按实际口径落指标,不套 mAP 字段**:`gs/train_3dgs_mini` 落 `train_loss`/`val_psnr`(重建没有 mAP);
+`perception/finetune_synth` **从 AutoLabel 的 mmengine 日志解析** per-epoch loss —— 实测本机 7 份日志
+**全部没有** `Epoch(val)`/`mAP` 行(val 评测未接)⇒ `.json` 记 `eval_mAP = null` + note,**不编成 0**。
+
+**新机器上的三个环境阻塞(与本次改动无关,如实记录)**:① `train_3dgs_mini`:`TORCH_CUDA_ARCH_LIST` 含
+torch 不认识的 `10.3`,改 `8.9` 后撞上 `/root/miniconda3/include/cuda_runtime_api.h` 指向 **cuda-11.8**
+而 nvcc 是 **13.0** 的 include 路径问题(`crt/host_defines.h` 找不到);② `sem_bev`:YOLOPv2 缺 `utils` 模块;
+③ `finetune_synth --dry-run`:AutoLabel 的 mmdet3d config 未落地。三者只挡**成功路径冒烟**,
+错误路径均已验证(`.json` 记 `status="error"` + `.log` 内完整 traceback)。
+
 ## 待办(教程 7-15 中尚未落地的能力)
 
 - [x] 单目测距(教程 08):GT 3D 投影框基线 ✅(见上)
@@ -500,6 +537,8 @@ rig 落在 `autodrivedata/camera_rig.py`(`NUS_WIDE_*`;**前三个与官方逐位
 
 > **本轮范围与采样口径见 Plan2.md §P-M.12**(2026-09-24):500 帧 / Town10HD_Opt 多 spawn point /
 > **1600×900** / stride 5(= nuScenes 关键帧率)/ 3 帧时序窗口 / 两套留出口径都报。
+> **⚠️ 报 AP 时必须同时写 `--score-thr` 与 `batch`**(后者见 §P-M.13:换机器 ⇒ 显存变 ⇒ 自适应 batch 变
+> ⇒ 新旧 AP 不可比),两者都在 `logs/*.json` 的 `highlights` 里。
 
 - [x] **按冻结表大规模重采 MapTR 训练集** —— ✅ 2026-09-24:`outputs/surround_v2/seg{0..4}`,
       5 段 × 100 帧(stride 5),贪心最大最小距离选 spawn point(44/14/15/152/55,两两最近 114 m),

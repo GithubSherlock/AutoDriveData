@@ -31,8 +31,15 @@ from pathlib import Path
 
 import torch
 
+# 本脚本以**文件路径**跑(`<hivt>/bin/python autodrivedata/traj/convert_hivt_pt.py ...`),
+# 此时 `sys.path[0]` = 脚本所在目录(autodrivedata/traj),**项目根不在路径上** ⇒
+# `import autodrivedata` 抛 ModuleNotFoundError。故先把项目根插进去 —— 与下面插 HiVT
+# 路径同一手法,两条都是"这个脚本要在别的 env 里按路径跑"的代价。
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, "/root/autodl-tmp/Documents/Projects/AutoDriveData/hdMapGitHub/HiVT")
 from utils import TemporalData  # noqa: E402
+
+from autodrivedata.utils import runlog
 
 
 def convert(pt_path: Path, map_name: str) -> None:
@@ -79,19 +86,28 @@ def convert(pt_path: Path, map_name: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("roots", nargs="+", help="dataset root(train/val),每 root 转 processed/*.pt")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
-    for root in args.roots:
-        root = Path(root)
-        processed = root / "processed"
-        if not processed.exists():
-            print(f"[skip] {root} 无 processed/")
-            continue
-        pts = sorted(processed.glob("*.pt"))
-        n_done = 0
-        for p in pts:
-            convert(p, map_name=root.name)
-            n_done += 1
-        print(f"[done] {root}: {n_done}/{len(pts)} 场景已转 TemporalData")
+
+    with runlog.run("autodrivedata.traj.convert_hivt_pt") as rl:
+        n_total = 0
+        for root in args.roots:
+            rl.input(root, "dataset-root")
+            root = Path(root)
+            processed = root / "processed"
+            if not processed.exists():
+                print(f"[skip] {root} 无 processed/")
+                continue
+            pts = sorted(processed.glob("*.pt"))
+            n_done = 0
+            for p in pts:
+                convert(p, map_name=root.name)
+                n_done += 1
+            print(f"[done] {root}: {n_done}/{len(pts)} 场景已转 TemporalData")
+            n_total += n_done
+            # 转换是**原地覆盖** —— 记 n_files 能看出这次到底动了几个文件
+            rl.artifact_dir(processed, f"temporal-data:{root.name}")
+        rl.highlight("n_scenes_converted", n_total)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,10 @@ batch 口径:--batch 0(默认)= 自适应实测(空闲显存 × 0.85 / 每样本
 用法:
   python -m autodrivedata.map.train_maptr --infos outputs/surround_drive/map_infos.json \
       --root outputs/surround_drive --frames 1 --epochs 400 --out outputs/maptr_overfit.pt
+
+每次运行落 `logs/` 三件套(脚本/时间/argv/git/GPU + 逐 epoch 指标 + 产物带哈希),
+`--no-runlog` 关。给了 `--eval-*` 选择器则**训练结束后自动评一次留出 mAP**
+(把 `--eval-seg` 设成训练时 `--exclude-seg` 的那一段 = 路线级留出);没给就明说不评。
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from autodrivedata.map.eval_maptr import evaluate
 from autodrivedata.map.maptr.dataset import (
     MapTRDataset,
     collate,
@@ -39,6 +44,7 @@ from autodrivedata.map.maptr.dataset import (
 from autodrivedata.map.maptr.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from autodrivedata.map.maptr.head import maptr_loss, match_assign
 from autodrivedata.map.maptr.model import MapTR, load_map_weights
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 
@@ -99,6 +105,41 @@ def _load_opt_sidecar(opt: torch.optim.Optimizer, args: argparse.Namespace, dev:
     print(f"[opt] 载入优化器状态 {path}(存盘于 epoch {side.get('epoch', '?')},力矩不重置)")
 
 
+def _auto_eval(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
+    """训练尾部的留出集评估 —— **转发给 `eval_maptr.evaluate()` 那一份实现**。
+
+    chamfer AP 若在这里抄成第二份,两处必然漂移,而"同一权重在两个脚本里报出不同 AP"
+    是最难查的一类结论失效(见 eval_maptr 模块 docstring)。故这里只做参数转发与登记。
+
+    **没给选择器就不评,并且明说** —— 静默跳过会让"这次有日志"被读成"这次有 mAP",
+    而这正是引入日志要消灭的那类误读。`--no-eval` 是主动关,措辞与"没给选择器"分开。
+    """
+    if args.no_eval:
+        rl.note("--no-eval:训练结束未评 mAP")
+        print("[runlog] --no-eval ⇒ 不自动评 mAP")
+        return
+    if not (args.eval_seg or args.eval_keep_in_seg or args.eval_exclude_seg):
+        msg = "未给 --eval-seg/--eval-keep-in-seg/--eval-exclude-seg ⇒ 不自动评 mAP"
+        rl.note(msg)
+        print(f"[runlog] {msg}(要评就补选择器;`--no-eval` 可显式关)")
+        return
+    print(f"[runlog] 训练结束 → 留出集评估(score_thr={args.eval_score_thr})")
+    res = evaluate(
+        infos=args.infos,
+        root=args.root,
+        ckpt=args.out,  # 评的就是刚落盘的这份权重
+        frames=args.eval_frames,
+        seg=args.eval_seg,
+        exclude_seg=args.eval_exclude_seg,
+        keep_in_seg=args.eval_keep_in_seg,
+        score_thr=args.eval_score_thr,
+        temporal_window=args.temporal_window,
+        rl=rl,
+        highlight_prefix="holdout_",  # 训练日志里的 mAP 必须一眼看出是留出集的
+    )
+    rl.note(f"留出评估 {res['n_frames']} 帧,score_thr={res['score_thr']},后端 {res['backend']}")
+
+
 def is_single_frame_anchor(n_samples: int) -> bool:
     """过拟合闸门是否适用 —— 判据是**实际训练样本数**,不是 `--frames` 标志。
 
@@ -151,9 +192,29 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
+    ap.add_argument(
+        "--eval-seg", default=None, help="训练结束后只评这些段(逗号分隔)的 chamfer AP;路线级留出用"
+    )
+    ap.add_argument("--eval-exclude-seg", default="", help="训练结束后评测排除这些段(逗号分隔)")
+    ap.add_argument("--eval-keep-in-seg", default=None, help="训练结束后只评段内帧号区间 A:B;帧级留出用")
+    ap.add_argument("--eval-frames", type=int, default=None, help="训练结束后评测帧数(默认全部)")
+    ap.add_argument("--eval-score-thr", type=float, default=0.2, help="评测阈值;与 AP 数字一起记录")
+    ap.add_argument("--no-eval", action="store_true", help="训练结束后不自动评 mAP")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
     args.out = str(project_path(args.out))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
+    with runlog.run("autodrivedata.map.train_maptr") as rl:
+        rl.input(args.infos, "infos")
+        rl.input(args.root, "root")
+        if args.init_ckpt:
+            rl.input(args.init_ckpt, "init-ckpt")
+        train(args, rl)
+
+
+def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
+    """训练主体。抽出来只为让 `main()` 能用 `with runlog.run(...)` 包住全程
+    (日志要在 argparse 之前开,才能把参数报错也记下来)。"""
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -216,6 +277,13 @@ def main() -> None:
     loader = DataLoader(
         ds, batch_size=batch_size, shuffle=False, collate_fn=collate, num_workers=args.workers
     )
+    # batch 进 highlights:**换机器 ⇒ 显存变 ⇒ 自适应实测选到不同 batch ⇒ 新旧 AP 不可比**。
+    # 旧日志里没这条,才让"换到 24 G 机器后 AP 变了"变成不可归因的问题。
+    rl.highlight("batch", batch_size)
+    rl.highlight("n_train_frames", len(ds))
+    rl.highlight("epochs", args.epochs)
+    rl.highlight("seed", args.seed)
+    rl.highlight("temporal_window", args.temporal_window)
     hist: list[float] = []
     for epoch in range(1, args.epochs + 1):
         # 阶梯衰减:每 --lr-halve epochs 减半(0 = 不衰减;长训必须关,
@@ -236,6 +304,16 @@ def main() -> None:
             ep["pts"] += p
         steps = max(1, len(loader))
         hist.append((ep["cls"] + ep["pts"]) / steps)
+        # 逐 epoch 落 .jsonl(**比 `--log-every` 更密**):`.log` 是给人看的、可以稀疏,
+        # `.jsonl` 是给画曲线的 —— 稀疏打印会让"哪一段掉下去"看不出拐点。
+        rl.metric(
+            epoch,
+            epoch=epoch,
+            loss=round(hist[-1], 6),
+            cls=round(ep["cls"] / steps, 6),
+            pts=round(ep["pts"] / steps, 6),
+            lr=lr,
+        )
         if args.save_every and epoch % args.save_every == 0:
             Path(args.out).parent.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), args.out)
@@ -253,6 +331,11 @@ def main() -> None:
     torch.save(model.state_dict(), args.out)
     _save_opt_sidecar(opt, args, args.epochs)
     print(f"[save] {args.out}")
+    rl.highlight("final_loss", round(final, 4))
+    rl.artifact(args.out, "model")
+    if not args.no_opt:
+        rl.artifact(str(args.out) + ".opt", "optimizer-state")
+    _auto_eval(args, rl)
     if not is_single_frame_anchor(len(ds)):
         return  # 多帧训练无过拟合判据(损失收敛量级看 D 阶段 AP)
     if final < 0.5:

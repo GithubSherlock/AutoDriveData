@@ -22,6 +22,7 @@ import numpy as np
 
 from autodrivedata.perception.cluster import cluster_boxes, dbscan
 from autodrivedata.perception.ground import ransac_plane
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 
@@ -45,51 +46,65 @@ def main() -> None:
     ap.add_argument("--min-samples", type=int, default=8, help="簇内最小点数")
     ap.add_argument("--distance-scale", type=float, default=0.0, help="远距自适应系数")
     ap.add_argument("--out", default="outputs/cluster")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    root = Path(args.root)
-    frames = parse_range(args.frames)
-    out = project_path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    with runlog.run("autodrivedata.perception.cluster_obstacles") as rl:
+        rl.input(args.root, "kitti-root")
+        root = Path(args.root)
+        frames = parse_range(args.frames)
+        out = project_path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
 
-    per_frame: dict[str, dict] = {}
-    for i, fid in enumerate(frames):
-        p = root / "training" / "velodyne" / f"{fid:06d}.bin"
-        if not p.exists():
-            continue
-        pts = np.fromfile(p, dtype=np.float32).reshape(-1, 4)
-        # 地面去除(RANSAC)
-        res = ransac_plane(pts, seed=0)
-        if res is None:
-            continue
-        _, mask = res
-        nonground = pts[~mask]
-        if len(nonground) < args.min_samples:
-            continue
-        labels = dbscan(
-            nonground, eps=args.eps, min_samples=args.min_samples, distance_scale=args.distance_scale
-        )
-        boxes = cluster_boxes(nonground, labels)
-        per_frame[f"{fid:06d}"] = {
-            "nonground_points": int(len(nonground)),
-            "n_clusters": len(boxes),
-            "boxes": boxes,
+        per_frame: dict[str, dict] = {}
+        for i, fid in enumerate(frames):
+            p = root / "training" / "velodyne" / f"{fid:06d}.bin"
+            if not p.exists():
+                continue
+            pts = np.fromfile(p, dtype=np.float32).reshape(-1, 4)
+            # 地面去除(RANSAC)
+            res = ransac_plane(pts, seed=0)
+            if res is None:
+                continue
+            _, mask = res
+            nonground = pts[~mask]
+            if len(nonground) < args.min_samples:
+                continue
+            labels = dbscan(
+                nonground, eps=args.eps, min_samples=args.min_samples, distance_scale=args.distance_scale
+            )
+            boxes = cluster_boxes(nonground, labels)
+            per_frame[f"{fid:06d}"] = {
+                "nonground_points": int(len(nonground)),
+                "n_clusters": len(boxes),
+                "boxes": boxes,
+            }
+            if (i + 1) % 20 == 0:
+                print(f"[{i + 1}/{len(frames)}] {fid} {len(boxes)} 簇")
+
+        n_clusters = [v["n_clusters"] for v in per_frame.values()]
+        summary = {
+            "frames": len(per_frame),
+            "eps": args.eps,
+            "min_samples": args.min_samples,
+            "mean_clusters_per_frame": round(sum(n_clusters) / max(len(n_clusters), 1), 2),
+            "max_cluster_points": max(
+                (b["n_points"] for v in per_frame.values() for b in v["boxes"]), default=0
+            ),
         }
-        if (i + 1) % 20 == 0:
-            print(f"[{i + 1}/{len(frames)}] {fid} {len(boxes)} 簇")
-
-    n_clusters = [v["n_clusters"] for v in per_frame.values()]
-    summary = {
-        "frames": len(per_frame),
-        "eps": args.eps,
-        "min_samples": args.min_samples,
-        "mean_clusters_per_frame": round(sum(n_clusters) / max(len(n_clusters), 1), 2),
-        "max_cluster_points": max((b["n_points"] for v in per_frame.values() for b in v["boxes"]), default=0),
-    }
-    (out / "boxes.json").write_text(json.dumps(per_frame, indent=2, ensure_ascii=False))
-    (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    print(f"[done] {len(per_frame)} 帧聚类 → {out}")
-    print(f"  均值簇数/帧 {summary['mean_clusters_per_frame']} | 最大簇 {summary['max_cluster_points']} 点")
+        (out / "boxes.json").write_text(json.dumps(per_frame, indent=2, ensure_ascii=False))
+        (out / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+        print(f"[done] {len(per_frame)} 帧聚类 → {out}")
+        rl.highlight("n_frames", len(per_frame))
+        rl.highlight("eps", args.eps)
+        rl.highlight("min_samples", args.min_samples)
+        rl.highlight("mean_clusters_per_frame", summary["mean_clusters_per_frame"])
+        rl.highlight("max_cluster_points", summary["max_cluster_points"])
+        rl.artifact(out / "boxes.json", "cluster-boxes")
+        rl.artifact(out / "summary.json", "cluster-summary")
+        print(
+            f"  均值簇数/帧 {summary['mean_clusters_per_frame']} | 最大簇 {summary['max_cluster_points']} 点"
+        )
 
 
 if __name__ == "__main__":

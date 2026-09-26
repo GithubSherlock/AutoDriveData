@@ -63,12 +63,12 @@ autodrivedata/          ★ 主包 —— 按能力面分层,包根只有 __init
 ├── perception/   17  检测 / 单双目 / 雷达 / 语义 / 点云(**不 import carla**)
 ├── gt/            6  动态目标 + 静态目标 + 灯态时序层 + export/ 落盘
 ├── traj/  gs/     3  轨迹组装转换 / 3DGS 训练
-├── utils/         3  通用件:geometry.py paths.py fonts.py(**无领域语义、无 carla/torch**)
+├── utils/         4  通用件:geometry.py paths.py fonts.py runlog.py(**无领域语义、无 carla/torch**)
 └── tests/        48  与能力目录镜像(包级守卫 test_layer_guard.py 在根)
 
 tools/                 开放性工具(判据:不含本项目领域知识):carla_server.sh + gpu_fix/
 docs/(含 fileTree.md / refactor-2026-09.md)  README.md  Plan.md(冻结)  Plan2.md(新计划制定地)
-outputs/  training/  lightning_logs/  hdMapGitHub/  auto3dlabel/   【未入库】产物与上游克隆
+outputs/  logs/(16 入口的运行三件套)  training/  lightning_logs/  hdMapGitHub/  auto3dlabel/  【未入库】
 ```
 
 **命名约定**:目录名 = 能力面;模块名 = 能力内的构件。**模块与所在目录同名时改名 `core.py`**
@@ -135,16 +135,24 @@ python -m autodrivedata.sim.collect_nus --rig wide --out outputs/nus_mini_wide -
 python -m autodrivedata.calib.verify_nus_calib --rig wide --offline --live   # → report_wide.json
 python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/calib_check/{rig_layout_*,views_*,report_*}
 
+# 运行日志:16 个训练/推理/评估入口**每次跑都落三件套**到 logs/(同 stem)
+#   <能力>_<模块>_<YYYYmmdd-HHMMSS>.log = tee 的全量 stdout(头块含 git/GPU/env/argv)
+#   .jsonl = 逐迭代指标(逐行 flush);.json = 环境指纹 + 入参 + 产物表(带 sha256) + 结论
+#   logs/latest/<能力>_<模块>.<ext> = 指向该脚本最近一次的**相对软链**(tail -f 用它)
+#   关掉:--no-runlog,或 AUTODRIVEDATA_RUNLOG=0;口径与坑见 autodrivedata/utils/runlog.py
+
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pytest 之外的路径前缀**
-                                 # 基线:925 收集项(919 passed + 6 跳过 + 0 失败)
+                                 # 基线:945 passed + 6 跳过 + 0 失败(--collect-only 报 948;
+                                 #   差额 3 = 模块级 `importorskip` 的三个模块,收集期不计入)
                                  # 基线数**只写在这一处**;加/删用例后回来改这一行,别在多处复述
 ```
 
 ## 红线(A/B 实验纪律与已踩坑,勿再犯)
 
 - **A/B 帧级配对是硬门槛**:同 ego 锚定 spawn point 0(yaw=0)、同静置车布局(20/35/50/62m——65m 会卡 GT max_distance 阈值抖动)、只变 weather;GT 数必须相等,否则样本不可比、结论作废。autopilot/TM 路线不可复现,禁用于 A/B
+- **跨机器/跨机型的 AP 不许直接比**:显存变 ⇒ `auto_tune_batch_size` 实测选到**不同的 batch** ⇒ 新旧 AP 不可比。判据看 `logs/*.json` 的 `highlights.batch`,**对不上就别比**;`.log` 头块的 GPU 型号/显存/CUDA/driver + git rev 是归属依据
 - **AP 尾部不注水**:未达 recall=1 段 precision=0(11 点插值,与 compare.ap11 同口径)。旧尾行 `ap += (1-prev_r)*prev_p` 曾把低 recall 吹高(雨夜 0.48 检出报 0.976),已修
 - **MapTR chamfer AP 必须带 score_thr 引用**;跨权重比较**固定 `--score-thr`**,看曲线用 `--sweep`;**单独报一个 mAP 数字而不写阈值 = 无效结论**
 - **carla pyi 桩坑**:`try_spawn_actor` 桩标返回 `Actor`(实为 `Actor|None`)→ 用 Vehicle 方法必须 `cast(carla.Vehicle, v)`;Vector3D 运算结果不能直接进 `carla.Transform`(显式 `carla.Location`);函数签名要 `tuple[float, float, float]` 定长时禁用 tuple 推导(变长 tuple)

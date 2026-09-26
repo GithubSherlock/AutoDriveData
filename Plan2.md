@@ -1492,6 +1492,78 @@ centerline 0.1674)⇒ 掉的主要是稀疏类。
 合法)。回归钉 `tests/test_maptr_select.py`(35 用例过;相关三文件 **74 passed**)。**注意:正在跑的
 320 帧用的是修改前的进程**(Python 已加载旧字节码)⇒ 它结束时**仍会打同样的假 FAIL**,读结果按此处理。
 
+#### P-M.13 运行日志三件套:训练/推理脚本统一落 `logs/`(2026-09-27 ✅)
+
+**动因**:包内 54 个可执行入口**全部只 `print()` 到 stdout,没有任何一处 `import logging`**。
+留痕靠 shell 里临时 `| tee outputs/xxx.log` ⇒ ① 训练/推理**跑过就无痕**,权重与预测产物无法回溯到
+"哪次跑、哪份参数、哪个代码版本";② tee 落点五花八门(`outputs/` 里日志与产物混堆);③ 用户**刚换到
+RTX 4080 SUPER 服务器**,显存 12 G → 32 G 会让 `auto_tune_batch_size` 选到**不同的 batch**,新旧 AP
+**不可比**,而旧日志里**没记 GPU**;④ 训练日志里**没有 mAP**(训练循环完全不算 AP,AP 只在 `eval_maptr` 里出)。
+
+**用户裁决(AskUserQuestion,四项)**:
+
+| 决策 | 取值 |
+|---|---|
+| 覆盖范围 | **训练 3 + 推理/评估 13 = 16 个脚本**(不含 `sim/collect_*` 采集器、`map/assemble_*` 数据组装、`calib/*` 探针) |
+| 日志形态 | **三件套 `.log` + `.jsonl` + `.json`**(同 stem) |
+| 训练期 mAP | **loss 逐迭代 + 训练结束自动评一次 mAP**(不逐迭代算 AP —— AP 口径只能有一份实现) |
+| 环境指纹 | git rev + dirty / GPU 型号+显存+CUDA / conda env + python / 完整 argv + 起始 cwd(**四项全要**) |
+
+**设计**:新模块 [`autodrivedata/utils/runlog.py`](../autodrivedata/utils/runlog.py)(`utils/` 准入判据 =
+无领域语义、无 carla/torch ⇒ 只用 stdlib 合规;落点 3 → 4)。
+`with runlog.run("autodrivedata.<能力>.<模块>") as rl:` 包住 `main()` 主体,其余 `print()` **一字不改**
+(靠 tee 进日志),三处登记:`rl.input()` / `rl.artifact()` / `rl.highlight()`。
+`logs/<能力>_<模块>_<YYYYmmdd-HHMMSS>.{log,jsonl,json}` + `logs/latest/<能力>_<模块>.<ext>` **相对软链**。
+
+**★ 显式告警(本次动因之一,写进代码注释与 `.json`)**:`batch` 已进 `train_maptr` 的 highlights ——
+**换机器 ⇒ 显存变 ⇒ 自适应实测选到不同 batch ⇒ 新旧 AP 不可比**。旧日志里没这条,才让"换到 32 G 机器后
+AP 变了"变成**不可归因**的问题。**跨机器比 AP 前先对 batch;batch 不同就别比。**
+
+**本次实测的环境指纹(新机器)**:
+`NVIDIA GeForce RTX 4080 SUPER | 32760 MiB | driver 595.91.07 | CUDA 13.2`;
+`env=autodrivedata` / `python 3.11.16`;`git b0f39d2 dirty`。
+
+**三条已踩的坑(各有单测钉)**:
+1. **`_Tee` 必须 `__getattr__` 全量代理** —— tqdm/ultralytics 会直接问 `isatty()`/`fileno()`/`encoding`,
+   只实现 `write`/`flush` 的包装器在**非 tty 跑法**里炸(而"恰好能跑"的假象只在管道里);
+2. **退出时恢复构造时抓的那个流对象,不是 `sys.__stdout__`** —— pytest 的 `capsys` 会替换 `sys.stdout`,
+   恢复错对象会把**外层捕获永久破坏**;
+3. **环境指纹只在头块采一次并复用** —— 初版 `_summary()` 重采了一次,同一跑的 `.json["gpu"]` 报
+   `used_mib 2504` 而 `.log` 头块报 `1`。另:`env` 名按 **`envs/<name>` 路径段**反解,
+   **`sys.prefix == sys.base_prefix` 在本机是错的判据**(env 真身在数据盘、软链进 `envs/`,两者恒等)。
+
+**口径不变量(硬门槛)**:`train_maptr` 的 `--eval-*` 复用 `eval_maptr.evaluate()`,**绝不把 chamfer AP
+抄一份进训练脚本**。重构后重跑帧级留出,`mAP = 0.3043` **逐位未变**(divider 0.3152 / ped_crossing 0.2125 /
+boundary 0.3075 / centerline 0.3821 @`--score-thr 0.2 --exclude-seg seg4 --keep-in-seg 80:100`)。
+
+**逐脚本指标的落法按脚本实际口径,不套 mAP 字段凑格式**:`train_maptr` = 逐 epoch `loss`/`cls`/`pts`/`lr` +
+尾部一次留出 mAP;`gs/train_3dgs_mini` = 每 200 步 `train_loss`/`val_psnr`(3DGS 是重建,没有 mAP 概念);
+`perception/finetune_synth` = **从 AutoLabel 自己的 mmengine 日志解析** per-epoch loss(训练在子进程里跑,
+本进程拿不到它的 stdout)。**实测本机 7 份 finetune 日志全部没有 `Epoch(val)` / `mAP` 行**(val 评测未接)⇒
+`.json` 里 `eval_mAP = null` 并附 note —— **取不到就如实记 null,不许编成 0**。
+
+**执行中发现并修的自身回归**:`traj/convert_hivt_pt.py` 以**文件路径**在 hivt env 里跑
+(`<hivt>/bin/python autodrivedata/traj/convert_hivt_pt.py ...`),此时 `sys.path[0]` = **脚本所在目录**、
+项目根不在路径上 ⇒ 新加的 `from autodrivedata.utils import runlog` 在 import 期就 `ModuleNotFoundError`。
+已在该脚本内加**项目根 `sys.path` 引导**(与它既有的 HiVT 路径插入同一手法)。**教训**:16 个脚本里
+**唯一一个不在本 env 里跑**的那个,机械改法必然漏 —— 改完必须**真跑**而不是只看 import。
+
+**新机器上的三个环境阻塞(与本次改动无关,不是日志代码引起的;如实记录)**:
+1. `gs/train_3dgs_mini`:环境变量 `TORCH_CUDA_ARCH_LIST` 含 `10.3`,而 torch 2.6.0+cu124 **不认识**该 arch
+   ⇒ `ValueError: Unknown CUDA arch (10.3)`(`torch.cuda.get_device_capability(0)` 实测**正确**为 `(8, 9)`);
+   改成 `TORCH_CUDA_ARCH_LIST=8.9` 后**更深一层**:`fatal error: crt/host_defines.h: No such file or directory`
+   —— `/root/miniconda3/include/cuda_runtime_api.h` 是**指向 `/usr/local/cuda-11.8/` 的符号链接**,
+   而 nvcc 是 **13.0**,且 `targets/x86_64-linux/include` 不在编译 include 路径上。**两者都是工具链配置问题。**
+2. `perception/sem_bev`:`ModuleNotFoundError: No module named 'utils'`(YOLOPv2 的依赖)⇒ 成功路径**本机不可冒烟**。
+3. `perception/finetune_synth --dry-run`:AutoLabel 的 `mmdet3d_configs/configs/pointpillars/...` 未落地
+   ⇒ `FileNotFoundError`。
+
+上述三者**只影响成功路径冒烟**,错误路径均已验证(`.json` 记 `status="error"` + `.log` 内完整 traceback)。
+
+**待定(机制未证,不得当结论说)**:路线级留出 mAP **0.1114 → 0.1113**(1e-4,只影响 `centerline`)。
+阈值扫描与 run-to-run 非确定性**均已排除**;本机 CPU ≡ GPU;git log 只有纯搬文件提交。
+**归因为换机器带来的既存差异,但机制(kernel 舍入 vs 匹配并列打破)未证。**
+
 ## 8 遗留缺口
 
 **当前待办(§P-M.11 冻结口径下,按硬顺序)**:

@@ -40,6 +40,7 @@ import numpy as np
 from autodrivedata.map.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
 from autodrivedata.map.mapvec import BEV_RANGE
 from autodrivedata.map.mapvec_schema import load_frame
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 DEFAULT_CLASSES = ("divider", "ped_crossing", "boundary", "centerline")
@@ -309,51 +310,61 @@ def main() -> None:
     ap.add_argument("--out", default="outputs/maptr_official/a_prime", help="产出目录(项目内)")
     ap.add_argument("--nproc", type=int, default=8, help="官方 eval_map 的进程数")
     ap.add_argument("--num-sample", type=int, default=100, help="官方口径重采样点数")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
-    pred_dir = Path(project_path(args.pred_dir))
-    repo = Path(project_path(args.repo))
-    out_dir = Path(project_path(args.out))
-    cls_names = tuple(args.classes.split(","))
-    records = sorted((load_frame(p) for p in pred_dir.glob("*.json")), key=lambda r: r.frame)
-    if not records:
-        raise SystemExit(f"未找到逐帧产物:{pred_dir}")
-    thr_set = {r.score_thr for r in records}
-    # 官方形态 = 6 元 [xmin, ymin, zmin, xmax, ymax, zmax](z 沿用官方 config 口径)。
-    # 实测评测链里 pc_range 只在被 `if False:` 关掉的目检块用到 → 不参与裁剪,故不存在
-    # "官方把越窗点裁回窗口"这一差值来源。
-    pc_range = [BEV_RANGE[0], BEV_RANGE[1], -2.0, BEV_RANGE[2], BEV_RANGE[3], 2.0]
-    print(f"[data] {len(records)} 帧 × {len(cls_names)} 类;score_thr={thr_set};pc_range={pc_range}")
+    with runlog.run("autodrivedata.map.eval_official_metric") as rl:
+        rl.input(args.pred_dir, "pred-frames")
+        rl.input(args.repo, "official-repo")
+        pred_dir = Path(project_path(args.pred_dir))
+        repo = Path(project_path(args.repo))
+        out_dir = Path(project_path(args.out))
+        cls_names = tuple(args.classes.split(","))
+        records = sorted((load_frame(p) for p in pred_dir.glob("*.json")), key=lambda r: r.frame)
+        if not records:
+            raise SystemExit(f"未找到逐帧产物:{pred_dir}")
+        thr_set = {r.score_thr for r in records}
+        # 官方形态 = 6 元 [xmin, ymin, zmin, xmax, ymax, zmax](z 沿用官方 config 口径)。
+        # 实测评测链里 pc_range 只在被 `if False:` 关掉的目检块用到 → 不参与裁剪,故不存在
+        # "官方把越窗点裁回窗口"这一差值来源。
+        pc_range = [BEV_RANGE[0], BEV_RANGE[1], -2.0, BEV_RANGE[2], BEV_RANGE[3], 2.0]
+        print(f"[data] {len(records)} 帧 × {len(cls_names)} 类;score_thr={thr_set};pc_range={pc_range}")
 
-    summary: dict = {
-        "pred_dir": str(pred_dir),
-        "repo": str(repo),
-        "classes": list(cls_names),
-        "frames": len(records),
-        "score_thr": sorted(thr_set),
-        "pc_range": pc_range,
-    }
-    for tag, flag in (("official_flag_raw", False), ("official_flag_resample", True)):
-        gt_payload, pred_payload = build_payloads(records, cls_names, args.num_sample if flag else None)
-        summary[tag] = official_map(
-            repo, out_dir / tag, gt_payload, pred_payload, cls_names, pc_range, flag, args.nproc
+        summary: dict = {
+            "pred_dir": str(pred_dir),
+            "repo": str(repo),
+            "classes": list(cls_names),
+            "frames": len(records),
+            "score_thr": sorted(thr_set),
+            "pc_range": pc_range,
+        }
+        for tag, flag in (("official_flag_raw", False), ("official_flag_resample", True)):
+            gt_payload, pred_payload = build_payloads(records, cls_names, args.num_sample if flag else None)
+            summary[tag] = official_map(
+                repo, out_dir / tag, gt_payload, pred_payload, cls_names, pc_range, flag, args.nproc
+            )
+        summary["ours_raw20"] = our_map(records, cls_names)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "metric_compare.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-    summary["ours_raw20"] = our_map(records, cls_names)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "metric_compare.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
 
-    print("\n=== A′ 口径对照(同一份 ep512 逐帧产物)===")
-    print(f"{'口径':32s} {'mAP':>8s}  " + "  ".join(f"{c:>10s}" for c in cls_names))
-    for tag, label in (
-        ("ours_raw20", "我们 chamfer AP(20 点 raw)"),
-        ("official_flag_raw", "官方 eval_map(20 点 raw)"),
-        ("official_flag_resample", f"官方 eval_map({args.num_sample} 点重采样)"),
-    ):
-        d = summary[tag]
-        print(f"{label:32s} {d['mAP']:8.4f}  " + "  ".join(f"{d['ap'][c]:10.4f}" for c in cls_names))
-    print(f"\n[out] {out_dir}/metric_compare.json")
+        print("\n=== A′ 口径对照(同一份 ep512 逐帧产物)===")
+        print(f"{'口径':32s} {'mAP':>8s}  " + "  ".join(f"{c:>10s}" for c in cls_names))
+        for tag, label in (
+            ("ours_raw20", "我们 chamfer AP(20 点 raw)"),
+            ("official_flag_raw", "官方 eval_map(20 点 raw)"),
+            ("official_flag_resample", f"官方 eval_map({args.num_sample} 点重采样)"),
+        ):
+            d = summary[tag]
+            print(f"{label:32s} {d['mAP']:8.4f}  " + "  ".join(f"{d['ap'][c]:10.4f}" for c in cls_names))
+        print(f"\n[out] {out_dir}/metric_compare.json")
+        # 三个口径的 mAP **必须成组出现**:这是本脚本存在的唯一理由 —— 单看一个数字
+        # 会把"口径差"读成"实现错"。口径名进 key,避免读的人把 official 的数当 ours 的。
+        for tag in ("ours_raw20", "official_flag_raw", "official_flag_resample"):
+            rl.highlight(f"mAP/{tag}", round(summary[tag]["mAP"], 4))
+        rl.highlight("score_thr", sorted(thr_set))
+        rl.artifact(out_dir / "metric_compare.json", "metric-compare")
 
 
 if __name__ == "__main__":
