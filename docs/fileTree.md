@@ -215,6 +215,7 @@ AutoDriveData/
 | 类别 | 文件 | 说明 |
 |---|---|---|
 | 纯值库单测 | `test_geometry.py` `test_calib.py` `test_gt.py` `test_compare.py` `test_paths.py` `test_scenarios.py` `test_static_gt.py` `test_traffic_light.py` `test_semantic.py` `test_radar.py` | 手算断言,不依赖 carla / AutoLabel |
+| **层守卫** | `test_layer_guard.py` | **包纪律的可执行版本**(Plan_fileTree.md §3):`LAYER_RULES` = 目录 → 禁止 import 的三方名,最长前缀匹配。旧版(`test_paths.py` 的整包禁令)的两个洞已堵:**马甲库**(`ultralytics`/`mmdet3d`/`mmcv`/`lightning` 会拉起 torch 但字面无 torch)、**字面量动态导入**(`importlib.import_module("x")`)。`TestPackageLayers` 扫真实包 + 强制新子目录必须显式声明;`TestLayerGuardSelfCheck` 用**合成源码注入**做立论自证(12 条:抓得住三类违规,且规则能区分、不是"见 carla 就红") |
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
 | 教程能力线 | `test_mono_depth.py` `test_stereo.py` `test_multilidar.py` `test_slam.py` `test_accum.py` `test_ground.py` `test_cluster.py` `test_collect_rig.py` | 各含手算锚点;`collect_rig` 兼作采集器回归先例 |
 | SLAM 精度/在线线 | `test_slam_eval.py` `test_live_slam.py` | `slam_eval`:ATE/RPE 手算锚点 + 杆臂方向(不补杆臂 ATE 2.44×);`live_slam`:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ `SlamWorker` 滞后有界/止损/同步模式 |

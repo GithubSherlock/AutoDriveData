@@ -144,11 +144,34 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 **① 堵上马甲库与相对导入两个洞;② 获得「按目录表达规则」的能力**(现状根本写不出「`gt/` 不许依赖 `sim/`」);
 **③ 让这次重构在结构上成为可能**。不要把它宣传成「安全升级」。
 
-### 3.3 阶段 1 的验收判据
+### 3.3 阶段 1 的验收判据(**已完成 2026-09-26**)
 
-- 改完**目录还没动**时,`python -m pytest tests/ -q` 全绿(规则应等价于现状 + 更严)。
-- 反向自证:临时把 `import carla` 写进 `autodrivedata/mapvec.py` → 守卫**必须红**;临时写 `from ultralytics import YOLO`
-  → **必须红**(验证马甲库生效);`from . import x` 形态 → **必须红**(验证相对导入)。
+**落点**:守卫从 `test_paths.py::test_package_stays_pure_value`(已摘除)**迁到独立文件
+`tests/test_layer_guard.py`**(约 200 行,含规则表 + 扫描器 + 自证),因为它从 20 行长到了需要自己的
+`LAYER_RULES` / `rule_for` / `imported_toplevels` / `scan_package_layers` 这一整套。
+
+| 判据 | 结果 |
+|---|---|
+| 目录未动时全绿 | ✅ 收集项 **910** = 899 − 1(摘旧守卫)+ 12(新守卫),0 失败 |
+| `test_every_subpackage_is_declared` | ✅ 强制新能力子目录**必须显式声明** —— 防「静默回落到包根规则」(回落到 `_ANY` = 假绿,比红更坏) |
+
+**★ 自证方式相对原计划升级了**:原计划是「临时把 `import carla` 写进 `mapvec.py` → 看它红」,
+那是一次性手工动作、且要往仓库里写坏代码。实际做成 **`TestLayerGuardSelfCheck` 的 10 条常驻测试**,
+用 `scan_package_layers(injected={...})` **注入合成源码**——不碰真实文件,且**每次都跑**:
+
+| 自证 | 证明什么 |
+|---|---|
+| `import carla` in `utils/` → 红 | 基本判据有效(非"永远绿") |
+| `from ultralytics import YOLO` → 红 | **马甲库洞已堵**(旧守卫放行) |
+| `importlib.import_module("torch")` / `__import__("mmdet3d")` → 红 | 动态导入盲区已堵 |
+| `import carla` in `sim/` / `perception/` → **不红** | 规则**能区分**,不是"见 carla 就红"的蠢规则 |
+| `import torch` in `calib/`(许 carla 不许 torch)→ 红 | 单向规则真的单向 |
+| `map/maptr/x.py` 红但 `map/x.py` 不红 | 最长前缀匹配生效 |
+
+**⚠️ 一处与原计划的偏差必须记下**:原计划写「`from . import x` 形态 → **必须红**(验证相对导入)」。
+这条判据**是错的**,实际实现也**没有**这么做 —— 相对导入按定义是**包内引用**,解析后顶层恒为
+`autodrivedata`,永远不会命中禁用集合。真正的绕过面是**字面量动态导入**(已堵)。
+现行处理:相对导入**显式解析**(不静默跳过节点,见 `imported_toplevels` 的注释),但**不假装它能变红**。
 
 ---
 
@@ -199,11 +222,13 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 > | 阶段 | 判据 | 理由 |
 > |---|---|---|
 > | **0–1**(修陷阱 + 升级守卫) | **收集项 ≥ 895**,0 失败 | 这两阶段**有意新增回归钉子**(§4.0 要求),数字只增不减 |
-> | **2–8**(搬迁) | **收集项恒等于 895 + 阶段 0 新增数** | 搬迁**不得**增删用例;数字一变就是丢了或重复收集 |
+> | **2–8**(搬迁) | **收集项恒等于 910**(阶段 1 结束时的实际值) | 搬迁**不得**增删用例;数字一变就是丢了或重复收集 |
 > | 9(收口) | 同上,不再变化 | |
 >
 > **少一个就停手查;多一个也要查** —— 多通常意味着 `__init__.py` 缺失导致同名模块被两个测试根重复收集。
-> (阶段 0 实测:895 → **899**,+4 = 新增的 4 条钉子;3 个模块级跳过不变。)
+> **实测轨迹**:阶段 0 结束时 **899**(895 + 4 条新钉子);阶段 1 结束时 **910**
+> (= 899 − 1 摘掉的旧守卫 + 12 条新层守卫)。**阶段 2 起以 910 为基准对账**。
+> 3 个模块级跳过(`auto3dlabel.schema` 缺失)全程不变。
 >
 > 阶段 2 的 `pyproject.toml` 只加 `exclude`(防打包),**`testpaths` 等到阶段 9 再加** ——
 > 提前加会让 `pytest` 裸跑只收新根,静默漏掉还在 `tests/` 的那一半。
@@ -255,7 +280,7 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 
 **阶段 2 验收判据(必须全过才继续)**
 
-1. `python -m pytest tests autodrivedata/tests -q` 全绿,**且用例数恰为 895**(两个根同时收集;少一个即停手)
+1. `python -m pytest tests autodrivedata/tests -q` 全绿,**且收集项恰为 910**(两个根同时收集;少一个即停手)
 2. `ruff check && ruff format --check` 干净
 3. **跑一次真实采集**:`python -m autodrivedata.sim.collect_drive --scene rain_night --frames 5`
    → 产物落在**项目根** `outputs/`(验证 §5.6 的 `paths.py` 修复真的生效,没有落到 `autodrivedata/outputs/`)

@@ -49,26 +49,9 @@ class TestProjectRoot:
         assert got.parent.is_dir()
         assert got.name == "c.pt"
 
-    def test_package_stays_pure_value(self):
-        """包纪律:autodrivedata 全包不 import carla/torch(纯值,任何 env 可单测)。
-
-        用 AST 取真实 import 名,不用子串匹配——文档字符串里写着"不 import carla"
-        的子串匹配会假红(本测试第一版就踩了)。
-        """
-        pkg = paths.PROJECT_ROOT / "autodrivedata"
-        offenders: dict[str, set[str]] = {}
-        for src_file in sorted(pkg.rglob("*.py")):
-            mods: set[str] = set()
-            tree = ast.parse(src_file.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    mods.update(a.name.split(".")[0] for a in node.names)
-                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                    mods.add(node.module.split(".")[0])
-            hit = mods & {"carla", "torch"}
-            if hit:
-                offenders[str(src_file.relative_to(pkg))] = hit
-        assert not offenders, f"autodrivedata 包必须纯值,违规: {offenders}"
+    # 「包不 import carla/torch」的守卫**已迁到 test_layer_guard.py**,并升级为按目录的规则表
+    # (旧版 `test_package_stays_pure_value` 只有一条全局拒绝清单,且漏马甲库与动态导入)。
+    # 见 Plan_fileTree.md §3。
 
     @pytest.mark.parametrize("name", ["outputs/carla/libmhookshim.so", "outputs/carla/nvidia-compat"])
     def test_state_paths_are_inside_project(self, name: str):

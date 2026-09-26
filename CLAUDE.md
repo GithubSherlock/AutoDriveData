@@ -77,6 +77,8 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 autolabel 从未迁移故只有真身一处;hivt 有真身但**没有链接**故 conda 看不见。三者都不是"副本",不存在重复占盘。
 
 纪律:autodrivedata 包**不 import carla**(纯值,任何 env 可单测);依赖单向 AutoDriveData → AutoLabel(3D 检测消费方),禁止反向。
+该纪律的执行者 = [tests/test_layer_guard.py](tests/test_layer_guard.py) 的 `LAYER_RULES`(**按目录**声明允许 import 什么,
+不是一条全局禁令)。改目录结构前先读 [Plan_fileTree.md](Plan_fileTree.md) §3。
 
 ## 项目结构
 
