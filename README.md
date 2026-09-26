@@ -57,7 +57,7 @@ OpenDRIVE 解析 → 矢量 GT 提取 → 环视采集/组装/投影验收 → *
 
 ```bash
 # 1. CARLA 服务器(headless,GPU 修复栈 + Vulkan 兼容层自愈;专用用户 carla)
-bash bin/carla_server.sh
+bash tools/carla_server.sh
 
 # 2. 场景采集(KITTI root:image_2 + label_2 GT + velodyne + calib)
 python bin/collect_drive.py --scene rain_night --frames 70

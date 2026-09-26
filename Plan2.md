@@ -1033,7 +1033,7 @@ bash bin/smoke_radar_collect.sh                           # devkit 直读四判�
 
 **字体从哪来**:本机唯一能画中文的是 **CARLA 随包的 Slate 回退字体**
 `Engine/Content/Slate/Fonts/DroidSansFallback.ttf`(Apache-2.0)。这不是"顺手引入外部资源":
-CARLA 本就是硬依赖(`bin/carla_server.sh`)。候选顺序
+CARLA 本就是硬依赖(`tools/carla_server.sh`)。候选顺序
 「`AUTODRIVEDATA_FONT` → 系统 CJK(Noto/文泉驿…) → CARLA 随包 → DejaVu 兜底」——换机器自动受益。
 Droid 仍缺 4 个码位(`−` U+2212 / `∘` U+2218 / `⚠` U+26A0 / `⁻` U+207B),
 `sanitize()` 换成等价 ASCII;**本轮真正画进画面的只有 `−`**(`yaw_carla = −az_nus` 与 `(w−1)/2`)。

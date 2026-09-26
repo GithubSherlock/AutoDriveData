@@ -47,7 +47,7 @@
 
 用法:
   python bin/verify_nus_calib.py --offline                       # ③④⑤(不需 CARLA)
-  bash bin/carla_server.sh start
+  bash tools/carla_server.sh start
   python bin/verify_nus_calib.py --live                          # ①②⑥⑦⑧(需 CARLA)
   python bin/verify_nus_calib.py --rig wide --offline --live --dataroot outputs/nus_mini_wide
 """

@@ -1,9 +1,9 @@
 #!/bin/bash
 # CARLA 服务器生命周期辅助(项目纪律,源自 M3-5 排查结论)。
 # 用法:
-#   bin/carla_server.sh start   # 干净启动(先杀残留 + 验证端口空闲)
-#   bin/carla_server.sh stop    # 彻底停止(UE4 会逃逸 su 包装,必须 pkill -9)
-#   bin/carla_server.sh status  # 状态(进程/端口/显存/状态目录 shim 兼容层)
+#   tools/carla_server.sh start   # 干净启动(先杀残留 + 验证端口空闲)
+#   tools/carla_server.sh stop    # 彻底停止(UE4 会逃逸 su 包装,必须 pkill -9)
+#   tools/carla_server.sh status  # 状态(进程/端口/显存/状态目录 shim 兼容层)
 #
 # M3-5 结论:headless 下客户端会话收尾(销毁传感器+断连)偶发 UE4 segfault(139),
 # 但每次采集数据已完整落盘——崩溃只发生在 teardown 阶段。纪律:每次采集前 start。
@@ -17,7 +17,7 @@ PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 STATE=$PROJECT_ROOT/outputs/carla
 LOG=$STATE/carla_server.log
 SHIM=$STATE/libmhookshim.so
-SHIM_SRC=$PROJECT_ROOT/bin/gpu_fix/mhookshim.c
+SHIM_SRC=$PROJECT_ROOT/tools/gpu_fix/mhookshim.c
 
 # M3-5b Vulkan 兼容层:宿主驱动升到 580.105.08 后,镜像里**该版本**的
 # libnvidia-gpucomp 缺失(只有 580.76.05/580.82.07 是真实文件)→ Vulkan ICD
@@ -34,7 +34,7 @@ ensure_shim() {
   if [ -s "$SHIM" ]; then
     return 0
   fi
-  echo "⚠️  $SHIM 缺失 → 现编(bin/gpu_fix/mhookshim.c)"
+  echo "⚠️  $SHIM 缺失 → 现编(tools/gpu_fix/mhookshim.c)"
   gcc -shared -fPIC -O2 -o "$SHIM" "$SHIM_SRC" -ldl || {
     echo "❌ shim 编译失败(gcc 缺失?)" >&2
     exit 1

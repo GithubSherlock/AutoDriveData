@@ -84,7 +84,8 @@ autolabel 从未迁移故只有真身一处;hivt 有真身但**没有链接**故
 > 哪些是【未入库】产物。**新增或改名文件后回来补一行**(维护约定在该文档头部);下面是速览版。
 
 - `autodrivedata/` — 纯值库(geometry/calib/**camera_rig**/calib_probe/**calib_live**/**rigviz**/fonts/depth_codec/gt/static_gt/traffic_light/attribution/semantic/export/compare/scenarios/paths/mapvec_schema),不 import carla
-- `bin/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ 自证探针(probe_calib/probe_rig_mount/probe_vulkan/**verify_nus_calib**/**rig_check**)+ 配置图/实拍图(**viz_rig_check**)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)+ `carla_server.sh`(GPU 修复版启动 + **Vulkan 兼容层自愈**;宿主驱动升版致 `libnvidia-gpucomp.so.<ver>` 缺失时自动顶名,见 Plan.md §5.11f)
+- `bin/` — carla 采集器(collect_drive/collect_ab_route/collect_static_gt/collect_tl_states/collect_nus)+ 评估(eval_2d_ab/eval_attr/eval_kitti)+ 可视化(view_stream)+ 自证探针(probe_calib/probe_rig_mount/probe_vulkan/**verify_nus_calib**/**rig_check**)+ 配置图/实拍图(**viz_rig_check**)+ `carla_common.py`(位姿/NPC/传感器/灯态归一与绘制共用件)
+- `tools/` — 开放性工具(判据:**不含本项目领域知识**):`carla_server.sh`(GPU 修复版启动 + **Vulkan 兼容层自愈**;宿主驱动升版致 `libnvidia-gpucomp.so.<ver>` 缺失时自动顶名,见 Plan.md §5.11f)+ `gpu_fix/`(LD_PRELOAD shim 源码与安装脚本)
 - `tests/` — 单测(autodrivedata env;**802 用例**已收集,2026-09-23 `--collect-only`;改动后只跑相关单测,不跑全量)
 - `outputs/` — **全部产物的唯一落点**(采集/权重/可视化/运行支撑物):kitti_* 为 KITTI root 结构;kitti_ab_* = P1 A/B 序列;kitti3d_ab_* = 3D 伪标签;`maptr_*.pt` = 权重;`carla/` = 服务器日志 + shim + Vulkan 兼容层
 - `docs/` — `fileTree.md`(**文件级索引,加/改文件后必须回来补一行**);`milestone.md` / `milestone2.md`(里程碑);`testLog.md`(测试日志);`Carla_Sim_Tutorial_01..16.md`(教程,Plan2.md 能力对照源);`PRD.md` / `TRD.md`(空占位)
@@ -94,7 +95,7 @@ autolabel 从未迁移故只有真身一处;hivt 有真身但**没有链接**故
 
 ```bash
 # CARLA 服务器(专用用户 carla + LD_PRELOAD shim,GPU 修复栈;headless)
-bash bin/carla_server.sh        # 启动;停止用 stop(start/stop/status;勿手敲 pkill -f CarlaUE4,自匹配坑见 C19)
+bash tools/carla_server.sh        # 启动;停止用 stop(start/stop/status;勿手敲 pkill -f CarlaUE4,自匹配坑见 C19)
 
 # 场景采集(KITTI root,含 label_2 GT/velodyne/calib)
 python bin/collect_drive.py --scene rain_night --frames 70

@@ -32,7 +32,7 @@ CARLA 随包的 `DroidSansFallback.ttf` 四字签名互不相同、且都与 `.n
 
 本机唯一可用的中文字体是 **CARLA 随包的 Slate 回退字体**
 (`Engine/Content/Slate/Fonts/DroidSansFallback.ttf`,Apache-2.0)。这不是"顺手拿到外部资源":
-CARLA 本来就是本项目的硬依赖(`bin/carla_server.sh`)。候选表仍按
+CARLA 本来就是本项目的硬依赖(`tools/carla_server.sh`)。候选表仍按
 「`AUTODRIVEDATA_FONT` 覆盖 → 系统 CJK → CARLA 随包 → DejaVu 兜底」排,换机器自动受益。
 
 DroidSansFallback 仍缺 4 个码位(实测):`−` U+2212 / `∘` U+2218 / `⚠` U+26A0 /

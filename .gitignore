@@ -19,11 +19,14 @@ env/
 
 # ===== 模型权重与 KITTI infos 缓存（评估权重在 AutoLabel/weights，不入库）=====
 *.pt
+*.pt.*
 *.pth
 *.onnx
 *.safetensors
 *.ckpt
+/models/
 lightning_logs/
+/logs/
 auto3dlabel/weights/
 
 # ===== 采集 / 数据产物 =====
@@ -65,3 +68,10 @@ Thumbs.db
 gitpush.sh
 clear_cache.sh
 hdMapGitHub/
+
+# ===== 例外：assets/ 是【入库】的静态资源目录 =====
+# 上面的 `*.png` / `*.jpg` 等全局规则会把 assets/ 里的图**静默**吞掉
+# （git add 不报错、直接跳过）—— 该目录的用途与那些规则方向相反，故在**规则之后**放行。
+# 代价：assets/ 里若放大文件不会被自动拦截，靠提交时人工把关。
+!assets/
+!assets/**

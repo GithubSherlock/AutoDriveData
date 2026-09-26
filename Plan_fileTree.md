@@ -1,0 +1,392 @@
+# 目录结构:定案与执行计划
+
+> **本文档的定位**:项目**目录结构的制定地 + 执行契约** —— 怎么切、为什么这么切、按什么顺序做、做完怎么验收。
+> 与 [docs/fileTree.md](docs/fileTree.md) 的分工:**本文件是决策与计划**,fileTree.md 是**现状索引**(某文件现在在哪)。
+> **改结构先读本文件**;每个阶段完成后回来勾掉,并同步 fileTree.md。
+>
+> **依据来源**:2026-09-26 两轮全仓审计(49 + 32 个 agent,含逐提案对抗对账)。**本文所有数字均为实测**,
+> 引用点计数口径 = git 跟踪文件里含该路径 token 的行数(代码 import + 命令行串 + 文档 + shell)。
+>
+> **维护约定**:§6「已实测否决」**只增不删** —— 那是最省时间的部分,它记的是「这个问题已经量过了,别再提一遍」。
+
+---
+
+## 1 已裁决的方向(2026-09-26)
+
+| 决策 | 内容 | 依据 |
+|---|---|---|
+| **划分主轴** | 一级目录 = **能力面**;生命周期由**文件名前缀**承载(`collect_` / `eval_` / `train_` / `probe_` / `viz_` / `assemble_`) | 两个维度只能有一个做目录。**能力做目录零信息损失**(生命周期已在文件名里);反过来会丢(`eval_kitti.py` / `eval_attr.py` 从名字看不出能力面) |
+| **`sim/` 取代 `CARLA/`** | 小写;不叫 `carla/` | 实测 `import carla` 在子包内**不会**被遮蔽(Python 3 绝对导入,已实证)。但 `import carla` 与 `from ..carla.carla_common import` 同文件共存读法灾难。这层装的是**我们的仿真交互层**(`carla_common.py` 815 行、`live_common.py` 815 行 + 12 单测),不是 CARLA 平台 |
+| **`map/` 取代 `HDMap/`** | | `HDMap` 在本仓已被三样别的东西占用(`hdMapGitHub/` 上游克隆、CARLA 装目录的 `HDMaps/` 见 `Plan.md:330`、`Plan2.md` 的 online HD mapping);地图域已有三套在用名字(`opendrive` / `mapvec` / `maptr`),再建是第四个 |
+| **不建 `configs/`** | 等真有了 yaml 再建 | 全仓手写 yaml = **0 个**(`pyproject.toml` 必须在根,`lightning_logs/*/hparams.yaml` 是 Lightning 自动生成)。最像配置的 `scenarios.py` / `camera_rig.py` 是**冻结口径**不是可调参数,放进去会误导 |
+| **`utils/` 建** | 通用数学/基础设施 | 用户指定。**准入判据**:无项目领域语义、无 carla/torch 依赖。首批 = `geometry.py` `paths.py` `fonts.py`(3 个)。**若超过 6 个文件说明它正在变成 junk drawer,需重新裁决** |
+| **`bin/` + `tests/` 全收进 `autodrivedata/`** | | 两者**必须一起搬**:只搬一半会得到最坏结果(测试进包但被测脚本留在 `bin/` ⇒ 两边都要 `sys.path` hack,比现状更差) |
+| **`maptr_impl/` / `maptr_official/` 收进 `map/`** | → `map/maptr/` `map/maptr_official/` | 用户要求 |
+| **顶层 `tools/`** | 开放性 bash/python,判据 = **不含本项目领域知识** | `carla_server.sh` / `clear_cache.sh` / `gitpush.sh` / `gpu_fix/`。含领域知识的编排脚本(`assemble_and_merge.sh` 等)跟着它的 Python 走 |
+| **入口调用方式改为 `python -m`** | `python -m autodrivedata.sim.collect_drive` | 搬进包后 `sys.path[0] = 脚本目录` 的旧机制失效。这也是我们要的 —— 那正是 `bin/` 里 29 处同级裸名 import 的成因 |
+
+---
+
+## 2 目标树(完整落位,共 106 个模块 + 48 个测试)
+
+```
+autodrivedata/
+├── sim/                  22  CARLA 仿真交互层 + 全部采集器
+│   ├── carla_common.py  live_common.py  live_studio.py  view_stream.py
+│   ├── drive_ego.py     smoke.py        probe_vulkan.py collect_rig.py
+│   ├── probe_imu.py     scenarios.py    collect_drive.py  collect_kitti.py
+│   ├── collect_ab_route.py  collect_nus.py  collect_surround.py
+│   ├── collect_surround_micro.py  collect_static_gt.py  collect_tl_states.py
+│   ├── collect_slam.py  collect_traj.py  collect_stereo.py  collect_3dgs.py
+│   └── smoke_radar_collect.sh
+├── calib/                14  标定(自证 / 实时监看 / 配置图)
+│   ├── calib.py camera_rig.py calib_probe.py calib_live.py depth_codec.py rigviz.py
+│   ├── probe_calib.py verify_nus_calib.py rig_check.py probe_rig_mount.py
+│   └── viz_calib_check.py viz_rig_check.py calib_multilidar.py viz_layout_cmp.py
+├── map/                  29  地图矢量 + MapTR
+│   ├── opendrive.py mapvec.py mapvec_schema.py mapviz.py chamfer_ap.py
+│   ├── assemble_maptr.py convert_mapvec.py export_mapvec.py merge_train_infos.py
+│   ├── train_maptr.py eval_maptr.py eval_official_metric.py
+│   ├── prepare_official_dataset.py probe_mapvec_oracle.py probe_mapvec_proj.py
+│   ├── viz_maptr_pred.py
+│   ├── assemble_and_merge.sh  finalize_maptr_600.sh
+│   ├── maptr/             8   ← maptr_impl/ 整体(7 torch + __init__)
+│   └── maptr_official/    5   ← maptr_official/ 整体(__init__ + bridge + configs/3,已终止线)
+├── slam/                 11
+│   ├── slam.py slam_eval.py live_slam.py accum.py
+│   ├── slam_odometry.py slam_backend.py slam_diff_test.py eval_slam.py
+│   └── build_accum_map.py probe_scan_to_map.py slam_cpp.cpp
+├── perception/           18  检测 / 单双目 / 雷达 / 语义 / 点云
+│   ├── mono_depth.py stereo.py multilidar.py radar.py semantic.py
+│   ├── probe_radar_l3.py compare.py attribution.py ground.py cluster.py
+│   ├── mono_distance.py sem_bev.py eval_2d_ab.py eval_attr.py eval_kitti.py
+│   └── finetune_synth.py extract_ground.py cluster_obstacles.py
+├── gt/                    6   GT 生成
+│   ├── gt.py static_gt.py traffic_light.py
+│   └── export/{__init__.py, kitti.py, nuscenes.py}
+├── traj/                  2   assemble_traj_pt.py  convert_hivt_pt.py
+├── gs/                    1   train_3dgs_mini.py
+├── utils/                 3   geometry.py  paths.py  fonts.py
+└── tests/                48   按能力镜像(与各子树同阶段搬迁)
+    ├── sim/          test_live_common.py  test_scenarios.py
+    ├── calib/        test_calib.py test_calib_probe.py test_calib_live.py
+    │                 test_rigviz.py test_probe_calib.py test_depth_codec.py
+    │                 test_collect_rig.py test_nuscenes_calib_consistency.py
+    │                 test_nuscenes_cali_sensors.py test_calib_oracle_autolabel.py
+    ├── map/          test_opendrive.py test_mapvec.py test_mapvec_schema.py
+    │                 test_mapviz.py test_chamfer_ap.py test_chamfer_gpu.py
+    │                 test_gkt.py test_head.py test_temporal.py test_device.py
+    │                 test_maptr_select.py
+    ├── slam/         test_slam.py test_slam_eval.py test_live_slam.py test_accum.py
+    ├── perception/   test_mono_depth.py test_stereo.py test_multilidar.py
+    │                 test_radar.py test_semantic.py test_compare.py
+    │                 test_attribution.py test_ground.py test_cluster.py
+    ├── gt/           test_gt.py test_static_gt.py test_traffic_light.py
+    │                 test_export_kitti.py test_export_nuscenes.py
+    │                 test_gt_oracle_autolabel.py test_nuscenes_oracle_autolabel.py
+    └── utils/        test_geometry.py test_geometry_nus.py test_paths.py
+                      test_fonts.py test_geometry_carla_oracle.py
+
+AutoDriveData/              顶层保留
+├── tools/                开放性工具(不含本项目领域知识)
+│   ├── carla_server.sh  clear_cache.sh  gitpush.sh
+│   └── gpu_fix/{install.sh, mhookshim.c}
+├── models/  assets/  logs/    资源类(用户方针,见 §5.4/§5.5 的 gitignore 前置)
+├── docs/  README.md  CLAUDE.md  Plan.md  Plan2.md  Plan_fileTree.md
+├── pyproject.toml  requirements.txt  .envrc  .gitignore
+└── outputs/ training/ lightning_logs/ hdMapGitHub/ auto3dlabel/   (产物/上游,【未入库】)
+```
+
+**依赖方向(升级后的硬纪律)**:`tests/` → 一切;`sim/` `map/` `perception/` → `utils/` `gt/` `calib/` `slam/`;
+**`utils/` `gt/` `slam/` 不许依赖任何兄弟能力包,也不许 import carla/torch**。
+
+---
+
+## 3 守卫的新形状(阶段 1 的产物)
+
+### 3.1 现状与它为什么必须改
+
+`tests/test_paths.py:42-61` 用 `pkg.rglob("*.py")` **递归**强制「整包不 import carla/torch」。
+`sim/` 一建,27 个 `import carla` 的文件立刻让它变红 —— **代码一个字没坏,守卫红了**。
+
+两个已实测的洞:
+
+- **马甲库**:`hit = mods & {"carla", "torch"}` 按模块名字面匹配。`from ultralytics import YOLO` 实测会拉起 torch
+  (`import ultralytics` 后 `'torch' in sys.modules == True`),但字面上不含 `torch` ⇒ **静默溜过**。
+  受影响:`eval_2d_ab.py` `eval_attr.py`(ultralytics)、`finetune_synth.py`(auto3dlabel→函数体内延迟 `mmdet3d`)。
+- **相对导入**:`test_paths.py:54` 只统计 `node.level == 0` 的 `ImportFrom` ⇒ `from . import x` 完全绕过。
+
+### 3.2 新守卫(替换 `test_package_stays_pure_value`,约 45 行)
+
+```python
+# 目录(相对 autodrivedata/;注解用) → 【禁止】import 的三方模块。最深匹配优先。
+LAYER_RULES: dict[str, set[str]] = {
+    "": {"carla", "torch", "ultralytics", "mmdet3d", "mmcv", "lightning"},  # 包根:迁移期残留模块
+    "utils": {"carla", "torch", "ultralytics", "mmdet3d", "mmcv", "lightning"},
+    "gt": {"carla", "torch", "ultralytics", "mmdet3d", "mmcv", "lightning"},
+    "slam": {"carla", "torch", "ultralytics", "mmdet3d", "mmcv", "lightning"},
+    "calib": {"torch", "ultralytics", "mmdet3d", "mmcv", "lightning"},  # 许 carla
+    "perception": {"carla"},  # 许 torch
+    "traj": {"carla"},
+    "gs": {"carla"},
+    "map": set(),  # 含 maptr/(torch) 与 probe_mapvec_oracle(carla)
+    "map/maptr": {"carla"},
+    "sim": set(),  # 含 live_common(carla+torch)
+    "tests": set(),  # 测试跟着被测对象走
+}
+MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式列入禁用集合"
+```
+
+判据:① 遍历 `autodrivedata/**/*.py`(**含相对导入**,`node.level != 0` 时按所属包解析成绝对名);
+② 对每个文件取其**最长前缀匹配**的规则集;③ `hit = mods & forbidden`,非空即记 offender;④ `assert not offenders`。
+
+**诚实说明**:新守卫**不是全面更强** —— 包根/`utils`/`gt`/`slam` 的保护力度与现状等价。它真正新增的是
+**① 堵上马甲库与相对导入两个洞;② 获得「按目录表达规则」的能力**(现状根本写不出「`gt/` 不许依赖 `sim/`」);
+**③ 让这次重构在结构上成为可能**。不要把它宣传成「安全升级」。
+
+### 3.3 阶段 1 的验收判据
+
+- 改完**目录还没动**时,`python -m pytest tests/ -q` 全绿(规则应等价于现状 + 更严)。
+- 反向自证:临时把 `import carla` 写进 `autodrivedata/mapvec.py` → 守卫**必须红**;临时写 `from ultralytics import YOLO`
+  → **必须红**(验证马甲库生效);`from . import x` 形态 → **必须红**(验证相对导入)。
+
+---
+
+## 4 执行计划
+
+### 4.0 开发流程(标准 SDLC,每阶段必走)
+
+**分工**:AI 负责改文件 / 跑验证 / 汇报结果;**所有 `git commit` 由用户手动执行**(项目纪律:不自动提交)。
+提交信息用 Conventional Commits,**不附 AI 署名 trailer**。
+
+**分支**:**直接在 `main` 上做**,每个阶段一个 commit(2026-09-26 用户裁决,否决了"切 `refactor/filetree`
+分支承载全部阶段"的方案)。
+
+> ⚠️ **这个选择的直接代价,做之前必须知道**:阶段 0–9 会在 `main` 上留下 10 个中间状态,
+> 阶段 2 试点若失败,**不能一次 `git branch -D` 废弃**,只能逐个 `git revert`(§8)。
+> 因此「每阶段一个 commit」从"整洁惯例"升级成**硬约束** —— 一个阶段混进两个 commit,
+> 或一个 commit 混进两个阶段,回滚粒度就失效。
+>
+> 配套:`tools/gitpush.sh` 的 main-only 闸门在 `main` 上正常工作,无需改动。
+
+**每个 commit 的准入(Definition of Done)** —— 五条全过才允许提交:
+
+| # | 检查 | 命令 / 判据 |
+|---|---|---|
+| 1 | 格式与静态检查 | `ruff check && ruff format --check` 干净 |
+| 2 | 相关单测(项目常规口径) | `python -m pytest <被测子树> -q` 全绿 |
+| 3 | **全量单测 + 用例数对账** | `python -m pytest <测试根> -q`;用例数**必须等于基线** |
+| 4 | 残留引用 grep | 无指向旧路径的**活**引用(文档引用不会报错,见 阶段 9) |
+| 5 | 文档与代码同 commit | 项目纪律:改结构必须同步 `docs/fileTree.md` |
+
+**第 3 条是本重构的核心失效模式,不是走过场**:搬测试文件时 pytest 会**静默少收**——
+文件搬过去但 `__init__.py` / `conftest.py` / `testpaths` 配错,结果是「跑出来全绿,但只跑了 41 个用例」。
+所以必须**逐阶段对比用例数**,而不是只看绿不绿。
+
+> **★ 迁移期有两个测试根,必须同时收集**(这正是上面那个静默失效模式最容易发生的地方):
+>
+> | 阶段 | 测试根 | 全量命令 |
+> |---|---|---|
+> | 0–1 | `tests/` | `python -m pytest tests -q` |
+> | **2–8** | **`tests/` + `autodrivedata/tests/`(并存)** | **`python -m pytest tests autodrivedata/tests -q`** |
+> | 9 | `autodrivedata/tests/` | `python -m pytest -q`(靠 `testpaths`) |
+>
+> **基线(2026-09-26 实测):895 个收集项 / 48 文件**(另有 3 个**模块级** `importorskip` 跳过 ——
+> `auto3dlabel.schema` 缺失,与本次重构无关;任何阶段都应恰好还是这 3 个)。
+>
+> **★ 对账判据分两种口径,别混**:
+>
+> | 阶段 | 判据 | 理由 |
+> |---|---|---|
+> | **0–1**(修陷阱 + 升级守卫) | **收集项 ≥ 895**,0 失败 | 这两阶段**有意新增回归钉子**(§4.0 要求),数字只增不减 |
+> | **2–8**(搬迁) | **收集项恒等于 895 + 阶段 0 新增数** | 搬迁**不得**增删用例;数字一变就是丢了或重复收集 |
+> | 9(收口) | 同上,不再变化 | |
+>
+> **少一个就停手查;多一个也要查** —— 多通常意味着 `__init__.py` 缺失导致同名模块被两个测试根重复收集。
+> (阶段 0 实测:895 → **899**,+4 = 新增的 4 条钉子;3 个模块级跳过不变。)
+>
+> 阶段 2 的 `pyproject.toml` 只加 `exclude`(防打包),**`testpaths` 等到阶段 9 再加** ——
+> 提前加会让 `pytest` 裸跑只收新根,静默漏掉还在 `tests/` 的那一半。
+
+**每个 bug 修复必须配回归测试**(项目纪律)。阶段 0 的**删除类项**(0.1/0.2)无代码可钉,其余四项各要有钉子:
+
+| 阶段 0 项 | 钉子 |
+|---|---|
+| 0.3 `sem_bev` 权重路径 | 断言 `paths.project_path(<权重>)` 指向的**文件真实存在** |
+| 0.4 `.gitignore` 三条 | 断言 `git check-ignore` 对 `models/*.pt.opt` / `logs/*.log` 返回**已忽略**、对 `assets/logo.png` 返回**未忽略** |
+| 0.6 `paths.py` PROJECT_ROOT | 断言 `PROJECT_ROOT` **含 `pyproject.toml`**(而非只断言等于某个深度),搬迁后仍要绿 |
+| 0.5 相对 `sys.path` | 该测试在 `cwd=/tmp` 下可单独跑通 |
+
+> 说明:项目 CLAUDE.md 的常规口径是「改动后只跑相关单测,不跑全量」。**本重构是例外** ——
+> 搬迁的失效模式恰恰是「没跑到的那些测试静默消失」,只跑相关单测正好避开这个失效模式。
+
+**评审点**:阶段 2(试点)结束后**停下来**,把 diff + 阶段 2 的六条验收判据结果交用户拍板。
+满意 → 继续阶段 3–9;不满意 → 按 §8 逐 commit revert(不再是"废弃分支")。
+
+### 阶段 0 — 前置清理与陷阱修复(零引用点,独立可提交)
+
+| # | 动作 | 验收 |
+|---|---|---|
+| 0.1 | `rmdir logs utils bin/utils autodrivedata/{configs,SLAM,HDMap,CARLA}`(先确认全空) | `git status` 不变 |
+| 0.2 | 删 `.ipynb_checkpoints`:根 / `autodrivedata/` / `bin/` / `outputs/smoke*` | §5.5 |
+| 0.3 | 修 `bin/sem_bev.py:213` 权重路径 + 同步 `docs/fileTree.md:44` | §5.1 **三处口径同改** |
+| 0.4 | `.gitignore` 补:`logs/`、`*.opt`、`models/`、`assets/**` 白名单 | §5.2/§5.3/§5.4 |
+| 0.5 | `tests/test_maptr_select.py:18` 相对 `sys.path` 改绝对 | 换 cwd 跑该测试仍绿 |
+| 0.6 | `autodrivedata/paths.py:16` 改为**向上搜索 `pyproject.toml`** | §5.6 —— **搬迁的前置** |
+| 0.7 | `tools/` 落地:迁 `carla_server.sh` `clear_cache.sh` `gitpush.sh` `gpu_fix/` | 逐条改引用 |
+
+### 阶段 1 — 守卫升级(§3)
+
+零引用点。改完先按 §3.3 做三条反向自证。
+
+### 阶段 2 — `sim/` 试点(**最大最难的一棵,做完停下来验收**)
+
+选 `sim/` 当试点的三个理由:① 最大(21 个模块 + 12 个采集器,占搬迁量 1/5);
+② **对守卫冲击最剧烈**(27 个 `import carla` 全在这一棵);③ **唯一碰到非 `.py` 可执行文件**的
+(`smoke_radar_collect.sh`)。它跑通了,`map/` `slam/` `calib/` 都是它的简化版。
+
+| # | 动作 |
+|---|---|
+| 2.1 | `git mv` 21 个文件到 `autodrivedata/sim/`;`git mv tests/test_live_common.py tests/test_scenarios.py autodrivedata/tests/sim/` |
+| 2.2 | 改 import:`from carla_common import X` → `from autodrivedata.sim.carla_common import X`(29 处同级裸名 import 全在此) |
+| 2.3 | `pyproject.toml`:`packages.find` 加 `exclude = ["autodrivedata.tests*"]`(**只加这个**;`testpaths` 留到阶段 9,见上文) |
+| 2.4 | 守卫 `LAYER_RULES` 加 `sim`(已含在 §3.2) |
+| 2.5 | 入口文档改 `python -m autodrivedata.sim.<x>` |
+
+**阶段 2 验收判据(必须全过才继续)**
+
+1. `python -m pytest tests autodrivedata/tests -q` 全绿,**且用例数恰为 895**(两个根同时收集;少一个即停手)
+2. `ruff check && ruff format --check` 干净
+3. **跑一次真实采集**:`python -m autodrivedata.sim.collect_drive --scene rain_night --frames 5`
+   → 产物落在**项目根** `outputs/`(验证 §5.6 的 `paths.py` 修复真的生效,没有落到 `autodrivedata/outputs/`)
+4. `python -m autodrivedata.sim.view_stream --view follow` 起得来(验证 `--maptr-ckpt` 之外的实时流没断)
+5. `python -c "import autodrivedata.sim.carla_common"` 在**干净 env** 能解析(editable finder 不须重装)
+6. grep 残留:`grep -rn 'bin/' --include='*.md' .` 只剩 §6 已知的历史条目
+
+**→ 停下来给用户看结果。满意再进阶段 3;不满意则回滚(§8),代价 = 1/5。**
+
+### 阶段 3..9 — 其余子树,每个一棵一 commit
+
+| 阶段 | 子树 | 文件数 | 难度 |
+|---|---|---|---|
+| 3 | `calib/` | 14 + 10 测试 | 中(许 carla,涉及 `-m` 改命令) |
+| 4 | `map/` | 29 + 11 测试 | **最高**(含 `maptr_impl/`→`map/maptr/`、`test_fonts.py:34` 硬编码、`probe_mapvec_oracle` 许 carla) |
+| 5 | `slam/` | 11 + 4 测试 | 中(`slam_cpp.cpp` + `slam_diff_test.py` 的 g++ 调用需重跑对拍) |
+| 6 | `perception/` | 18 + 9 测试 | 低 |
+| 7 | `gt/` + `utils/` | 9 + 12 测试 | **低但要小心**(§5.6 的 `paths.py` 在这批) |
+| 8 | `traj/` + `gs/` | 3 | 低 |
+| 9 | 文档同步 | — | 见 §4.1 |
+
+### 阶段 9 — 文档同步 + 打包收口(不可省)
+
+约 1000 个引用点中,**绝大多数是文档**。它们**不会报错**。
+
+1. `CLAUDE.md` 常用命令段:全部 `python bin/x.py` → `python -m autodrivedata.<cap>.x`(约 40 条)
+2. `README.md`/`Plan2.md` 同改
+3. `docs/fileTree.md`:按新树重写 §1–§5 + 更新维护约定
+4. **`Plan.md` 冻结区处置** —— 见 §7
+5. 机械校验:`grep -rn 'bin/\|tests/test_' --include='*.md' .` 逐条确认
+6. `pyproject.toml` 收口:此时 `tests/` 已空,加 `[tool.pytest.ini_options] testpaths = ["autodrivedata/tests"]`;
+   删空的 `tests/` 目录;`git mv` 用 `git log --follow` 确认历史可追
+
+---
+
+## 5 已实测的陷阱与修复(全部验证过,每条都会出事)
+
+### 5.1 `bin/sem_bev.py` 权重路径已断(用户本次搬迁直接触发)
+
+```
+bin/sem_bev.py:213   project_path("yolo11s-seg.pt")   # 注释:「权重放项目根」
+实际位置             models/yolo11s-seg.pt            (20,669,228 B)
+docs/fileTree.md:44  仍写「放项目根」                   ← 第三处同口径的错
+```
+`project_path("yolo11s-seg.pt").exists() == False`。同一函数 `:216` 走的是 `outputs/models/yolopv2.pt`
+⇒ 仓库有**四个**权重落点。ultralytics 8.4.115 的 `GITHUB_ASSETS_NAMES` 含该名,缺文件时**静默联网重下**。
+**修**:三处同口径(代码 / 文档 / 实际文件位置)。
+
+### 5.2 `.gitignore` 的 `*.pt` **不匹配 `.opt`** —— `models/` 会吞 1.2 G 侧车
+
+```
+models/maptr_ep512.pt       → IGNORED      (*.pt 命中)
+models/maptr_ep512.pt.opt   → NOT-IGNORED  ← 会入库
+outputs/maptr_ep512.pt.opt  → IGNORED      (靠 outputs/ 整体忽略兜住)
+```
+`.opt` 优化器侧车每个约 250 M、合计约 1.2 G,**比权重本身还大**。
+
+### 5.3 `logs/` 不在 `.gitignore`
+`git check-ignore logs/train.log → NOT-IGNORED`。`.gitignore` 只有 `lightning_logs/`(带下划线)。
+
+### 5.4 `assets/` 里的图片会被**静默忽略**
+`git check-ignore assets/logo.png → IGNORED`(全局 `*.png/*.jpg/*.bmp/*.tif/*.mp4/*.onnx/*.npy`)。
+`git add` 不报错、直接跳过。**修**:在图片规则**之后**追加 `!assets/**`,再按体积关回大文件。
+
+### 5.5 两个空 `utils/` + 四处 `.ipynb_checkpoints`
+无 `__init__.py` 时按 **PEP 420 命名空间包**解析(`find_spec` 返回 `origin=None` 的 NamespacePath)——
+可 import、可被 `rglob` 扫到、但 `find_packages` 不收录,**三种机制看法不一致**。
+`autodrivedata/.ipynb_checkpoints/geometry-checkpoint.py` 与 `git show e7d45bc:autodrivedata/geometry.py`
+**逐字节相同**(142 行 vs 现役 500 行,缺 `NUS_EGO_ORIGIN_X` / `CARLA_CAM_TO_NUS_CAM`)。
+
+### 5.6 `paths.py:16` 的 `parents[1]` —— **搬迁会静默打断**
+
+```python
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # autodrivedata/paths.py → 项目根 ✓
+```
+`paths.py` 一旦挪进 `autodrivedata/utils/`,`parents[1]` 变成 **`autodrivedata/`** 而不是项目根 ⇒
+`project_path("outputs/x")` 解析到 `autodrivedata/outputs/x`,**所有产物落错地方**。
+被 `test_paths.py:17-19` 抓到(`(PROJECT_ROOT/"pyproject.toml").is_file()` 为假),但这是运气。
+**修**:改成**向上搜索 `pyproject.toml`**,从此免疫任何搬迁。
+
+### 5.7 硬编码路径字符串(不出现在任何「引用点计数」里)
+
+| 位置 | 内容 | 后果 |
+|---|---|---|
+| `tests/test_fonts.py:34` | `DRAWING_MODULES` 含字符串 `"autodrivedata/mapviz.py"`,三处 `(ROOT/rel).read_text()`(58/238/253 行) | 搬 `mapviz.py` → `FileNotFoundError`,**一个字符串干掉三个 test function 加一整组 parametrize** |
+| `tests/test_probe_calib.py:28` | `import bin.probe_calib as pc` | 单独搬 `probe_calib.py` 断这条测试 |
+
+### 5.8 `bin/slam_cpp.cpp` + `slam_diff_test.py` 的 g++ 调用
+路径敏感。搬完必须重跑对拍(验收:numpy 与 `slam_cpp` 同一 `(prev,cur,init,seed)` 下单次 ICP 一致)。
+
+---
+
+## 6 已实测否决(**别再提**)
+
+| 提案 | 实测引用点 | 否决理由 |
+|---|---|---|
+| `bin/` 分子目录 | **422** | 29 处同级裸名 `import` + 5 处 `sys.path` ⇒ `bin/` 事实上一必须是单层非包目录。**注**:本计划通过「搬进包 + 改 `python -m`」消除了这个约束 —— 那 29 处 import 在阶段 2 被改成绝对导入,约束随之消失 |
+| `bin/` 库代码迁出建**独立顶层包** | 77 | ① 5 个测试的 `sys.path` hack 删不掉(还要 import 留在 `bin/` 的脚本);② 新包不自足(`rig_check` 反向依赖 `bin/probe_calib`);③ pyright 的真正解是 1 个 `pyrightconfig.json`。**注**:本计划把 `bin/` 整体收进包内,该结论的前提已变 |
+| `tests/` 目录镜像 | 91 | 反向映射实测 41 个源模块全部有测试、0 孤儿、0 失效 import —— 平铺没有漏。**注**:本次仍镜像,但动机**不是补漏**而是「让测试能用真 import 而非 `sys.path` hack」 |
+| `outputs/` 命名规范大搬迁 | 37 | 要篡改 `Plan.md` **冻结账本** 9 处(含 `.opt` 的 `step=10,242` 对账量) |
+| 废弃权重加文件名前缀 | **191** + 100 份契约 json | 从**有版本控制**的文档标记换成**无 diff / 无 blame** 的文件名;`live_common.py:91` 已按 stem 正确派发 rig |
+| `.gitignore` 补 `models/ logs/ utils/` 目录级忽略 | 0 | **0 代价 ≠ 值得**:`rmdir` 严格占优。**注**:阶段 0.4 仍要补 `models/` 与 `logs/`,但理由是 §5.2/§5.3 的**真陷阱**(`.opt` 与训练日志会入库),不是「整洁」 |
+| 权重搬迁到 `models/` | 48 | git 层面收益为零(468 个 `.pt` 一个都没入库)。**仍要做**,但理由是把 §5.1 的四个落点收敛成一个,不是 git 清洁度 |
+| `pyrightconfig.json` 加 `extraPaths: ["bin"]` | 4 | 本计划把 `bin/` 收进包后 import 天然可解析,该方案作废 |
+
+---
+
+## 7 `Plan.md` 冻结区的处置(唯一没有好答案的地方)
+
+`Plan.md` 已冻结(§5.7a「不再新增」),其内部约 45 条 md 引用中 **7 条指向 `bin/` / `tests/` 的路径**。
+**改了违反冻结纪律,不改则永久指向不存在的路径** —— 这是个死结,不是能靠仔细解决的技术问题。
+
+**处置**:不修改内容,在**文档头部**加一行声明,把它固化成**已知状态**:
+
+> ⚠️ 本文档 §5.7c 之后的路径为 **2026-09-26 目录重构前口径**。
+> `bin/x.py` → `autodrivedata/<能力>/x.py`、`tests/test_x.py` → `autodrivedata/tests/<能力>/test_x.py`,
+> 完整映射见 [Plan_fileTree.md](Plan_fileTree.md) §2。
+
+---
+
+## 8 回滚方案
+
+每个阶段一个 commit,**回滚粒度 = 一个子树**。任一步骤失败:
+
+1. `git revert <阶段 commit>`(**不用 `reset --hard`**,保留历史;`main` 上尤其不能改写已推送历史)
+2. 若已改了 `pyproject.toml` / 守卫,一并 revert
+3. **不需要重装 editable**(实测 finder 对子模块委托 `PathFinder`,删除子目录后自然不再解析)
+
+阶段 2 试点失败 ⇒ **逐个 revert 阶段 2、1、0 的 commit**,回到「现状 + 守卫升级 + 陷阱已修」——
+注意顺序:**倒序** revert(2 → 1 → 0),否则守卫升级被先撤会让阶段 2 的 `sim/` 立刻违反旧红线。
+
+> ⚠️ 这是「直接在 `main` 上做」的固有代价:没有一次性的 `git branch -D` 逃生口。
+> 若嫌麻烦,可在阶段 2 **之前**补切分支(此时只有阶段 0–1 两个 commit,迁移成本最低)——
+> 阶段 3 之后就别切了,历史已经纠缠。

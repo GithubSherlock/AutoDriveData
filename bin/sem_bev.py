@@ -210,7 +210,7 @@ def main() -> None:
     print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
 
     # 模型
-    yolo11 = YOLO(str(project_path("yolo11s-seg.pt")))  # 权重放项目根(yolo11s-seg.pt)
+    yolo11 = YOLO(str(project_path("models/yolo11s-seg.pt")))  # 权重落点 = models/
     # TorchScript archive:autodrivedata env torch 无 CUDA 驱动,jit.load 会做 CUDA 探测
     # 失败(驱动 12.4 vs torch cu130)→ 用 torch.load(weights_only=False) 直接载权重图。
     ckpt = torch.load(str(project_path("outputs/models/yolopv2.pt")), map_location="cpu", weights_only=False)

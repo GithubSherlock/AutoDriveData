@@ -12,8 +12,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# 本文件在 <项目根>/autodrivedata/paths.py → 上两级即项目根
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _find_project_root() -> Path:
+    """向上搜索含 `pyproject.toml` 的目录 = 项目根。
+
+    **不要改回 `parents[N]` 写法**:写死深度在本文件被移位时会**静默**指错 ——
+    例如 `autodrivedata/paths.py` → `autodrivedata/utils/paths.py` 会让 `parents[1]`
+    从项目根变成 `autodrivedata/`,于是 `project_path("outputs/x")` 解析到
+    `autodrivedata/outputs/x`,**所有产物落错地方且不报错**。见 Plan_fileTree.md §5.6。
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    raise RuntimeError(f"向上未找到含 pyproject.toml 的项目根(起点 {__file__!r})")
+
+
+PROJECT_ROOT = _find_project_root()
 OUTPUTS = PROJECT_ROOT / "outputs"  # 采集/训练/可视化产物的单一落点(gitignore)
 STATE = OUTPUTS / "carla"  # CARLA 运行支撑物(shim/compat/服务器日志)
 

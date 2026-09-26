@@ -12,12 +12,15 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "bin")
+BIN = Path(__file__).resolve().parents[1] / "bin"
+if str(BIN) not in sys.path:  # bin/ 不是包(脚本目录),与 test_live_common.py 同款
+    sys.path.insert(0, str(BIN))
 
-import assemble_maptr  # noqa: E402
+import assemble_maptr  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 from maptr_impl.dataset import (  # noqa: E402
     MapTRDataset,
@@ -301,7 +304,8 @@ class TestOverfitGate:
 
     @staticmethod
     def _fn():
-        import train_maptr  # 惰性:该模块拉 torch/torchvision,不值得让整个文件收集变慢
+        # 惰性:该模块拉 torch/torchvision,不值得让整个文件收集变慢
+        import train_maptr  # pyright: ignore[reportMissingImports]
 
         return train_maptr.is_single_frame_anchor
 
@@ -323,7 +327,7 @@ class TestOverfitGate:
         import ast
         import inspect
 
-        import train_maptr
+        import train_maptr  # pyright: ignore[reportMissingImports]
 
         src = inspect.getsource(train_maptr)
         assert "is_single_frame_anchor(len(ds))" in src

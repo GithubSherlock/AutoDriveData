@@ -1,6 +1,6 @@
 """L3 物理合理性探针:对照真实大陆 ars408 规格验证 CARLA 雷达点分布(一次性)。
 
-需 CARLA 服务器 + 专用 carla 用户(bin/carla_server.sh)。用法:
+需 CARLA 服务器 + 专用 carla 用户(tools/carla_server.sh)。用法:
     PYTHONPATH=$PWD/bin python bin/probe_radar_l3.py [--channels 1] [--frames 10]
 
 对照表(官方大陆 ars408 规格):

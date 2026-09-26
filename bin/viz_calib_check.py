@@ -15,7 +15,7 @@
 标签画在格**内**(不额外占画布高度)。
 
 用法(需 CARLA 服务器):
-  bash bin/carla_server.sh start
+  bash tools/carla_server.sh start
   PYTHONPATH=$PWD python bin/viz_calib_check.py
 """
 

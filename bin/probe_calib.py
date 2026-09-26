@@ -77,7 +77,7 @@ center 0.023 m,差 ~70×)。
 LiDAR 点按深度残差着色)+ stdout 数字表。
 
 用法:
-  bash bin/carla_server.sh start
+  bash tools/carla_server.sh start
   PYTHONPATH=$PWD python bin/probe_calib.py --frames 2
 """
 

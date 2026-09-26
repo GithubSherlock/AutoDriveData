@@ -32,6 +32,7 @@ AutoDriveData/
 ├── maptr_impl/                  # ★ MapTR 参考自实现(torch2.x 现代栈)
 ├── maptr_official/              #   官方 MapTR/MapQR 项目侧胶水(仅适配器与配置)
 ├── bin/                         # ★ 可执行入口:采集 / 评估 / 可视化 / 探针(依赖 pycarla)
+├── tools/                       # ★ 开放性工具(判据:不含本项目领域知识)
 ├── tests/                       # ★ 单测 + oracle 对比(autodrivedata env)
 ├── docs/                        #   文档:教程 / 里程碑 / 本文件
 │
@@ -40,10 +41,8 @@ AutoDriveData/
 ├── lightning_logs/              # 【未入库】HiVT 训练日志与 ckpt(PyTorch Lightning 默认输出)
 ├── auto3dlabel/weights/         # 【未入库】3D 检测微调权重(AutoLabel 侧消费)
 ├── hdMapGitHub/                 # 【未入库】上游开源仓库克隆(HiVT/MapTR/MapQR,保持 pristine)
+├── models/                      # 【未入库】模型权重落点(yolo11s-seg.pt;bin/sem_bev.py 消费)
 │
-├── yolo11s-seg.pt               # 【未入库】实例分割权重(sem_bev.py 用,放项目根)
-├── clear_cache.sh               # 【未入库】本机磁盘清理脚本(环境维护,非项目代码)
-├── gitpush.sh                   # 【未入库】本机推送辅助脚本(环境维护,非项目代码)
 ├── build/                       # 【未入库】构建残留(setuptools 产物,可删)
 └── .vscode/ .claude/ .pytest_cache/ .ruff_cache/ .ipynb_checkpoints/   # 【未入库】本地工具配置与缓存
 ```
@@ -198,12 +197,18 @@ AutoDriveData/
 | 文件 | 职责 |
 |---|---|
 | `carla_common.py` | 采集公共件:位姿换算 / NPC 摆放 / 传感器参数 / 同步模式 / 灯态归一与绘制 |
-| `carla_server.sh` | CARLA 服务器启动/停止(GPU 修复栈 + Vulkan 兼容层自愈) |
-| `gpu_fix/` | GPU 修复栈:LD_PRELOAD shim 源码 + 安装脚本 |
 | `assemble_and_merge.sh` | 组装 + 合并 infos 的批量编排 |
 | `finalize_maptr_600.sh` | 600 帧扩数据轮的收尾编排 |
 | `smoke_radar_collect.sh` | 雷达采集冒烟 |
 | `setup_maptr_official.sh` / `run_official.sh` | 官方栈环境搭建与运行(**已终止线**,重建设路子在 Plan.md §5.12) |
+
+**`tools/` — 开放性工具(顶层;判据:不含本项目领域知识)**
+
+| 文件 | 职责 |
+|---|---|
+| `carla_server.sh` | CARLA 服务器启动/停止(GPU 修复栈 + Vulkan 兼容层自愈) |
+| `gpu_fix/` | GPU 修复栈:`install.sh`(NVIDIA 用户态补齐 + shim 安装)+ `mhookshim.c`(LD_PRELOAD shim 源码) |
+| `clear_cache.sh` / `gitpush.sh` | 【未入库】本机磁盘清理 / 推送辅助(环境维护,非项目代码) |
 
 ## 5 `tests/` — 单测与 oracle 对比(autodrivedata env)
 
