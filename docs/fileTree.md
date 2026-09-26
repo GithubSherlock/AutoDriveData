@@ -5,9 +5,12 @@
 > 本文件正在随一次**分阶段的目录重构**同步。**目标结构与权威计划见
 > [Plan_fileTree.md](../Plan_fileTree.md)**;本文档是「现状索引」,两者冲突时以 Plan_fileTree 为准。
 >
-> 已完成:`bin/` 的 CARLA 层已迁入 **`autodrivedata/sim/`**(22 模块 + `smoke_radar_collect.sh`),
-> 对应测试迁入 `autodrivedata/tests/sim/`。命令形式随之从 `python bin/x.py` 改为
-> **`python -m autodrivedata.sim.x`**。
+> 已完成:
+> - **`autodrivedata/sim/`** —— 原 `bin/` 的 CARLA 层(22 模块 + `smoke_radar_collect.sh`),
+>   测试在 `autodrivedata/tests/sim/`。命令从 `python bin/x.py` 改为 **`python -m autodrivedata.sim.x`**。
+> - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
+>   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
+>   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
 >
 > **本文档的目录表尚未逐行重排**(排在重构的收尾阶段)——下面涉及 `bin/` 的各表可能仍列着已迁走的条目,
 > **以磁盘为准**。全部阶段完成后会按新树重写 §1–§5。

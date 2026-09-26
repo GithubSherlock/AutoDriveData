@@ -44,7 +44,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autodrivedata.camera_rig import NUS_CAMERA_CALIBS
+from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS
 from autodrivedata.paths import project_path
 
 # 官方 mini(标定权威,优先)→ 本仓自产(只有一套标定,做对照)

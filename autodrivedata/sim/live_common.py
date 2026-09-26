@@ -56,8 +56,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
-from autodrivedata.calib import CameraIntrinsics, world_to_img
-from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line

@@ -18,7 +18,7 @@ import carla
 import numpy as np
 
 from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
+from autodrivedata.calib.core import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
 from autodrivedata.paths import project_path

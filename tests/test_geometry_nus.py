@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from autodrivedata import geometry as g
-from autodrivedata.camera_rig import (
+from autodrivedata.calib.camera_rig import (
     NUS_CAMERA_CALIBS,
     NUS_CAMERA_RIG,
     NUS_CAMERAS,

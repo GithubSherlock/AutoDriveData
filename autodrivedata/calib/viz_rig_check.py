@@ -26,22 +26,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-BIN = Path(__file__).resolve().parent
-if str(BIN) not in sys.path:
-    sys.path.insert(0, str(BIN))
-
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
 from autodrivedata import fonts  # noqa: E402
-from autodrivedata.camera_rig import coverage_table  # noqa: E402
-from autodrivedata.export.nuscenes import NUS_RIGS, camera_calibs, camera_fov  # noqa: E402
-from autodrivedata.paths import project_path  # noqa: E402
-from autodrivedata.rigviz import (  # noqa: E402
+from autodrivedata.calib.camera_rig import coverage_table  # noqa: E402
+from autodrivedata.calib.rigviz import (  # noqa: E402
     CAM_COLOR,
     CAM_SHORT,
     DIM,
@@ -49,6 +43,8 @@ from autodrivedata.rigviz import (  # noqa: E402
     INK,
     draw_rig_layout,
 )
+from autodrivedata.export.nuscenes import NUS_RIGS, camera_calibs, camera_fov  # noqa: E402
+from autodrivedata.paths import project_path  # noqa: E402
 
 TILE_LABEL_SIZE = 26
 # 底部方位尺:6 条泳道(每相机一行)+ 并集/盲区行 + 刻度与注脚
@@ -240,8 +236,8 @@ def views_image(
 def run_live(rig: str, host: str, port: int, out_dir: Path) -> dict[str, Any]:
     """实拍:6× RGB + 6× instance_seg → ego 像素读数 + 拼图 + 报告。**只销毁本次 spawn 的 actor**。"""
     import carla
-    from rig_check import RigCameras, covisibility, decode_ids, ego_pixel_counts
 
+    from autodrivedata.calib.rig_check import RigCameras, covisibility, decode_ids, ego_pixel_counts
     from autodrivedata.sim.carla_common import spawn_ego, sync_mode
     from autodrivedata.sim.live_common import image_to_pil, mount_deviation_of, rig_spec
 

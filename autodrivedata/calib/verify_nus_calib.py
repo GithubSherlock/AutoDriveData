@@ -58,19 +58,16 @@ import argparse
 import json
 import math
 import queue
-import sys
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 
-BIN = Path(__file__).resolve().parent
-if str(BIN) not in sys.path:
-    sys.path.insert(0, str(BIN))
-
-from autodrivedata import calib_probe as cp  # noqa: E402
 from autodrivedata import geometry as g  # noqa: E402
-from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG  # noqa: E402
+
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
+from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG  # noqa: E402
 from autodrivedata.export.nuscenes import (  # noqa: E402
     NUS_CAMERAS,
     NUS_LIDAR_CALIB,
@@ -538,8 +535,8 @@ def world_pose_chain(
 
 def run_live(host: str, port: int) -> dict[str, Any]:
     import carla
-    import probe_calib as pc
 
+    from autodrivedata.calib import probe_calib as pc
     from autodrivedata.sim import collect_nus
     from autodrivedata.sim.carla_common import spawn_ego, sync_mode
     from autodrivedata.sim.live_common import mount_deviation_of, rig_spec
@@ -667,7 +664,7 @@ def run_live(host: str, port: int) -> dict[str, Any]:
         rep["criterion_6_rendered_fov"] = _rendered_fov(world, ego, pc)
 
         # ⑦⑧ 同一套 instance_seg 相机:零车体像素 + 相邻共视(实现见 `bin/rig_check.py`)
-        import rig_check
+        from autodrivedata.calib import rig_check
 
         probe = rig_check.instance_probe(world, ego, RIG)
         rep["criterion_7_no_ego_pixels"] = {

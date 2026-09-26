@@ -63,7 +63,7 @@ from typing import Any, cast
 
 import carla
 
-from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
 from autodrivedata.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path

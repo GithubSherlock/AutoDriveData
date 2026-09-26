@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 
 
 def sky_pixel(px: tuple[int, int, int]) -> bool:

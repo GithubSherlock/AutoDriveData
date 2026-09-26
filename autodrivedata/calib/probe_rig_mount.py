@@ -34,7 +34,7 @@ import carla
 import numpy as np
 from PIL import ImageDraw
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.mapviz import PRED_COLOR, draw_projected_lines
 from autodrivedata.sim.carla_common import loc, rad, spawn_ego, sync_mode
 from autodrivedata.sim.live_common import (

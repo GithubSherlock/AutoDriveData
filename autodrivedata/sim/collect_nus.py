@@ -53,7 +53,7 @@ import carla
 import numpy as np
 
 from autodrivedata import geometry as g
-from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
 from autodrivedata.export.nuscenes import (
     NUS_CAMERA_CALIBS,
     NUS_CAMERA_FOV,

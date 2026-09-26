@@ -15,9 +15,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata import calib_live as cl
-from autodrivedata import calib_probe as cp
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib import calib_live as cl
+from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib.core import CameraIntrinsics
 
 W, H, FOV = 640, 360, 90.0
 K = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)

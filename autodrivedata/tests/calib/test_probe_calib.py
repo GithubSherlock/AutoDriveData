@@ -1,4 +1,4 @@
-"""`bin/probe_calib.py` 的纯值部分单测:实例分割解码口径 + 锚点判据的合成数据自证。
+"""`autodrivedata/calib/probe_calib.py` 的纯值部分单测:实例分割解码口径 + 锚点判据的合成数据自证。
 
 **为什么钉实例分割编码**(实测裁决,2026-09-22):CARLA 官方文档只说"每个实例一个唯一颜色",
 **不写通道序**。旧实现猜了两种(`R+256G+65536B` / `B+256G+65536R`)且**两种都错**,后果是
@@ -13,19 +13,13 @@ A2/A4 一路带着空掩膜 —— 直到 `instance_decode_mode` 抛 `RuntimeErr
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 pytest.importorskip("carla")
 
-BIN = Path(__file__).resolve().parents[1] / "bin"
-if str(BIN) not in sys.path:  # bin/ 不是包,按脚本目录加路径(同 test_live_common)
-    sys.path.insert(0, str(BIN))
-
-import bin.probe_calib as pc  # noqa: E402
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
+from autodrivedata.calib import probe_calib as pc
 
 
 def _bgra(ids: np.ndarray, semantic: int = 21) -> bytes:

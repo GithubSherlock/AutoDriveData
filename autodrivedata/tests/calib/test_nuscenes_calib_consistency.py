@@ -13,32 +13,26 @@
 这类缺陷**查表拦不住**(表是对的)、**目检"图能出"也拦不住**(图确实出得来)。故本文件只钉
 "两侧由同一份常量导出"这件事本身——**断言的是等价关系,不是某次采样的数值**。
 
-约定:`pytest.importorskip("carla")` + `sys.path.insert(0, BIN)`(与 `test_live_common.py` /
-`test_probe_calib.py` 同款)。autodrivedata env 装有 carla ⇒ 实际**不会 skip**,不是占位。
+约定:`pytest.importorskip("carla")`。autodrivedata env 装有 carla ⇒ 实际**不会 skip**,不是占位。
+(阶段 3 起本文件在包内,已摘掉旧的 `sys.path.insert(0, BIN)` 引导,改直连 `autodrivedata.calib.*`。)
 """
 
 from __future__ import annotations
 
 import ast
 import math
-import sys
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("carla")
 
-ROOT = Path(__file__).resolve().parents[1]
-BIN = ROOT / "bin"  # 仍留在 bin/ 的脚本(verify_nus_calib 等)
-SIM = ROOT / "autodrivedata" / "sim"  # 阶段 2 起采集器在这里
-if str(BIN) not in sys.path:  # bin/ 不是包(采集脚本),按脚本目录加路径
-    sys.path.insert(0, str(BIN))
-
-# `bin/` 不是包,静态分析跟不到上面那句运行时 `sys.path.insert` → 就地标注
-import verify_nus_calib as vnc  # noqa: E402  # pyright: ignore[reportMissingImports]
-
-from autodrivedata import geometry as g  # noqa: E402
-from autodrivedata.camera_rig import (  # noqa: E402
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物);ROOT 改走 paths.PROJECT_ROOT ——
+# 不再用 `Path(__file__).parents[N]`,那条路径会随本文件在包内挪动而**静默指错**
+# (阶段 3 本文件从 tests/ 挪到 autodrivedata/tests/calib/,parents[1] 就从仓库根变成了 tests/)。
+from autodrivedata import geometry as g
+from autodrivedata import paths
+from autodrivedata.calib import verify_nus_calib as vnc
+from autodrivedata.calib.camera_rig import (
     NUS_CAMERA_CALIBS,
     NUS_CAMERA_RIG,
     NUS_WIDE_CAMERA_AZ,
@@ -49,12 +43,16 @@ from autodrivedata.camera_rig import (  # noqa: E402
     NUS_WIDE_REAR_X_CARLA,
     max_hfov_no_ego,
 )
-from autodrivedata.export import nuscenes as ne  # noqa: E402
-from autodrivedata.sim import (  # noqa: E402
+from autodrivedata.export import nuscenes as ne
+from autodrivedata.sim import (
     collect_nus,
     collect_surround,
 )
-from autodrivedata.sim import live_common as lc  # noqa: E402
+from autodrivedata.sim import live_common as lc
+
+ROOT = paths.PROJECT_ROOT
+CALIB = ROOT / "autodrivedata" / "calib"  # 阶段 3 起标定层在这里(源码检查按路径读)
+SIM = ROOT / "autodrivedata" / "sim"  # 阶段 2 起采集器在这里
 
 
 def _call_name(node: ast.AST) -> str:
@@ -272,7 +270,7 @@ class TestFovCriterionShape:
     """
 
     def _fov_fn(self) -> ast.FunctionDef:
-        src = (BIN.parent / "bin" / "verify_nus_calib.py").read_text(encoding="utf-8")
+        src = (CALIB / "verify_nus_calib.py").read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.FunctionDef) and node.name == "_rendered_fov":
                 return node
@@ -630,6 +628,6 @@ class TestVerifyRigSelection:
 
     def test_reports_are_written_per_rig(self):
         """`--rig wide` 的报告与数据根不许落回官方口径的路径(否则 wide 会**覆盖**官方报告)。"""
-        src = (BIN / "verify_nus_calib.py").read_text(encoding="utf-8")
+        src = (CALIB / "verify_nus_calib.py").read_text(encoding="utf-8")
         assert "nus_mini_wide" in src and "report_wide.json" in src
         assert "choices=NUS_RIGS" in src, "`--rig` 的 choices 必须直接引自 `NUS_RIGS`"

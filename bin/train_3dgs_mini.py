@@ -36,7 +36,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.paths import project_path
 
 _DOWNSAMPLE = 2  # 1242x375 → 621x187
@@ -58,7 +58,7 @@ def _load_poses_and_cams(capture: Path):
     # 历史写法 `1242/2/(2·tan45°)` 数值上恰好等于 621/2(tan45°=1 把多写的那个 2 抵掉),
     # 是巧合而非推导 —— 换成别的 fov 就会错。
     #
-    # **两套空间的主点必须各自推对**(实测裁决见 bin/probe_calib.py A3/A4:
+    # **两套空间的主点必须各自推对**(实测裁决见 autodrivedata/calib/probe_calib.py A3/A4:
     # CARLA 渲染光栅是 **corner** 约定 —— 索引 i 的连续坐标就是 i,`cx = (w−1)/2 = 620.5`):
     # - 深度图/图像是 CARLA 光栅 → 下采样索引 j ↔ 原图索引 2j ↔ 原图连续坐标 2j;
     # - `ks` 喂给 gsplat(torch 原生光栅器,与 `grid_sample(align_corners=False)` 同族,

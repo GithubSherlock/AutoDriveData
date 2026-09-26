@@ -78,7 +78,7 @@ LiDAR 点按深度残差着色)+ stdout 数字表。
 
 用法:
   bash tools/carla_server.sh start
-  PYTHONPATH=$PWD python bin/probe_calib.py --frames 2
+  PYTHONPATH=$PWD python autodrivedata/calib/probe_calib.py --frames 2
 """
 
 from __future__ import annotations
@@ -94,13 +94,13 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import calib_live as cl
-from autodrivedata import calib_probe as cp
 from autodrivedata import fonts
 from autodrivedata.accum import voxel_downsample
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
-from autodrivedata.depth_codec import (
+from autodrivedata.calib import calib_live as cl
+from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
+from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.calib.depth_codec import (
     CONVENTION_CENTER,
     CONVENTION_CORNER,
     convention_shift,

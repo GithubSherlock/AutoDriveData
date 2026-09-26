@@ -40,7 +40,8 @@ autodrivedata/
 │   ├── collect_slam.py  collect_traj.py  collect_stereo.py  collect_3dgs.py
 │   └── smoke_radar_collect.sh
 ├── calib/                14  标定(自证 / 实时监看 / 配置图)
-│   ├── calib.py camera_rig.py calib_probe.py calib_live.py depth_codec.py rigviz.py
+│   ├── core.py          ← **原 calib.py 改名**(`calib/calib.py` 会自反,见阶段 3 记录)
+│   ├── camera_rig.py calib_probe.py calib_live.py depth_codec.py rigviz.py
 │   ├── probe_calib.py verify_nus_calib.py rig_check.py probe_rig_mount.py
 │   └── viz_calib_check.py viz_rig_check.py calib_multilidar.py viz_layout_cmp.py
 ├── map/                  29  地图矢量 + MapTR
@@ -235,7 +236,8 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 > | 阶段 1 末 | 910 | −1 摘旧守卫;+12 新层守卫(10 条自证 + 2 条包级) |
 > | **阶段 2 末** | **911** | +1:守卫「子目录须显式声明」判据缺陷的回归钉(见下) |
 > | **`send_error` 修复** | **913** | +2:未知流回 404 的回归钉(独立 commit,见阶段 2 记录末尾) |
-> | 阶段 3–8 | 应恒为 **913** | 搬迁**不得**增删用例;变了就是丢了或重复收集 |
+> | **阶段 3 末** | **913** | 不变 ✓(911 passed + 2 条件跳过;2 条从 passed 变 skipped 是 test_fonts 判据收紧的**有意**结果) |
+> | 阶段 4–8 | 应恒为 **913** | 搬迁**不得**增删用例;变了就是丢了或重复收集 |
 >
 > 3 个模块级跳过(`auto3dlabel.schema` 缺失)全程不变。
 >
@@ -359,6 +361,38 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 | 7 | `gt/` + `utils/` | 9 + 12 测试 | **低但要小心**(§5.6 的 `paths.py` 在这批) |
 | 8 | `traj/` + `gs/` | 3 | 低 |
 | 9 | 文档同步 | — | 见 §4.1 |
+
+#### ★ 阶段 3 执行记录(已完成 2026-09-26)
+
+**搬迁**:14 模块 → `autodrivedata/calib/`(**`calib.py` 改名 `core.py`**,见下)+ 9 测试 → `autodrivedata/tests/calib/`。
+引用重写 **20 文件 / 34 处**(含阶段 2 遗留的 `from autodrivedata import X` 形态)+ 摘掉 3 处失效的 `sys.path` 引导。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`(另 3 条模块级跳过),**0 失败**;ruff 干净。
+
+**★ 五个发现(四个都是计划没料到的)**:
+
+1. **计划缺陷:`calib/calib.py` 会产生 `autodrivedata.calib.calib`**。计划 §2 把 `calib.py` 列进 `calib/`,没注意到自反名。
+   **用户裁决改 `calib/core.py`**(30 处调用点改写),理由是「只有一条路径到 `CameraIntrinsics`,
+   不留『同一名字两个入口』的长期歧义」。已回写 §2 目标树。
+2. **第二类漏网 import 形态:`from autodrivedata import <模块>`**(11 处)。阶段 2 的教训只覆盖了
+   `import X` / `from X import` / `import X as Y`,**没覆盖 `from <包> import <模块>`**。
+   ⇒ **批量替换必须覆盖的完整形态清单**(以后照这个查):`import X`、`from X import`、`import X as Y`、
+   **`from <pkg> import X`**、**`from <pkg> import X as Y`**、路径字符串。
+3. **`test_fonts.py` 的 `DRAWING_MODULES` 硬编码路径** —— 计划 §5.7 预测的坑,真踩到了
+   (3 条:`bin/viz_calib_check.py` / `bin/probe_calib.py` / `autodrivedata/calib_live.py`)。
+4. **`test_drawing_module_imports_the_font_module` 判据过松,长期「因错误的原因」全绿**:
+   旧判据 `n.module in ("autodrivedata", "autodrivedata.fonts")` —— **任何** `from autodrivedata import X`
+   都算通过,`live_studio.py` 里那句 `from autodrivedata import calib_live as cl` 恰好把它喂饱了。
+   阶段 3 把该行改精确后,假通过暴露:那两个模块**本来就不碰文字渲染**(只委托 `draw_hud` / 构造 `hud_line` 字符串)。
+   **已改**为「源码出现 `fonts` ⇒ 必须真的 import 字体落点(两种惯用形式都认,但后者只认别名恰为 `fonts` 的)」,
+   并做反向自证(删 import → 红)。**教训:判据里的每个「或」都要问「会不会被无关代码满足」。**
+5. **`parents[N]` 陷阱再现**:`test_nuscenes_calib_consistency.py` 的 `ROOT = Path(__file__).parents[1]`
+   随文件从 `tests/` 挪到 `autodrivedata/tests/calib/` ⇒ 从仓库根变成 `tests/`。
+   已改走 **`paths.PROJECT_ROOT`**(§5.6 的同款修法),从此免疫。
+
+**我自己的一个操作失误(记下以防再犯)**:清理时写了 `s.replace("import viz_rig_check", ...)`,
+把**已经改好的** `from autodrivedata.calib import viz_rig_check` 二次替换成
+`from autodrivedata.calib from autodrivedata.calib import ...`(语法错)。**替换必须带幂等护栏**。
 
 ### 阶段 9 — 文档同步 + 打包收口(不可省)
 

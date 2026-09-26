@@ -40,7 +40,7 @@ from typing import Any, cast
 import numpy as np
 
 from autodrivedata import attribution as attr
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.geometry import box_2d_from_3d, mono_depth_from_box
 from autodrivedata.mono_depth import box_to_ground_distance
 from autodrivedata.paths import project_path

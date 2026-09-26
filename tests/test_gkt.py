@@ -23,8 +23,8 @@ import pytest
 import torch
 
 from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics, world_to_img
-from autodrivedata.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from maptr_impl.gkt import (
     _ROT_TO_CARLA,
     GKT,

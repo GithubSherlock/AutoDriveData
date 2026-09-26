@@ -25,7 +25,7 @@ from typing import Any, cast
 
 import carla
 
-from autodrivedata.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, loc, sync_mode

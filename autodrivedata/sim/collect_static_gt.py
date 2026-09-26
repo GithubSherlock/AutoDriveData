@@ -27,7 +27,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
 from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 from autodrivedata.static_gt import (

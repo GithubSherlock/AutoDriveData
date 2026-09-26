@@ -16,9 +16,9 @@ import math
 import numpy as np
 import pytest
 
-from autodrivedata import calib_probe as cp
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.depth_codec import CONVENTION_CENTER, CONVENTION_CORNER
+from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.calib.depth_codec import CONVENTION_CENTER, CONVENTION_CORNER
 
 W, H, FOV = 1242, 375, 90.0
 K = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)

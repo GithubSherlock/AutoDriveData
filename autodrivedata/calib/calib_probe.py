@@ -41,7 +41,7 @@
 `atan(√(620²+186.5²)/621) ≈ 46.2°`,若是射线距离则 `D/z − 1 = sec θ − 1 = 0.444`
 (20 m 处 8.9 m)—— 在这种系统误差上做 cx 扫描是纯垃圾。故本模块另给 `depth_model_ratio`
 供**独立探针**离线先行裁决(⚠️ 原注释引用的 `bin/probe_depth_semantics.py` 实际不存在
-于磁盘,已如实更正;现由 `bin/probe_calib.py` 的 A3 锚在"z 深度"假定下间接验证)。
+于磁盘,已如实更正;现由 `autodrivedata/calib/probe_calib.py` 的 A3 锚在"z 深度"假定下间接验证)。
 
 ## 像素索引约定:它只出现在"采样"这一步
 
@@ -51,7 +51,7 @@
 `shift = 0.0`(corner,**CARLA 渲染光栅的实测口径**,本模块默认)或 `0.5`
 (center,torch 侧 `grid_sample(align_corners=False)` / FPN 特征图 / gsplat 的约定)。
 
-**已裁决(2026-09-22,`bin/probe_calib.py` A3/A4)**:CARLA 渲染出的图是 **corner** ——
+**已裁决(2026-09-22,`autodrivedata/calib/probe_calib.py` A3/A4)**:CARLA 渲染出的图是 **corner** ——
 `(cx=620.5, corner)` 与 `(cx=621.0, center)` 描述**同一张光栅**。A3 在 corner 下
 median|e| 0.0003 m、center 下 0.023 m(~70×,六相机一致);A4 掩膜**索引**中点回归
 给 `cx = 620.50 = (w−1)/2`。故本模块默认 `corner`,探针显式传 `PIXEL_CONVENTION`。
@@ -70,8 +70,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.depth_codec import (
+from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.calib.depth_codec import (
     CONVENTION_CORNER,
     convention_shift,
     sample_bilinear_many,

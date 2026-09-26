@@ -14,8 +14,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
-from autodrivedata.calib import CameraIntrinsics, world_to_img
-from autodrivedata.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.traffic_light import (
     TrafficLightFrame,
     TrafficLightState,

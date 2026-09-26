@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 
 
 def ground_plane_distance(

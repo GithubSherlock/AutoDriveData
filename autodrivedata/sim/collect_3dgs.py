@@ -36,7 +36,7 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata.depth_codec import decode_depth
+from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, sync_mode
 from autodrivedata.sim.collect_rig import ring_cam_pose

@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata.depth_codec import (
+from autodrivedata.calib.depth_codec import (
     _DENOM,
     CONVENTION_CENTER,
     CONVENTION_CORNER,
@@ -193,7 +193,7 @@ class TestSampleBilinear:
             assert sample_bilinear(img, u, v, conv) == 1.0
 
     def test_default_convention_is_corner(self):
-        """默认约定 = **CARLA 渲染光栅实测口径** corner(裁决见 `bin/probe_calib.py` A3/A4)。
+        """默认约定 = **CARLA 渲染光栅实测口径** corner(裁决见 `autodrivedata/calib/probe_calib.py` A3/A4)。
 
         判据取"索引 3 读到的必须是第 3 列"——corner 下 `u=3.0` 直取;若默认退回 center,
         `u=3.0` 会被插值成第 2/3 列各半(2.5),这条立刻红。

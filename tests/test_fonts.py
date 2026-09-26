@@ -27,12 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DRAWING_MODULES: tuple[str, ...] = (
     "autodrivedata/sim/live_common.py",
     "autodrivedata/sim/live_studio.py",
-    "bin/viz_calib_check.py",
-    "bin/probe_calib.py",
+    "autodrivedata/calib/viz_calib_check.py",
+    "autodrivedata/calib/probe_calib.py",
     "autodrivedata/sim/carla_common.py",
     "autodrivedata/sim/collect_static_gt.py",
     "autodrivedata/mapviz.py",
-    "autodrivedata/calib_live.py",
+    "autodrivedata/calib/calib_live.py",
 )
 # 画文字的函数名(`<obj>.text(...)` / `stamp(...)` / `fonts.draw_text(...)` / HUD 构造器)
 DRAW_CALLS: frozenset[str] = frozenset({"text", "stamp", "draw_text", "draw_hud", "hud_line", "hud"})
@@ -249,13 +249,32 @@ class TestDrawnStringsAreRenderable:
 
 @pytest.mark.parametrize("rel", DRAWING_MODULES)
 def test_drawing_module_imports_the_font_module(rel: str) -> None:
-    """每个绘制模块都必须 import 字体落点 —— 否则新写的绘制会悄悄退回豆腐块。"""
+    """**碰文字渲染的模块**必须经 `autodrivedata.fonts` 落点 —— 否则会悄悄退回豆腐块。
+
+    判据 = 「源码里出现 `fonts`」⇒ 必须真的 `from autodrivedata.fonts import ...`。
+    只**委托**绘制、自己不碰文字的模块跳过(`live_studio.py` 只调 `draw_hud`,
+    `calib_live.py` 只构造 `hud_line` 字符串)—— 它们进 `DRAWING_MODULES` 是为了
+    **字面量扫描**,不是为了这个判据。
+
+    ⚠️ **旧判据长期"因错误的原因"全绿,值得记下**:它是
+    `n.module in ("autodrivedata", "autodrivedata.fonts")` ——
+    **任何** `from autodrivedata import X` 都算通过。`live_studio.py` 里那句
+    `from autodrivedata import calib_live as cl` 恰好把它喂饱了。
+    阶段 3 把该行改精确成 `from autodrivedata.calib import ...` 后,假通过才暴露。
+    教训:**判据里的"或"每放宽一档,都要问它会不会被无关代码满足**。
+    """
     src = (ROOT / rel).read_text(encoding="utf-8")
-    imported = (
-        any(
-            isinstance(n, ast.ImportFrom) and n.module in ("autodrivedata", "autodrivedata.fonts")
-            for n in ast.walk(ast.parse(src))
+    if "fonts" not in src:
+        pytest.skip(f"{rel} 不碰文字渲染(仅委托绘制),无需 import 字体落点")
+    # 两种惯用形式都得认:`from autodrivedata.fonts import ...` 与 `from autodrivedata import fonts`。
+    # 关键是**后者只认别名恰为 `fonts` 的那一种** —— 旧判据在这里失守:
+    # 它接受 `from autodrivedata import <任何东西>`,于是被无关的 import 喂饱。
+    imported = any(
+        isinstance(n, ast.ImportFrom)
+        and (
+            n.module == "autodrivedata.fonts"
+            or (n.module == "autodrivedata" and any(a.name == "fonts" for a in n.names))
         )
-        or "import fonts" in src
+        for n in ast.walk(ast.parse(src))
     )
-    assert imported, f"{rel} 没有 import autodrivedata.fonts"
+    assert imported, f"{rel} 用了 fonts 却没有 import autodrivedata.fonts"

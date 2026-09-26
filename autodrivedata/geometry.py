@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover — 仅类型检查,避免几何层反向依赖 calib
-    from autodrivedata.calib import CameraIntrinsics
+    from autodrivedata.calib.core import CameraIntrinsics
 
 # CARLA 系(x 前/y 右/z 上)→ KITTI 相机系(x 右/y 下/z 前)基变换。
 # 含手性翻转(det = −1),正交:CARLA_TO_CAMᵀ = CARLA_TO_CAM⁻¹。

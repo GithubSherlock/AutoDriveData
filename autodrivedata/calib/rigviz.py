@@ -26,7 +26,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
-from autodrivedata.camera_rig import nus_camera_rig
+from autodrivedata.calib.camera_rig import nus_camera_rig
 from autodrivedata.geometry import NUS_EGO_ORIGIN_X, quat_normalize, quat_to_matrix
 
 # 车体实测包围盒(vehicle.audi.a2):半长 / 半宽(米)。与 `camera_rig` 头注的

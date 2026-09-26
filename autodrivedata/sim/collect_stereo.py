@@ -30,8 +30,8 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.depth_codec import decode_depth
+from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, spawn_ego, sync_mode
 from autodrivedata.sim.collect_rig import stereo_rig_offsets
@@ -96,7 +96,7 @@ def main() -> None:
     w, h = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"])
     # fov→fx 与主点走全仓唯一落点(`CameraIntrinsics`),不再就地重写公式。
     # 历史实现硬编码主点 = (w/2, h/2),与其余采集器的 (w−1)/2 差 0.5 px ⇒ 本数据集的
-    # 深度/点云与别的数据集不可直接混用。实测裁决见 `bin/probe_calib.py` A3/A4。
+    # 深度/点云与别的数据集不可直接混用。实测裁决见 `autodrivedata/calib/probe_calib.py` A3/A4。
     k = CameraIntrinsics(width=w, height=h, fov_h_deg=float(CAM_ATTRS["fov"]))
     intrinsic = [[k.fx, 0.0, k.cx], [0.0, k.fy, k.cy], [0.0, 0.0, 1.0]]
     calib = {

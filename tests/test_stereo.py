@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.stereo import (
     depth_from_disparity,
     depth_to_pointcloud,

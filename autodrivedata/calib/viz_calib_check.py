@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """标定修正的人工复核图:三张**把判据数字烧进画面**的拼图(自证,不是装饰)。
 
-`bin/probe_calib.py` 的结论是纯数值的(A0–A6 → `report.json`),它只落一张
+`autodrivedata/calib/probe_calib.py` 的结论是纯数值的(A0–A6 → `report.json`),它只落一张
 `overlay.png`。本脚本补齐"人能对着看"的三张,每张都携带**它自己编码的数字**,
 故看图 ≈ 读判据:
 
@@ -16,7 +16,7 @@
 
 用法(需 CARLA 服务器):
   bash tools/carla_server.sh start
-  PYTHONPATH=$PWD python bin/viz_calib_check.py
+  PYTHONPATH=$PWD python autodrivedata/calib/viz_calib_check.py
 """
 
 from __future__ import annotations
@@ -31,7 +31,11 @@ from typing import Any, cast
 import carla
 import numpy as np
 from PIL import Image, ImageDraw
-from probe_calib import (
+
+from autodrivedata import fonts
+from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
+from autodrivedata.calib.depth_codec import decode_depth
+from autodrivedata.calib.probe_calib import (
     WORLD_DIRS,
     H,
     SensorRig,
@@ -44,10 +48,6 @@ from probe_calib import (
     place_cone_along,
     world_planes,
 )
-
-from autodrivedata import fonts
-from autodrivedata.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
-from autodrivedata.depth_codec import decode_depth
 from autodrivedata.geometry import quat_normalize, quat_to_matrix
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
@@ -256,7 +256,7 @@ def sheet_geometry(report: dict[str, Any] | None) -> Image.Image:
             + " ".join(f"{k}{'✓' if v else '✗'}" for k, v in report.get("verdict", {}).items()),
         ]
     else:
-        lines = ["(未找到 report.json —— 先跑 bin/probe_calib.py 才有实测读数)"]
+        lines = ["(未找到 report.json —— 先跑 autodrivedata/calib/probe_calib.py 才有实测读数)"]
     for i, s in enumerate(lines):
         fonts.draw_text(d, (tx, by + 30 * i), s, size=20, fill=(150, 255, 150))
 

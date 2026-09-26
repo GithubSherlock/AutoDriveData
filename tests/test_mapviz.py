@@ -298,7 +298,7 @@ class TestCalib:
     def test_calib_from_fov_uses_index_centre_principal_point(self):
         """主点 = **索引约定中心** `(w−1)/2`,不是 `w/2`。
 
-        依据(2026-09-22 实测裁决,见 `bin/probe_calib.py` A4/A6 锚):
+        依据(2026-09-22 实测裁决,见 `autodrivedata/calib/probe_calib.py` A4/A6 锚):
         - A4 轴目标物实例分割掩膜的**索引**中点线性回归 → cx = 620.500(shift=0,corner
           约定),残差 0.200 px;若按 center 约定(shift=+0.5)则给 621.000。
         - A3 用 LiDAR 平面点投影 + 双线性采样深度图:corner 约定 median|e| 0.0003 m
@@ -313,7 +313,7 @@ class TestCalib:
 
     def test_calib_from_fov_agrees_with_camera_intrinsics(self):
         """`calib_from_fov` 与 `CameraIntrinsics` 必须**同式**(单一来源,防再次漂移)。"""
-        from autodrivedata.calib import CameraIntrinsics
+        from autodrivedata.calib.core import CameraIntrinsics
 
         intr = mapviz.calib_from_fov(1242, 375, 90.0)["intrinsic"]
         k = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)

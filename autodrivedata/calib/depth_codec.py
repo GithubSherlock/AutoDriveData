@@ -21,7 +21,7 @@ CARLA 的 BGRA 布局里 `arr[:, :, 0]` 是 **B**(高位,×65536)、`[:, :, 1]` 
 **并不存在于磁盘**(文档与代码不一致,已如实更正)。若要钉死,判据应是
 "渲染深度 / LiDAR 预测光轴 z − 1 ≈ 0" vs "…/ 射线距离 − 1 ≈ sec θ − 1"
 (θ 为离轴角,边缘可差 44%),见 `autodrivedata/calib_probe.py:41` 的同款推理;
-`bin/probe_calib.py` 的 A3 锚已在**假定 z 深度**下给出 median|e| 0.0003 m,间接支持该语义。
+`autodrivedata/calib/probe_calib.py` 的 A3 锚已在**假定 z 深度**下给出 median|e| 0.0003 m,间接支持该语义。
 
 量化精度:24 bit / 1000 m ≈ **0.06 mm**,可忽略。
 """
@@ -69,7 +69,7 @@ def encode_depth(depth_m: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------- 像素索引约定
 
 # **本仓的 CARLA 渲染光栅实测是 `CORNER`**(索引 i 的连续坐标就是 i)——见
-# `bin/probe_calib.py` 的 A3/A4 锚:corner 约定下 LiDAR-平面-深度图残差 median|e| 0.0003 m,
+# `autodrivedata/calib/probe_calib.py` 的 A3/A4 锚:corner 约定下 LiDAR-平面-深度图残差 median|e| 0.0003 m,
 # center 约定 0.023 m(~70×,六相机一致);轴目标物掩膜**索引**中点回归给 cx = 620.50
 # = `(w−1)/2`,而 center 约定给 621.00。
 # `CENTER`(索引 i 覆盖 [i, i+1),中心在 i+0.5)是 **torch 侧**的约定

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.calib import KittiCalibOut
+from autodrivedata.calib.core import KittiCalibOut
 
 
 def normalize_frame_id(frame_id: str) -> str:

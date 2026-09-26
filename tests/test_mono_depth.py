@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.geometry import ground_intersection, mono_depth_from_box
 from autodrivedata.mono_depth import box_to_ground_distance, ground_plane_distance
 

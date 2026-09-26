@@ -185,7 +185,7 @@ class TestRigSpec:
     """
 
     def test_nuscenes_spec_is_the_camera_rig_table(self):
-        from autodrivedata.camera_rig import NUS_CAMERA_RIG
+        from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
         from autodrivedata.sim import live_common as lc
 
         mounts, rots = lc.rig_spec(lc.RIG_NUSCENES)

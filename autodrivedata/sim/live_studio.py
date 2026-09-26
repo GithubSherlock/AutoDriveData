@@ -50,8 +50,8 @@ BEV 槽 = SLAM 地图点(浅灰)+ 轨迹(青)+ 可选 MapTR 预测(品红)。在
 —— `build_surround_rig(kind="depth")` 只换蓝图,内参/挂点/分辨率三者任一不同着色点就错位),
 每 tick 把 LiDAR 点按**当前标定**投影到各相机、按与渲染深度的残差着色画上去
 (绿 <0.05 m / 黄 <0.15 m / 红 其余),HUD 第二行报实时中位误差。数值核心是
-[autodrivedata/calib_live.py](../autodrivedata/calib_live.py)(纯值、有单测),
-与离线自证探针 [bin/probe_calib.py](probe_calib.py) 共用 `autodrivedata/calib_probe.py`。
+[autodrivedata/calib/calib_live.py](../autodrivedata/calib/calib_live.py)(纯值、有单测),
+与离线自证探针 [autodrivedata/calib/probe_calib.py](probe_calib.py) 共用 `autodrivedata/calib_probe.py`。
 
 - **平面隔 tick 重拟合**(`--calib-refit`,默认 2):拟合出的是**世界系**平面(描述场景
   表面,不是"这一帧的点云"),ego 移动几米后同一块路面仍是同一平面,被挡住的点由
@@ -97,9 +97,9 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import calib_live as cl
-from autodrivedata import calib_probe
-from autodrivedata.depth_codec import decode_depth
+from autodrivedata.calib import calib_live as cl
+from autodrivedata.calib import calib_probe
+from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.live_slam import LiveSlam, SlamWorker
 from autodrivedata.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
 from autodrivedata.paths import project_path

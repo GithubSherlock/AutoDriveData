@@ -18,26 +18,18 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 from PIL import Image
 
-BIN = Path(__file__).resolve().parents[1] / "bin"
-if str(BIN) not in sys.path:  # bin/ 不是包(脚本目录),与 test_live_common.py 同款
-    sys.path.insert(0, str(BIN))
-
-import viz_rig_check as vrc  # noqa: E402  # pyright: ignore[reportMissingImports]
-
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
 from autodrivedata import fonts  # noqa: E402
-from autodrivedata.camera_rig import (  # noqa: E402
+from autodrivedata.calib import viz_rig_check as vrc  # noqa: E402
+from autodrivedata.calib.camera_rig import (  # noqa: E402
     camera_azimuth_nus,
     coverage_table,
 )
-from autodrivedata.export.nuscenes import camera_calibs, camera_fov  # noqa: E402
-from autodrivedata.rigviz import (  # noqa: E402
+from autodrivedata.calib.rigviz import (  # noqa: E402
     CAM_COLOR,
     CAM_SHORT,
     FOOTER,
@@ -48,6 +40,7 @@ from autodrivedata.rigviz import (  # noqa: E402
     azimuth_of,
     draw_rig_layout,
 )
+from autodrivedata.export.nuscenes import camera_calibs, camera_fov  # noqa: E402
 
 RIGS = ("nuscenes", "wide")
 # wide rig 的设计预算(§P-M.9):三个盲区 + 合计 + 覆盖率。改 rig 就必须改这里,不许放宽。

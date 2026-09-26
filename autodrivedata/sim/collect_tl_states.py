@@ -25,7 +25,7 @@ from typing import cast
 import carla
 from PIL import Image
 
-from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,

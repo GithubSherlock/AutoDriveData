@@ -27,7 +27,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
-from autodrivedata.calib import CameraIntrinsics, world_to_img
+from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 
 PRED_COLOR = (255, 0, 255)  # 品红:路面场景罕见
 GT_COLOR = (0, 255, 255)  # 青绿:同罕见(植被绿与其可区分)
@@ -91,7 +91,7 @@ def calib_from_fov(width: int, height: int, fov_deg: float) -> dict[str, Any]:
 
     fx/fy 与主点都取自 `CameraIntrinsics`(单一公式源),不再各写一遍 `w/2`。
 
-    ⚠️ **主点口径已从 `w/2` 改为 `(w−1)/2`**(2026-09-22 实测裁决,`bin/probe_calib.py`
+    ⚠️ **主点口径已从 `w/2` 改为 `(w−1)/2`**(2026-09-22 实测裁决,`autodrivedata/calib/probe_calib.py`
     A3/A4):CARLA 渲染光栅是 **corner** 约定 —— 索引 i 的连续坐标就是 i,故
     `cx = (1242−1)/2 = 620.5`、`cy = (375−1)/2 = 187.0`。A3 在 corner 下 median|e|
     0.0003 m、center 下 0.023 m(~70×,六相机一致);A4 掩膜索引中点回归给 620.50。

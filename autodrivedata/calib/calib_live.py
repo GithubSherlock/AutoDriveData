@@ -1,6 +1,6 @@
 """实时标定槽(`live_studio --calib`)的纯值件:点云预算 / 残差着色 / 逐相机统计 / HUD 行。
 
-与离线探针 [bin/probe_calib.py](../bin/probe_calib.py) 的关系:那个是**一次性自证**
+与离线探针 [autodrivedata/calib/probe_calib.py](../autodrivedata/calib/probe_calib.py) 的关系:那个是**一次性自证**
 (静态 ego、训练口径全分辨率、落 `report.json` + `overlay.png`);本模块服务的是
 **开着车时的持续监看**。两者共用同一套数值核心
 ([autodrivedata/calib_probe.py](calib_probe.py)),差别只在预算与呈现:
@@ -40,10 +40,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodrivedata import calib_probe as cp
 from autodrivedata.accum import voxel_downsample
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.depth_codec import CONVENTION_CORNER
+from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.calib.depth_codec import CONVENTION_CORNER
 from autodrivedata.geometry import carla_rotation_matrix
 
 # ---------------------------------------------------------------- 实时预算(实测标定,见模块头注)
