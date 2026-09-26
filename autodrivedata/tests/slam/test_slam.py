@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata.accum import voxel_downsample
-from autodrivedata.slam import (
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import (
     GRID_OFFSETS,
     Edge,
     GridHash,
@@ -340,12 +340,12 @@ class TestScanContext:
     def test_sc_candidates_default_min_gap_is_node_scale(self):
         """默认 min_gap = SC_MIN_GAP_NODES(25 节点),**不是 3**。
 
-        回归:曾把 bin/slam_backend.py 的 `--min-gap` 默认设成 3,在"原地静止"
+        回归:曾把 autodrivedata/slam/slam_backend.py 的 `--min-gap` 默认设成 3,在"原地静止"
         数据集上 15 个关键帧互相全部落入候选窗(描述子天然几乎相同)→ 74/75 候选
         全过门 = 假回环。判据:完全相同的描述子序列里,默认参数只允许关键帧号差
         ≥ SC_MIN_GAP_NODES 的对成为候选。
         """
-        from autodrivedata.slam import SC_MIN_GAP_NODES
+        from autodrivedata.slam.core import SC_MIN_GAP_NODES
 
         assert SC_MIN_GAP_NODES >= 10  # 关键帧尺度的下限(KEYFRAME_EVERY=10)
         n = SC_MIN_GAP_NODES + 6

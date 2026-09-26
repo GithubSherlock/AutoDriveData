@@ -17,7 +17,7 @@
 `M·T·M·inv(L)`(M = diag(1,−1,1),L = LiDAR 在 ego 系下的挂点),见 Plan2.md。
 
 用法:
-  python bin/slam_odometry.py [--root outputs/kitti_slam] [--frames 0-399]
+  python -m autodrivedata.slam.slam_odometry [--root outputs/kitti_slam] [--frames 0-399]
                               [--voxel 0.5] [--out outputs/slam_gt]
 """
 
@@ -30,9 +30,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.paths import project_path
-from autodrivedata.slam import (
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import (
     DOWNSAMPLE_VOXEL,
     GRID_CELL,
     closure_error,

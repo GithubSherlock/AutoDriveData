@@ -95,7 +95,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import calib_probe as cp
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
@@ -130,6 +129,7 @@ from autodrivedata.sim.live_common import (
     rig_mount_deviation,
     rig_spec,
 )
+from autodrivedata.slam.accum import voxel_downsample
 
 W, H, FOV = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]), float(CAM_ATTRS["fov"])
 K = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)

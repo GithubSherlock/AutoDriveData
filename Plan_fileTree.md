@@ -54,7 +54,8 @@ autodrivedata/
 │   ├── maptr/             8   ← maptr_impl/ 整体(7 torch + __init__)
 │   └── maptr_official/    5   ← maptr_official/ 整体(__init__ + bridge + configs/3,已终止线)
 ├── slam/                 11
-│   ├── slam.py slam_eval.py live_slam.py accum.py
+│   ├── core.py          ← **原 slam.py 改名**(与 `calib/core.py` 同款,避免 `slam.slam`)
+│   ├── slam_eval.py live_slam.py accum.py
 │   ├── slam_odometry.py slam_backend.py slam_diff_test.py eval_slam.py
 │   └── build_accum_map.py probe_scan_to_map.py slam_cpp.cpp
 ├── perception/           18  检测 / 单双目 / 雷达 / 语义 / 点云
@@ -436,6 +437,27 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 > | 6 | **算自己位置的表达式**(`Path(__file__).parents[N]` / `cd "$(dirname "$0")/.."`) | 阶段 3 + 阶段 4 |
 > | 7 | **方法体内的惰性 import**(逃过 `--collect-only`) | 阶段 4 |
 > | 8 | **同名多义**(包名 / 输出目录 / env 名) | 阶段 4 的 `maptr_official` |
+> | 9 | **`import <包>.<模块> as 别名`** | 阶段 5 漏 1 处(`import autodrivedata.live_slam as ls`) |
+
+#### ★ 阶段 5 执行记录(已完成 2026-09-26)
+
+**搬迁**:10 模块 + `slam_cpp.cpp` → `autodrivedata/slam/` + 4 测试 → `autodrivedata/tests/slam/`。
+引用重写 **74 行 / 19 文件**。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`,**0 失败**;ruff 干净。
+
+**发现**:
+
+1. **新增第九种形态:`import <包>.<模块> as 别名`**(`import autodrivedata.live_slam as ls`)。
+   前四种规则全是 `from ... import ...`,**`import X.Y as Z` 不在其中**。已补进上面的清单。
+   注意它**只在全量跑时才暴露**(语法上合法、`--collect-only` 正常,调用时才 `ModuleNotFoundError`)。
+2. **`slam.py` → `slam/core.py`**,与阶段 3 用户裁决的 `calib/core.py` 同款(避免 `autodrivedata.slam.slam`)。
+   **同一模式在后续阶段要一致处理**:`perception`/`gt`/`traj`/`gs` 若出现「模块名 = 目录名」照此办。
+3. **`CPP_SRC = Path(__file__).parent / "slam_cpp.cpp"` 恰好仍然正确** —— 因为 `.py` 与 `.cpp` **一起搬**。
+   **但这必须验证而非假设**:实测 `g++ -std=c++17 -O2` 在新位置编译通过(产物 103848 bytes),
+   `slam_diff_test.py` 的解析路径也指对了。若哪天只搬 `.py` 不搬 `.cpp`,这条就会静默断。
+4. **同名多义**这次没有踩坑(规则只匹配 `bin/<m>.py` 与 `autodrivedata.<m>`,不碰 `outputs/slam*/`)——
+   实测 `outputs/slam/` 8 处、`outputs/slam_gt` 8 处、`kitti_slam` 14 处**与 HEAD 逐字一致**。
 
 约 1000 个引用点中,**绝大多数是文档**。它们**不会报错**。
 

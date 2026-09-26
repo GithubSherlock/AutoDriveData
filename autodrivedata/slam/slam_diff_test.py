@@ -1,4 +1,4 @@
-"""教程 14 阶段 2 位对齐对拍:Python(autodrivedata/slam.py)vs C++(bin/slam_cpp.cpp)。
+"""教程 14 阶段 2 位对齐对拍:Python(autodrivedata/slam.py)vs C++(autodrivedata/slam/slam_cpp.cpp)。
 
 判据(计划 §对拍契约):全 double;同一 `(prev, cur, init, seed)` 输入下**单次 ICP**
 返回的 T 逐位一致 —— 旋转角差 < 1e-3 rad、平移差 < 1e-2 m,实测在 1e-13/1e-14 量级。
@@ -13,16 +13,16 @@
 `(init, seed)` **原样**交给 C++ 的单次 ICP,比对两者的 T。
 
 流程:
-1. g++ -O2 -std=c++17 编译 bin/slam_cpp.cpp → /tmp/slam_cpp_diff;
+1. g++ -O2 -std=c++17 编译 autodrivedata/slam/slam_cpp.cpp → /tmp/slam_cpp_diff;
 2. 先跑 C++ 侧 `--selftest`(不读数据、解析可验的小例子钉死各步语义)——移植版自身坏掉时
    立刻失败,不必等全量跑完才从对拍差里反推;
-3. Python 跑链式(与 bin/slam_odometry.py 同口径)并记录每帧的 (init, seed);
+3. Python 跑链式(与 autodrivedata/slam/slam_odometry.py 同口径)并记录每帧的 (init, seed);
 4. 把这些 (init, seed) 喂给 C++ 的 `--icp-seq`(内部对每帧调同一次 icp_odometry);
 5. 逐帧算 ΔR = Log(R_pyᵀ R_cpp)、Δt = t_cpp − t_py,超阈即 FAIL 并 exit 1;
 6. 另打印**链式末端差**作参考(不判 FAIL):它是放大率指标,量级与帧数强相关。
 
 用法:
-  python bin/slam_diff_test.py [--root outputs/kitti_day_clear] [--start 0] [--end 149]
+  python -m autodrivedata.slam.slam_diff_test [--root outputs/kitti_day_clear] [--start 0] [--end 149]
                                [--bin /tmp/slam_cpp_diff] [--tol-rad 1e-3] [--tol-m 1e-2]
                                [--skip-selftest] [--skip-build]
 
@@ -39,8 +39,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
-from autodrivedata.slam import _log_so3, icp_odometry
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import _log_so3, icp_odometry
 
 CPP_SRC = Path(__file__).resolve().parent / "slam_cpp.cpp"
 
@@ -64,7 +64,7 @@ def run_selftest(bin_path: Path) -> None:
 def run_python(
     root: Path, start: int, end: int, voxel: float
 ) -> tuple[list[tuple[int, np.ndarray]], list[tuple[int, np.ndarray, np.ndarray]]]:
-    """Python 链式位姿(与 bin/slam_odometry.py 同口径:init=上一帧链式位姿,seed=恒速增量)。
+    """Python 链式位姿(与 autodrivedata/slam/slam_odometry.py 同口径:init=上一帧链式位姿,seed=恒速增量)。
 
     返回 (链式位姿列表, 每帧的 (frame, init, seed) —— 后者喂给 C++ 做单次 ICP 对拍)。
     """

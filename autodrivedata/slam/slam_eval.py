@@ -38,7 +38,7 @@ import numpy as np
 # ── LiDAR 系 ↔ ego 系 换算(唯一落点)─────────────────────────────────────────
 #
 # **为什么下沉到纯值库**:这段换算是 ATE 口径的一部分(实测不带杆臂 ATE 0.4589 m vs
-# 带杆臂 0.1877 m,2.44×),原先只在 `bin/eval_slam.py` 里,在线 SLAM
+# 带杆臂 0.1877 m,2.44×),原先只在 `autodrivedata/slam/eval_slam.py` 里,在线 SLAM
 # (`autodrivedata/live_slam.py`)要用就得复制一份 —— 而"两处各写一遍手性共轭 + 杆臂
 # 方向"正是最容易静默漂的地方(方向写成 `L` 而非 `inv(L)` 只差一个符号,数字照样出得来)。
 # 故与 `calib.world_to_img` 同例:实现放纯值库,bin 只调用。

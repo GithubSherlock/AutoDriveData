@@ -1,8 +1,8 @@
 """累积语义点云建图(教程 11):kitti_drive 多帧 velodyne → 全局语义地图。
 
 用法:
-  python bin/build_accum_map.py --root outputs/kitti_drive --frames 0-149
-  python bin/build_accum_map.py --root outputs/kitti_drive --frames 0-20 --stride 3
+  python -m autodrivedata.slam.build_accum_map --root outputs/kitti_drive --frames 0-149
+  python -m autodrivedata.slam.build_accum_map --root outputs/kitti_drive --frames 0-20 --stride 3
 
 输出:
   outputs/accum_map/map.ply      # 体素下采样后的全局语义点云(PLY 二进制)
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.accum import accumulate_global, colorize, voxel_downsample, write_ply
 from autodrivedata.paths import project_path
+from autodrivedata.slam.accum import accumulate_global, colorize, voxel_downsample, write_ply
 
 
 def parse_range(spec: str) -> list[int]:

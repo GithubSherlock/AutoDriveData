@@ -1,8 +1,8 @@
-"""在线 SLAM 会话纯值单测:与离线 `bin/slam_odometry.py` 逐帧对拍 + 线程/边界。
+"""在线 SLAM 会话纯值单测:与离线 `autodrivedata/slam/slam_odometry.py` 逐帧对拍 + 线程/边界。
 
 锚点分四类:
 1. **等价性**(最重要):同一合成序列,`LiveSlam.push` 的位姿序列必须与
-   `bin/slam_odometry.py` 的链式约定**逐帧同输入同输出**。离线那个函数是已验证基线,
+   `autodrivedata/slam/slam_odometry.py` 的链式约定**逐帧同输入同输出**。离线那个函数是已验证基线,
    在线实现若偏离(例如把 seed 乘进 init、或漏掉 voxel_downsample)本测试立刻红。
 2. **几何**:`ego_from_lidar0` 与 `eval_slam.lidar_pose_to_ego` 同式;帧一致性
    (`f(I) = I`,2026-09-19 修正的回归锚)。
@@ -21,11 +21,11 @@ import time
 import numpy as np
 import pytest
 
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.geometry import carla_rotation_matrix
-from autodrivedata.live_slam import LiveSlam, SlamWorker, ego_from_lidar0, relative_transform
-from autodrivedata.slam import icp_odometry
-from autodrivedata.slam_eval import LIDAR_LEVER, M_FLIP, lever_matrix, lidar_pose_to_ego
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import icp_odometry
+from autodrivedata.slam.live_slam import LiveSlam, SlamWorker, ego_from_lidar0, relative_transform
+from autodrivedata.slam.slam_eval import LIDAR_LEVER, M_FLIP, lever_matrix, lidar_pose_to_ego
 
 
 def _synthetic_sequence(n: int = 8, seed: int = 3) -> tuple[list[np.ndarray], list[np.ndarray]]:
@@ -55,7 +55,7 @@ def _synthetic_sequence(n: int = 8, seed: int = 3) -> tuple[list[np.ndarray], li
 
 
 def _offline_poses(frames: list[np.ndarray], voxel: float = 0.5) -> list[np.ndarray]:
-    """`bin/slam_odometry.py` 的链式约定逐字复刻(离线基线)。"""
+    """`autodrivedata/slam/slam_odometry.py` 的链式约定逐字复刻(离线基线)。"""
     poses: list[np.ndarray] = []
     prev_down: np.ndarray | None = None
     delta_prev = np.eye(4)
@@ -336,7 +336,7 @@ class TestSnapshotIsolation:
         判据:ICP 进行中(用一个慢的假 icp 卡住 push)另开线程取快照,必须在远小于
         一次 ICP 的时间内返回。
         """
-        import autodrivedata.live_slam as ls
+        from autodrivedata.slam import live_slam as ls
 
         frames, _ = _synthetic_sequence(2)
         slam = LiveSlam(voxel=0.5)
@@ -381,7 +381,7 @@ class TestEdges:
     def test_single_frame_has_no_inter_frame_stats(self):
         """单帧:无帧间对 ⇒ rmse/overlap 统计量按离线口径取 0(**不是 1.0**)。
 
-        `bin/slam_odometry.py` 的 `mean_*` 分母是 `max(n-1, 1)` 且只在 k>0 累加,
+        `autodrivedata/slam/slam_odometry.py` 的 `mean_*` 分母是 `max(n-1, 1)` 且只在 k>0 累加,
         单帧时分子为 0 ⇒ 0.0。别把"没有数据"伪装成"完美重叠"。
         """
         frames, _ = _synthetic_sequence(1)

@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from autodrivedata.slam_eval import (
+from autodrivedata.slam.slam_eval import (
     LIDAR_LEVER,
     M_FLIP,
     align_trajectory,

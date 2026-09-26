@@ -33,10 +33,10 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | 08 | 单目测距(4 法) | `bin/mono_distance.py` + `autodrivedata/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
 | 09 | 双目测距(视差) | `autodrivedata/sim/collect_stereo.py` 双目 rig + `autodrivedata/stereo.py`(SGBM/NCC/三角测量) | ✅ |
 | 10 | 上帝视角可视化(OpenDRIVE+NPC) | `view_stream.py --view top` + `opendrive.py` + `mapviz` | 已有 |
-| 11 | LiDAR+语义建点云地图 | `autodrivedata/accum.py` + `bin/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
+| 11 | LiDAR+语义建点云地图 | `autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
 | 12 | 点云地面提取 | `autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合) | ✅ |
 | 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(欧氏聚类) | ✅ |
-| 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `bin/slam_odometry.py` + `bin/slam_backend.py` + `bin/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
+| 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `autodrivedata/slam/slam_odometry.py` + `autodrivedata/slam/slam_backend.py` + `autodrivedata/slam/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
 | 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `autodrivedata/calib/calib_multilidar.py` | ✅ |
 | 16 | 3DGS 重建 | `autodrivedata/sim/collect_3dgs.py`(环绕采集)+ `bin/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
 
@@ -65,7 +65,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
   ScanContext 回环/PGO 后端)→ 见 §7 **P-H**,单测 27 passed。原"搭 ROS 工作量大、风险高"的判断成立,
   降档后链路已闭环;`kitti_*/training/velodyne/*.bin`(64 线语义强度)直接喂入,无需重采
 - **阶段 2 口径(2026-09-19 交付)**:不做 ROS 移植,改做 **C++ 位对齐对拍**——
-  `bin/slam_cpp.cpp`(C++17 单文件零依赖)独立实现前端,`bin/slam_diff_test.py` 在**同一
+  `autodrivedata/slam/slam_cpp.cpp`(C++17 单文件零依赖)独立实现前端,`autodrivedata/slam/slam_diff_test.py` 在**同一
   `(prev, cur, init, seed)`** 下逐帧比对单次 ICP 的 T → 149/149 PASS(最差 1.9e-14 rad /
   7.0e-12 m),证明"纯 numpy 环 = C++ 环"在数值上等价,即阶段 1 的环可直接作为原生栈的 oracle
 
@@ -74,7 +74,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - **HiVT-CARLA 轨迹预测主线** —— ✅ **已闭环**(见 §7 末条 P-K 与 §9.2)。原卡点(env 迁移未完成
   + 无 GPU)已随 2026-09-18 会话恢复解除,val minADE 6.08。
 - **激光 SLAM 阶段 2(C++ 位对齐对拍)** —— ✅ **已交付**(2026-09-19)。未做 ROS 原生栈移植,
-  改以 `bin/slam_cpp.cpp` 独立 C++ 实现 + `bin/slam_diff_test.py` 单次 ICP 位对齐对拍收口
+  改以 `autodrivedata/slam/slam_cpp.cpp` 独立 C++ 实现 + `autodrivedata/slam/slam_diff_test.py` 单次 ICP 位对齐对拍收口
   (149/149 PASS);阶段 1 的纯 numpy 环由此被确认为可移植的 oracle(见 §7 P-H)。
 
 ## 5 数据资产(可复用,无需重采)
@@ -83,7 +83,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 
 - 图像:`surround_train`(300 帧 × 6)/ `surround_p3` / `surround_town13` / `kitti_*` image_2
 - 点云:`kitti_*/training/velodyne/*.bin`(64 线语义强度)/ `nus_mini` LIDAR_TOP + RADAR
-  - **SLAM 输入**:`kitti_drive/training/velodyne/`(150 帧,`bin/slam_odometry.py` 的默认输入)
+  - **SLAM 输入**:`kitti_drive/training/velodyne/`(150 帧,`autodrivedata/slam/slam_odometry.py` 的默认输入)
 - 标定:`calib.json`(surround 精确 sensor2ego + intrinsic)/ `training/calib`
 - 轨迹:`traj_town10`(550 帧 4 agents)/ `traj_town13_clean`(175 帧)
 - 3DGS:`outputs/3dgs/`(单俯仰 90 帧 + 多俯仰 270 帧 3×90,含真值深度与位姿)
@@ -144,13 +144,13 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - `autodrivedata/slam.py`:**纯 numpy 核心环**(零 carla/零 torch/零 ROS),并作为阶段 2 C++ 移植的 oracle
   - 前端 = **帧间点面 ICP**(替代 FAST-LIO2 的 ikd-tree scan-to-map;帧间重叠 ~90% 时等效)+ 恒速先验初始化 + λ 正则化法方程
   - 后端 = **ScanContext 回环**(点计数描述子,列滚动不变)+ **位姿图 G-N**(节点 ≤200,纯 numpy,无 g2o)
-- `bin/slam_odometry.py`(S1.3 前端):逐帧 velodyne → 链式位姿 `T_0→k`,落 `outputs/slam/{traj_raw,icp_stats}.json`
+- `autodrivedata/slam/slam_odometry.py`(S1.3 前端):逐帧 velodyne → 链式位姿 `T_0→k`,落 `outputs/slam/{traj_raw,icp_stats}.json`
 - **位对齐纪律**(阶段 2 对拍前提):全 double、网格哈希 tie-break 钉字典序、体素重心按扫描序累加、
   λ 正则化解代替 lstsq/SVD —— numpy/C++ 对拍只允许 ~1e-12 求解舍入偏差
 - 单测 `tests/test_slam.py` **27 passed**(手算锚点:exp/log 往返、多分辨率近邻、rad0 早停回归、批量 nearest vs 标量逐位一致、
   恒速先验链、SC 描述子旋转不变、SC 默认 min_gap 回归、PGO 纠偏、直线序列零漂移)
 - **阶段 1 验收(2026-09-19 端到端实测,输入 `outputs/kitti_drive/training/velodyne/` 150 帧)**:
-  `bin/slam_odometry.py --root outputs/kitti_drive --frames 0-149 --out outputs/slam` →
+  `autodrivedata/slam/slam_odometry.py --root outputs/kitti_drive --frames 0-149 --out outputs/slam` →
   **wall 242.42 s(< 5 min 达标)、NaN 0、failed 1 帧、平均 RMSE 0.19593 m、平均 overlap 0.779**;
   产物 `outputs/slam/traj_raw.json` + `icp_stats.json`
   - **轨迹形状**:起点 (0,0,0) → 终点 (−42.21, −50.56, −1.40),路径长 **94.73 m**,yaw 0° → 121.12°,
@@ -160,16 +160,16 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
   - **failed 帧 = 帧 3**:逐帧 ICP 步长 9.517 m / rmse 2.153 / overlap 0.022。已核为**数据侧 ego 瞬移**
     (相机帧 2→3 `mean|d|` 60.16、平均亮度 159.0→128.7,远超其余相邻对 12–24;GT 标注数 2→1;
     纯 x 平移 −1..10 m 暴力扫描 overlap 上限仅 0.128)——**非 ICP 缺陷**,链从帧 4 正常续上(overlap 0.875)
-- **阶段 2(2026-09-19,C++ 位对齐对拍)**:`bin/slam_cpp.cpp`(C++17 单文件,零外部依赖,含 `--selftest`
-  语义自检)+ `bin/slam_diff_test.py`
+- **阶段 2(2026-09-19,C++ 位对齐对拍)**:`autodrivedata/slam/slam_cpp.cpp`(C++17 单文件,零外部依赖,含 `--selftest`
+  语义自检)+ `autodrivedata/slam/slam_diff_test.py`
   - **判据订正**:不比"150 帧链式位姿末端"——链式 `T_k = Δ_k·T_{k-1}` 对 Δ 的舍入差**指数放大**(最近邻赋值
     是离散的:1e-16 的 seed 差翻格 → Δ 跳 ~1e-5 → 进入下一帧 seed,实测 ~2.4×/帧;两条纯 Python 链只把求逆
     从 `np.linalg.inv`(LU)换成刚体 Rᵀ 就能在 40 帧内发散到米级)。正确判据 = **同一 `(prev, cur, init, seed)`
     下比对单次 ICP 的 T**
-  - **实测**:`bin/slam_diff_test.py --root outputs/kitti_day_clear --start 0 --end 149` →
+  - **实测**:`autodrivedata/slam/slam_diff_test.py --root outputs/kitti_day_clear --start 0 --end 149` →
     **149/149 PASS**(tol 1e-3 rad / 1e-2 m),最差旋转 **1.9e-14 rad**、最差平移 **7.0e-12 m**;
     链式末端差(仅作放大率参考,不判 FAIL)rot 0 / trans 5.1e-14 m
-- **后端实测**(`bin/slam_backend.py`):15 关键帧(每 10 帧)、**候选 0 / 过门 0** —— 该序列是**开放路径无重访**,
+- **后端实测**(`autodrivedata/slam/slam_backend.py`):15 关键帧(每 10 帧)、**候选 0 / 过门 0** —— 该序列是**开放路径无重访**,
   `n_loops=0` 是合法结果(**不造回环**);闭合 pre 63.185 m → post 63.185 m(无回环边时 PGO 不动,
   即"零信息时保持原样"的预期行为)。产物 `outputs/slam/{traj_pgo,loops,slam_summary}.json`
 
@@ -187,7 +187,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - **坐标系换算**——LiDAR 系位姿 → ego 系:CARLA(ego,y 右)与 KITTI(LiDAR,y 左)手性差 = 共轭 `M·T·M`
   (`M = diag(1,−1,1,1)`);LiDAR 挂点 `(1.2, 0, 1.65)` ⇒ `ego_pose = M·T_lidar·M @ inv(L)`。
   **不带杆臂 ATE 0.4589 m vs 带杆臂 0.1877 m(2.44×)** —— 方向是 `inv(L)` 不是 `L`。
-- **基线**(`bin/eval_slam.py --traj outputs/slam_gt/traj_raw.json --gt outputs/kitti_slam`,产物 `outputs/slam_gt/eval.json`):
+- **基线**(`autodrivedata/slam/eval_slam.py --traj outputs/slam_gt/traj_raw.json --gt outputs/kitti_slam`,产物 `outputs/slam_gt/eval.json`):
 
   | 指标 | 值 |
   |---|---|
@@ -204,7 +204,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - **后端(诚实报告)**:40 关键帧、**候选 0 / 接受 0**,闭包前 58.688 m → 闭包后 58.688 m。
   根因已数值验证:最小 ScanContext 距离 0.5855(门 0.15),几何上最近的关键帧对相隔 58.69 m ——
   该路线是折返路线但**从未在空间上重新靠近**。`n_loops=0` 是正确结果,不是缺陷。
-- **阶段 2 对拍复核**:`bin/slam_diff_test.py --root outputs/kitti_slam --start 0 --end 99` →
+- **阶段 2 对拍复核**:`autodrivedata/slam/slam_diff_test.py --root outputs/kitti_slam --start 0 --end 99` →
   **99/99 PASS**(最差平移 2.2e-11 m,旋转 0),修正后的位姿约定在 numpy/C++ 两侧一致。
 
 #### P-H.2 路线 B(B1 IMU / B2 scan-to-map)实测裁决 —— **两项均不投**(2026-09-19)
@@ -220,7 +220,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
     姿态 0.0903° vs **0.0041°**(差 22×);只在满舵绕圈时 IMU 才赢(6.016 vs 15.458 mm)。
   - 叠加已测的"CARLA **不模拟帧内扫描延迟**"(运动畸变校正是空操作):FAST-LIO2 用 IMU 的两个卖点
     在本仿真里**一个为空、一个为负** ⇒ **IESKF 不投**。
-- **B2(ikd-Tree + scan-to-map 前端)⇒ 不投**(`bin/probe_scan_to_map.py`,产物 `outputs/s2m_probe/s2m_probe.json`):
+- **B2(ikd-Tree + scan-to-map 前端)⇒ 不投**(`autodrivedata/slam/probe_scan_to_map.py`,产物 `outputs/s2m_probe/s2m_probe.json`):
   - 用 **oracle GT 位姿**构造局部地图(零里程计漂移 ⇒ 测出的是**收益上限**),8 采样帧、裁 30 m、
     对应距离门 2.0 m、体素 0.5 m。误差随地图深度 K **单调变差**:K=1 **1.05×**、K=3 **1.55×**、
     K=8 **2.75×**(重新体素化更差:1.02× / 1.55× / **3.26×**)。
@@ -233,11 +233,11 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
   - ⇒ 与 §3 最初的判断一致(**帧间重叠 ~90% 时 scan-to-map 无收益**),本仓不建 ikd-Tree 前端。
     **结论边界**:单序列、Town10HD_Opt、autopilot 400 帧、体素 0.5、oracle GT 位姿;
     换到帧间重叠低的场景(高速、稀疏扫描、大转弯)**可能翻转**,届时本脚本可直接复跑复核。
-- **副产品**:`bin/eval_slam.py`(ATE/RPE,含双坐标换算)+ `autodrivedata/slam_eval.py`(纯值)
+- **副产品**:`autodrivedata/slam/eval_slam.py`(ATE/RPE,含双坐标换算)+ `autodrivedata/slam_eval.py`(纯值)
   + `autodrivedata/sim/collect_slam.py`(带 GT 位姿的采集)+ `tests/test_slam_eval.py`。
 
 ### P-I 累积语义建图 / 地面提取 / 聚类(教程 11+12+13)——✅ 链路闭环
-- 累积:`autodrivedata/accum.py` + `bin/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
+- 累积:`autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
   `outputs/accum_map/map.ply`(150 帧);`tests/test_accum.py` 11 passed。累积显著抑制单帧伪影
 - 地面:`autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合 + 内点掩码)→
   `outputs/ground/`;`tests/test_ground.py` 8 passed
@@ -1506,8 +1506,8 @@ centerline 0.1674)⇒ 掉的主要是稀疏类。
 - **教程 04(4 相机 IPM/单应拼接)**:仓库仍**无像素级 IPM 环视拼接**(`calib.py`/`mapviz.py` 只有标定与
   矢量投影;`sem_bev.py` 走的是 ground_intersection 射线投影,不是单应 warp)。判定:若需与教程 04 逐条对齐,
   这是**唯一剩余缺口**;当前语义 BEV(教程 06)已用射线投影达成同类目的,是否需要补 IPM 待用户定
-- **教程 14 阶段 2**:✅ 已交付(2026-09-19)——C++ 位对齐对拍(`bin/slam_cpp.cpp` +
-  `bin/slam_diff_test.py`,149/149 PASS);ROS 原生栈移植按用户裁决不做(见 P-H)
+- **教程 14 阶段 2**:✅ 已交付(2026-09-19)——C++ 位对齐对拍(`autodrivedata/slam/slam_cpp.cpp` +
+  `autodrivedata/slam/slam_diff_test.py`,149/149 PASS);ROS 原生栈移植按用户裁决不做(见 P-H)
 - **P2-A 后续子项**:像素级分割 GT 需 CARLA `sensor.camera.semantic_segmentation` 合成
 
 ## 9 迁移归档:HiVT 复现 + 教程能力执行记录(2026-09-19 自 Plan.md 迁入)
@@ -1638,7 +1638,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
 ### 10.2 未删 —— 以及为什么
 
 - **`kitti_day_clear` 保留、`kitti_sunset_glare` 删掉,这对不对称是刻意的**:
-  两者是同一批 150 帧老数据,但 `kitti_day_clear` 仍被 §5 与 `bin/slam_diff_test.py` 引用。
+  两者是同一批 150 帧老数据,但 `kitti_day_clear` 仍被 §5 与 `autodrivedata/slam/slam_diff_test.py` 引用。
   代价:`bin/eval_2d_ab.py` 的老口径配对**已不存在** → 已把该脚本默认值改为 A/B 新对并加注。
 - **`kitti_sweep_day_clear_8` 保留**:CLAUDE.md / README / `eval_attr.py` 三处命令示例都用 `_8`,
   删了要同步改三处文档,不值。

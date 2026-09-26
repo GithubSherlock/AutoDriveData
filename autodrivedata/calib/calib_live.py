@@ -40,11 +40,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.calib import calib_probe as cp
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import CONVENTION_CORNER
 from autodrivedata.geometry import carla_rotation_matrix
+from autodrivedata.slam.accum import voxel_downsample
 
 # ---------------------------------------------------------------- 实时预算(实测标定,见模块头注)
 # 体素边长 / 邻域平面半径 / 距离上限 / 平面拟合点数上限

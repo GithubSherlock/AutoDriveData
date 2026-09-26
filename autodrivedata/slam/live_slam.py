@@ -1,6 +1,6 @@
 """在线激光 SLAM 会话(纯值,不 import carla / torch):tick 循环外的增量重建。
 
-把 `bin/slam_odometry.py` 的链式约定**逐字**封成一个可增量喂帧的会话对象
+把 `autodrivedata/slam/slam_odometry.py` 的链式约定**逐字**封成一个可增量喂帧的会话对象
 (`LiveSlam.push`),供 `autodrivedata/sim/live_studio.py --slam` 驱动。
 
 **成本口径订正(2026-09-20,Plan2.md §P-L.2)**:原计划写"离线 ICP 0.78 s/帧 ⇒ 必须
@@ -10,7 +10,7 @@ worker 线程"。实测 0.78 s 是 400 帧**含转弯/重访的平均值**(`icp_
 Python 字节码,持 GIL 不放),实测 studio 里同一对点云 ICP 2.38 s vs 主线程同步 0.15–0.35 s。
 ⇒ **默认同步执行**(`SlamWorker(sync=True)`),异步线程留作可选项。
 
-**链式约定(逐字复用 `bin/slam_odometry.py:87-108`,勿另立)**:
+**链式约定(逐字复用 `autodrivedata/slam/slam_odometry.py:87-108`,勿另立)**:
 
 - 帧 0 = 恒等;帧 k = `icp_odometry(prev_down, down, poses[-1], seed=delta_prev)`
 - `seed` = **位姿增量** ΔP = P_{k-2}⁻¹P_{k-1}(函数内部取逆当迭代起点);
@@ -27,7 +27,7 @@ Python 字节码,持 GIL 不放),实测 studio 里同一对点云 ICP 2.38 s vs 
 
 **地图参考系 = LiDAR-0 系**(链式位姿的天然出口:`T_0→k` 把帧 k 的点搬到帧 0)。
 要画到**当前** ego 系须再过一道 `_lidar0_to_ego()`(CARLA 世界位姿 + 手性共轭 + 杆臂,
-与 `bin/eval_slam.py` 同一口径);**渲染循环滞后于 SLAM**,故每次取地图都要传当前 ego
+与 `autodrivedata/slam/eval_slam.py` 同一口径);**渲染循环滞后于 SLAM**,故每次取地图都要传当前 ego
 位姿,不能用快照里那份。
 
 **锚定 E_0 是必需的**(2026-09-19 修正):帧 0 的 ego **世界**位姿把"LiDAR-0 系"钉到
@@ -49,9 +49,9 @@ import time
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
-from autodrivedata.slam import DOWNSAMPLE_VOXEL, ICP_MAX_ITER, icp_odometry
-from autodrivedata.slam_eval import M_FLIP, lever_matrix, lidar_pose_to_ego
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import DOWNSAMPLE_VOXEL, ICP_MAX_ITER, icp_odometry
+from autodrivedata.slam.slam_eval import M_FLIP, lever_matrix, lidar_pose_to_ego
 
 __all__ = ["LiveSlam", "SlamWorker", "ego_from_lidar0", "relative_transform"]
 

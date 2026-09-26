@@ -11,6 +11,8 @@
 > - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
 >   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
 >   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
+> - **`autodrivedata/slam/`** —— SLAM 层(10 模块 + `slam_cpp.cpp`),测试在 `autodrivedata/tests/slam/`。
+>   **`slam.py` 已改名 `slam/core.py`**(与 `calib/core.py` 同款,避免 `slam.slam`)。
 > - **`autodrivedata/map/`** —— 地图层(29 模块),测试在 `autodrivedata/tests/map/`。
 >   **`maptr_impl/` → `autodrivedata/map/maptr/`**、**`maptr_official/` → `autodrivedata/map/maptr_official/`**
 >   (顶层这两个包**已不存在**)。故 `from maptr_impl.model import MapTR` 现在是

@@ -1,6 +1,6 @@
 """SLAM 轨迹精度评估:LiDAR 系位姿 → ego 系 → ATE/RPE(对齐 evo/KITTI 口径)。
 
-**为什么需要一层坐标换算**:`bin/slam_odometry.py` 输出的是 **LiDAR 传感器系**位姿,
+**为什么需要一层坐标换算**:`autodrivedata/slam/slam_odometry.py` 输出的是 **LiDAR 传感器系**位姿,
 而 `training/pose/{fid}.txt` 存的是 **ego(车辆)系** GT 位姿。两者差两件事:
 
 1. **手性/朝向约定**:velodyne 点云经 `carla_lidar_to_velodyne` 翻转 y →
@@ -17,7 +17,7 @@
 `slam_eval` 模块 docstring),故 ATE 只反映位置;RPE 的旋转项在直行段不可信。
 
 用法:
-  python bin/eval_slam.py --traj outputs/slam_gt/traj_raw.json \
+  python -m autodrivedata.slam.eval_slam --traj outputs/slam_gt/traj_raw.json \
       --gt outputs/kitti_slam --out outputs/slam_gt/eval.json
 """
 
@@ -31,7 +31,7 @@ import numpy as np
 
 from autodrivedata.export.kitti import pose_path, read_pose
 from autodrivedata.paths import project_path
-from autodrivedata.slam_eval import LIDAR_LEVER, M_FLIP, eval_trajectory, lidar_pose_to_ego
+from autodrivedata.slam.slam_eval import LIDAR_LEVER, M_FLIP, eval_trajectory, lidar_pose_to_ego
 
 
 def load_gt(root: Path, frames: list[int]) -> list[np.ndarray]:

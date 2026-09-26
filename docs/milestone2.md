@@ -82,7 +82,7 @@
 
 ## ✅ 累积语义建图(教程 11)
 
-**交付**:`autodrivedata/accum.py` + `bin/build_accum_map.py`(语义单帧 → 多帧累积 BEV)。
+**交付**:`autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(语义单帧 → 多帧累积 BEV)。
 
 - 语义帧间对齐:ego 位姿变换累积到全局系;时序证据加权
 - 输出 `outputs/accum_map/map.ply`(150 帧累积)
@@ -171,8 +171,8 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 ## ✅ 激光 SLAM(教程 14,纯 numpy 两段式降档)
 
 **交付**:`autodrivedata/slam.py`(纯 numpy 核心环,零 carla/零 torch/零 ROS)+
-`bin/slam_odometry.py`(前端)+ `bin/slam_backend.py`(后端)+ `bin/slam_cpp.cpp`(C++17 单文件,
-零外部依赖,阶段 2 位对齐对拍)+ `bin/slam_diff_test.py`(对拍脚本)+ `tests/test_slam.py`(27 passed)。
+`autodrivedata/slam/slam_odometry.py`(前端)+ `autodrivedata/slam/slam_backend.py`(后端)+ `autodrivedata/slam/slam_cpp.cpp`(C++17 单文件,
+零外部依赖,阶段 2 位对齐对拍)+ `autodrivedata/slam/slam_diff_test.py`(对拍脚本)+ `tests/test_slam.py`(27 passed)。
 
 - 前端 = **帧间点面 ICP**(替代 FAST-LIO2 的 ikd-tree scan-to-map;帧间重叠 ~90% 时等效)
   + 恒速先验初始化 + λ=1e-4 正则化法方程(`estimate_transform_gn`)
@@ -223,7 +223,7 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 - **位姿约定 bug(94×)**:`icp_odometry` 原出口 `T_delta @ init_T` 把**点映射当位姿左乘**,
   纯平移看着像累加、一转弯就发散;正解 `T = init_T @ inv(T_delta)`(ATE 17.53 → 0.187 m)。
 - **坐标系换算**:`ego_pose = M·T_lidar·M @ inv(L)`(手性共轭 + 杆臂 `inv(L)`,方向写反差 2.44×)。
-- 评估工具:`bin/eval_slam.py` + `autodrivedata/slam_eval.py`;采集 `autodrivedata/sim/collect_slam.py`。
+- 评估工具:`autodrivedata/slam/eval_slam.py` + `autodrivedata/slam_eval.py`;采集 `autodrivedata/sim/collect_slam.py`。
 
 **路线 B 实测裁决 —— B1/B2 均不投(2026-09-19)**:
 
@@ -232,7 +232,7 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
   只在 6/7/8 m/s 档出现)。单步预测 IMU 位置 0.326 mm vs 恒速 **0.120 mm**、姿态 0.0903° vs
   **0.0041°**(只在绕圈时 IMU 才赢)。叠加"CARLA 不模拟帧内扫描延迟"⇒ FAST-LIO2 用 IMU 的
   两个卖点一空一负 ⇒ **IESKF 不投**。
-- **B2 ikd-Tree + scan-to-map 前端**(`bin/probe_scan_to_map.py`):**oracle GT 位姿**构造局部地图
+- **B2 ikd-Tree + scan-to-map 前端**(`autodrivedata/slam/probe_scan_to_map.py`):**oracle GT 位姿**构造局部地图
   (= 收益上限),误差随地图深度 K **单调变差**——K=1 **1.05×** / K=3 **1.55×** / K=8 **2.75×**,
   重新体素化更差(3.26×)。机制:残差下降 ≠ 位姿正确(ICP 净赚代价降幅仅 0.0012→0.0050 m 而
   位姿误差 0.040→0.105 m)、约束方向塌陷(λ1 1.23e-1→9.80e-2,误差沿最软方向滑走)、

@@ -9,7 +9,7 @@
   纯 numpy,无 g2o)。
 - **位对齐纪律**:全 double、网格哈希 tie-break 钉死字典序、体素重心按扫描序累加、
   λ 正则化解代替 lstsq/SVD——保证 C++ 移植逐位对齐(numpy/C++ 对拍唯一允许偏差
-  ~1e-12 求解舍入,见 bin/slam_diff_test.py 的 1e-3/1e-2 阈值)。
+  ~1e-12 求解舍入,见 autodrivedata/slam/slam_diff_test.py 的 1e-3/1e-2 阈值)。
 
 口径:
 - 输入:velodyne bin (N,4) x,y,z,intensity(KITTI velodyne 约定,x 前/y 左/z 上)。

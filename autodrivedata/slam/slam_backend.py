@@ -18,7 +18,7 @@
 纯值,不 import carla/torch;产物经 paths.project_path 落 outputs/。
 
 用法:
-  python bin/slam_backend.py [--traj outputs/slam/traj_raw.json]
+  python -m autodrivedata.slam.slam_backend [--traj outputs/slam/traj_raw.json]
                              [--root outputs/kitti_drive] [--out outputs/slam]
 """
 
@@ -31,9 +31,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.paths import project_path
-from autodrivedata.slam import (
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import (
     KEYFRAME_EVERY,
     LOOP_GATE_CONVERGED,
     LOOP_GATE_OVERLAP,

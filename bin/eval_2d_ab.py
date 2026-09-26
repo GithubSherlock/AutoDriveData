@@ -6,7 +6,7 @@
 
 注:老 150 帧对(kitti_day_clear / kitti_sunset_glare)中的 kitti_sunset_glare 已于
 2026-09-20 清理删除 —— 该对已被 70 帧帧级配对的 kitti_ab_* 取代(见 Plan2.md §10)。
-kitti_day_clear 保留(Plan2.md §5 与 bin/slam_diff_test.py 仍引用),但**它现在没有配对的 B**,
+kitti_day_clear 保留(Plan2.md §5 与 autodrivedata/slam/slam_diff_test.py 仍引用),但**它现在没有配对的 B**,
 要用老口径须显式传一个仍在库的 root。默认值已改为 A/B 新对。
 
 评估口径:GT label_2 2D bbox(列 5-8) vs YOLO 预测(原图尺度),

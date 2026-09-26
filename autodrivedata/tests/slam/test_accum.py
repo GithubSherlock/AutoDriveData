@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.accum import (
+from autodrivedata.slam.accum import (
     accumulate_global,
     colorize,
     semantic_color,

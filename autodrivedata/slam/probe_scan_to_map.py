@@ -41,8 +41,8 @@ ikd-Tree + scan-to-map 前端。**本结论的边界**:单序列、Town10HD_Opt�
 届时本脚本可直接复跑复核。
 
 用法:
-  python bin/probe_scan_to_map.py --root outputs/kitti_slam --frames 0-399 --out outputs/s2m_probe
-  python bin/probe_scan_to_map.py --root <kitti root> --picks 40,70,100 --ks 1,3,8 --radius 30
+  python -m autodrivedata.slam.probe_scan_to_map --root outputs/kitti_slam --frames 0-399 --out outputs/s2m_probe
+  python -m autodrivedata.slam.probe_scan_to_map --root <kitti root> --picks 40,70,100 --ks 1,3,8 --radius 30
 """
 
 from __future__ import annotations
@@ -53,10 +53,10 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.accum import voxel_downsample
 from autodrivedata.export.kitti import read_pose
 from autodrivedata.paths import project_path
-from autodrivedata.slam import (
+from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.slam.core import (
     GRID_CELL,
     _batch_knn,
     estimate_normals,
