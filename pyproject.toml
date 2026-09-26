@@ -16,6 +16,8 @@ dev = ["pytest", "matplotlib"]
 
 [tool.setuptools.packages.find]
 include = ["autodrivedata*"]
+# tests/ 已收进包内(autodrivedata/tests/),但它不是分发内容 —— 排除,免得装上却不该被 import。
+exclude = ["autodrivedata.tests*"]
 
 [tool.ruff]
 # 项目实际风格 ~110 列(默认 88 会把中文注释/表格式行反复折行)

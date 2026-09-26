@@ -30,8 +30,6 @@ from typing import Any, cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
-from live_common import RIG_LEGACY, RIG_NUSCENES, compose_rows, image_to_pil, rig_spec
 from PIL import Image, ImageDraw
 from probe_calib import (
     WORLD_DIRS,
@@ -52,8 +50,10 @@ from autodrivedata.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
 from autodrivedata.depth_codec import decode_depth
 from autodrivedata.geometry import quat_normalize, quat_to_matrix
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
+from autodrivedata.sim.live_common import RIG_LEGACY, RIG_NUSCENES, compose_rows, image_to_pil, rig_spec
 
-# 历史字面值(修前的 `bin/collect_surround.py:SURROUND_CAMS`,已随本次修正删除)——
+# 历史字面值(修前的 `autodrivedata/sim/collect_surround.py:SURROUND_CAMS`,已随本次修正删除)——
 # 官方方位角被**原样抄成正数**,漏了 `yaw_carla = −az_nus`。列在此处只为让复核图能并排显示
 # "当时写的"与"应该写的";真值一律来自 `autodrivedata/camera_rig.py`。
 HISTORICAL_YAW: dict[str, float] = {

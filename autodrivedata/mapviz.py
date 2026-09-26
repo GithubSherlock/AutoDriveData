@@ -1,7 +1,7 @@
 """地图矢量投影与绘制(纯值):ego 系折线 → 相机像素 + BEV 面板。
 
 离线目检([bin/viz_maptr_pred.py](bin/viz_maptr_pred.py))与实时流
-([bin/view_stream.py](bin/view_stream.py) `--maptr-ckpt`)共用同一条链,避免两处
+([autodrivedata/sim/view_stream.py](autodrivedata/sim/view_stream.py) `--maptr-ckpt`)共用同一条链,避免两处
 各写一遍投影。坐标链:
 
   ego 局部系(x 前向 / y 左向 / z=0)

@@ -1,7 +1,7 @@
 """实时可视化的共享件:多路 MJPEG 服务 / 拼图 / 环视 rig / 第三方视角 / 键盘。
 
-从 `bin/view_stream.py` 抽出,供 `view_stream.py` 与 `bin/live_studio.py` 共用
-(对标已有 `bin/carla_common.py` 的先例:bin 只留 carla 编排,共享件单独成文件)。
+从 `autodrivedata/sim/view_stream.py` 抽出,供 `view_stream.py` 与 `autodrivedata/sim/live_studio.py` 共用
+(对标已有 `autodrivedata/sim/carla_common.py` 的先例:bin 只留 carla 编排,共享件单独成文件)。
 
 **多路服务的口径**:一个 HTTP 端口 + 路径分路(`/stream/<name>`),不是 N 个端口。
 理由:SSH 隧道只需转发一个端口,新增/删除一路流不改网络配置;`/` 出索引页把 N 路
@@ -52,7 +52,6 @@ from typing import TYPE_CHECKING, cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
@@ -62,6 +61,7 @@ from autodrivedata.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, c
 from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
 from autodrivedata.mapviz import calib_from_fov
+from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
 
 if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --maptr 路径真需要
     import torch
@@ -746,7 +746,7 @@ def maptr_predict(
 
 
 class KeyboardState:
-    """非阻塞键盘 → ego 控制状态机(从 `bin/drive_ego.py` 抽出,行为不变)。
+    """非阻塞键盘 → ego 控制状态机(从 `autodrivedata/sim/drive_ego.py` 抽出,行为不变)。
 
     tty 下 cbreak 模式单键即响应;stdin 为管道/重定向时按行读(测试路径)。
     `apply(ego)` 每 tick 调一次 —— sync 模式下控制命令在**下次 tick** 生效,必须持续喂。

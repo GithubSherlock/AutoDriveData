@@ -9,22 +9,22 @@ docker,ROS2 路线要容器/VM/Mac 三系统联调。本脚本消费与采集器
 MapTR 实时预测 overlay(`--maptr-ckpt`):在同一 tick 的 6 路环视图上跑一次
 前向 → 预测折线(ego 系)按 mapviz 同一投影链回投到各相机(品红),可选角落贴
 BEV 面板。**rig 必须与权重训练数据逐字段对齐**(相机名→挂点平移/偏航 / 内参 / 分辨率),
-故 rig 与 calib 一律走 `bin/live_common.py` 的 `build_surround_rig` / `surround_calibs`
+故 rig 与 calib 一律走 `autodrivedata/sim/live_common.py` 的 `build_surround_rig` / `surround_calibs`
 (只认 `live_common.rig_spec()` 的两处定义),并做启动自检 `rig_mount_deviation`(平移米 / 偏航度)。
 **两代 rig 并存**:`nuscenes`(逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态)对 `maptr_600`/`maptr_1000`;
 `legacy`(共用 `SENSOR_OFFSET` + 235/125)对 `maptr_ep256`/`maptr_ep512` —— `--rig auto` 按权重名选,
 **拿 nuscenes 喂 ep512 是错配**(见 `live_common` 头注对照表)。⚠️ 全部 MapTR 权重已标废弃
 (2026-09-22:训练用的 `official` rig 偏航镜像),保留两代仅为兼容既有产物。
 
-共享件(多槽 MJPEG / 拼图 / GT overlay / 环视 rig / 键盘)在 `bin/live_common.py`,
-8 路 studio 见 `bin/live_studio.py`。
+共享件(多槽 MJPEG / 拼图 / GT overlay / 环视 rig / 键盘)在 `autodrivedata/sim/live_common.py`,
+8 路 studio 见 `autodrivedata/sim/live_studio.py`。
 
 用法(CARLA 服务器运行中):
-  python bin/view_stream.py --view follow                 # 跟车视角
-  python bin/view_stream.py --view top --map Town13       # 俯视(看街区/NPC)
-  python bin/view_stream.py --view grid6 --npcs           # nuScenes 6 视角 + 静置 NPC
-  python bin/view_stream.py --scene rain_night --speed 8  # 带天气 + 定速直行
-  python bin/view_stream.py --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev
+  python -m autodrivedata.sim.view_stream --view follow                 # 跟车视角
+  python -m autodrivedata.sim.view_stream --view top --map Town13       # 俯视(看街区/NPC)
+  python -m autodrivedata.sim.view_stream --view grid6 --npcs           # nuScenes 6 视角 + 静置 NPC
+  python -m autodrivedata.sim.view_stream --scene rain_night --speed 8  # 带天气 + 定速直行
+  python -m autodrivedata.sim.view_stream --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
 红线:同步模式下 tick 归本脚本,不能与采集脚本同时运行(抢 tick)。
@@ -39,7 +39,11 @@ import time
 
 import carla
 import numpy as np
-from carla_common import (
+from PIL import Image, ImageDraw
+
+from autodrivedata.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
+from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import (
     draw_traffic_lights,
     loc,
     rad,
@@ -48,7 +52,7 @@ from carla_common import (
     sync_mode,
     traffic_light_frame,
 )
-from live_common import (
+from autodrivedata.sim.live_common import (
     FrameSlot,
     actor_boxes,
     build_cameras,
@@ -68,11 +72,7 @@ from live_common import (
     start_server,
     surround_calibs,
 )
-from PIL import Image, ImageDraw
-
-from autodrivedata.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
-from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, merged_weather
+from autodrivedata.sim.scenarios import SCENES, merged_weather
 
 VIEWS = ("follow", "top", "grid6")
 

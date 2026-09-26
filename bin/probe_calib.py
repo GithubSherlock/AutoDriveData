@@ -92,8 +92,6 @@ from typing import Any, cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
-from live_common import RIG_NUSCENES, compose_rows, image_to_pil, rig_mount_deviation, rig_spec
 from PIL import Image, ImageDraw
 
 from autodrivedata import calib_live as cl
@@ -116,6 +114,22 @@ from autodrivedata.geometry import (
     wrap_pi,
 )
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import (
+    CAM_ATTRS,
+    LIDAR_ATTRS,
+    SENSOR_OFFSET,
+    loc,
+    rad,
+    spawn_ego,
+    sync_mode,
+)
+from autodrivedata.sim.live_common import (
+    RIG_NUSCENES,
+    compose_rows,
+    image_to_pil,
+    rig_mount_deviation,
+    rig_spec,
+)
 
 W, H, FOV = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]), float(CAM_ATTRS["fov"])
 K = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)

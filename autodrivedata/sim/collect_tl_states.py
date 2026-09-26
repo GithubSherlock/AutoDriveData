@@ -12,8 +12,8 @@
   training/traffic_light/{fid}.json    TrafficLightFrame(状态 + 管制车道 + 停车线)
 
 用法(base env,CARLA 服务器运行中):
-  python bin/collect_tl_states.py --frames 60 --speed 8
-  python bin/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
+  python -m autodrivedata.sim.collect_tl_states --frames 60 --speed 8
+  python -m autodrivedata.sim.collect_tl_states --frames 90 --speed 8 --cycle 6,2,6
 """
 
 from __future__ import annotations
@@ -23,7 +23,11 @@ import queue
 from typing import cast
 
 import carla
-from carla_common import (
+from PIL import Image
+
+from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     SENSOR_OFFSET,
     draw_traffic_lights,
@@ -33,10 +37,6 @@ from carla_common import (
     sync_mode,
     traffic_light_frame,
 )
-from PIL import Image
-
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.paths import project_path
 from autodrivedata.traffic_light import phase_at
 
 DELTA = 0.1  # 同步模式固定步长(sync_mode 默认)

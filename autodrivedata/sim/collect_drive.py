@@ -1,7 +1,7 @@
 """M2 动态采集:ego autopilot + Traffic Manager 车流 + 行走行人 → KITTI 序列。
 
 用法(base env,CARLA 服务器运行中):
-  python bin/collect_drive.py [--out outputs/kitti_drive] [--frames 200]
+  python -m autodrivedata.sim.collect_drive [--out outputs/kitti_drive] [--frames 200]
     [--npc-vehicles 15] [--npc-walkers 6] [--seed 42]
 
 与 collect_kitti 同格式(KITTI root);区别:场景动态(ego 自动驾驶、NPC 交通流)。
@@ -16,7 +16,14 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import (
+
+from autodrivedata import geometry as g
+from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
+from autodrivedata.export.kitti import write_frame
+from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.paths import project_path
+from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
     SENSOR_OFFSET,
@@ -26,14 +33,7 @@ from carla_common import (
     spawn_ego,
     sync_mode,
 )
-
-from autodrivedata import geometry as g
-from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
-from autodrivedata.export.kitti import write_frame
-from autodrivedata.gt import ActorBox, box_to_gt_line
-from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, list_scenes, merged_weather
-from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.scenarios import SCENES, list_scenes, merged_weather
 
 NPC_MODELS = [
     "vehicle.tesla.model3",

@@ -227,7 +227,7 @@ def views_image(
             row.append(("", tile))
         tiles.append(row)
 
-    from live_common import compose_rows
+    from autodrivedata.sim.live_common import compose_rows
 
     grid = compose_rows(tiles)
     ruler = ruler_image(rig, grid.width)
@@ -240,9 +240,10 @@ def views_image(
 def run_live(rig: str, host: str, port: int, out_dir: Path) -> dict[str, Any]:
     """实拍:6× RGB + 6× instance_seg → ego 像素读数 + 拼图 + 报告。**只销毁本次 spawn 的 actor**。"""
     import carla
-    from carla_common import spawn_ego, sync_mode
-    from live_common import image_to_pil, mount_deviation_of, rig_spec
     from rig_check import RigCameras, covisibility, decode_ids, ego_pixel_counts
+
+    from autodrivedata.sim.carla_common import spawn_ego, sync_mode
+    from autodrivedata.sim.live_common import image_to_pil, mount_deviation_of, rig_spec
 
     client = carla.Client(host, port)
     client.set_timeout(30.0)

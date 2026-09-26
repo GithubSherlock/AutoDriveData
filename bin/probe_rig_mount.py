@@ -32,8 +32,12 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import loc, rad, spawn_ego, sync_mode
-from live_common import (
+from PIL import ImageDraw
+
+from autodrivedata.calib import CameraIntrinsics
+from autodrivedata.mapviz import PRED_COLOR, draw_projected_lines
+from autodrivedata.sim.carla_common import loc, rad, spawn_ego, sync_mode
+from autodrivedata.sim.live_common import (
     RIG_LEGACY,
     RIG_NUSCENES,
     image_to_pil,
@@ -44,10 +48,6 @@ from live_common import (
     rig_spec,
     surround_calibs,
 )
-from PIL import ImageDraw
-
-from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.mapviz import PRED_COLOR, draw_projected_lines
 
 
 def build_rig(world: carla.World, ego: carla.Vehicle, rig: str):

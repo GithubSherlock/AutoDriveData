@@ -13,7 +13,7 @@
 - **落盘**:{out}/traj.json — 每帧所有 vehicle 位姿 + 图名 + ego 标识
 
 用法:
-  python bin/collect_traj.py --frames 550 --out outputs/traj_town10 \
+  python -m autodrivedata.sim.collect_traj --frames 550 --out outputs/traj_town10 \
       --map Town10HD_Opt [--map Town13 运行时切图]
 """
 
@@ -25,10 +25,10 @@ import time
 from typing import cast
 
 import carla
-from carla_common import loc, spawn_ego_at, sync_mode
 
 from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, merged_weather
+from autodrivedata.sim.carla_common import loc, spawn_ego_at, sync_mode
+from autodrivedata.sim.scenarios import SCENES, merged_weather
 
 
 def main() -> None:

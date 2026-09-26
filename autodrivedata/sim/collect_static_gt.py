@@ -11,7 +11,7 @@ waypoint.lane_marking(车道线实体)。非 actor 无 tag,semantic LiDAR 打不
   training/overlay/{fid}.png      目检叠加图:信号锚点(红) + 车道线段
                                   (白=White 黄=Yellow)投影到图像平面
 
-用法(base env): python bin/collect_static_gt.py [--frames 40] [--out outputs/kitti_static_demo]
+用法(base env): python -m autodrivedata.sim.collect_static_gt [--frames 40] [--out outputs/kitti_static_demo]
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 from PIL import Image, ImageDraw
 
 from autodrivedata import fonts
 from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, world_to_img
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 from autodrivedata.static_gt import (
     LaneSegment,
     StaticFrame,

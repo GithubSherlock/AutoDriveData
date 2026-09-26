@@ -23,7 +23,7 @@
     pitches.json                 # 本批采集的 pitches 列表(供训练侧枚举)
 
 用法:
-  python bin/collect_3dgs.py [--center-index 77] [--n-cams 90] [--radius 6] [--pitches "0,-15,-30"]
+  python -m autodrivedata.sim.collect_3dgs [--center-index 77] [--n-cams 90] [--radius 6] [--pitches "0,-15,-30"]
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, sync_mode
 
-from autodrivedata.collect_rig import ring_cam_pose
 from autodrivedata.depth_codec import decode_depth
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import CAM_ATTRS, sync_mode
+from autodrivedata.sim.collect_rig import ring_cam_pose
 
 
 def _depth_img_to_meter(dep: carla.Image) -> np.ndarray:

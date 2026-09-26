@@ -1,7 +1,7 @@
 """M1b 静态采集:ego 静止 + NPC + 6 相机 + LiDAR + 5 雷达 → nuScenes 迷你集(scene-0103)。
 
 用法(base env,CARLA 服务器运行中):
-  python bin/collect_nus.py [--out outputs/nus_mini] [--frames 2] [--rig nuscenes|wide]
+  python -m autodrivedata.sim.collect_nus [--out outputs/nus_mini] [--frames 2] [--rig nuscenes|wide]
 
 落盘 = 标准 nuScenes dataroot(devkit 直读,auto3dlabel nuscenes-queue 消费):
   {out}/v1.0-mini/*.json(14 表)+ samples/LIDAR_TOP/*.bin((N,5) raw)
@@ -51,14 +51,6 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import (
-    LIDAR_ATTRS,
-    loc,
-    rad,
-    spawn_ego,
-    spawn_npcs,
-    sync_mode,
-)
 
 from autodrivedata import geometry as g
 from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
@@ -83,6 +75,14 @@ from autodrivedata.export.nuscenes import (
 from autodrivedata.gt import ActorBox, box_center_world, box_heading_world, classify_nus
 from autodrivedata.paths import project_path
 from autodrivedata.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
+from autodrivedata.sim.carla_common import (
+    LIDAR_ATTRS,
+    loc,
+    rad,
+    spawn_ego,
+    spawn_npcs,
+    sync_mode,
+)
 
 # 相机蓝图属性:分辨率 + **逐通道 fov**。`fov` 是**水平** FOV,官方 K 反推值见
 # `NUS_CAMERA_FOV`;六路共用 90° 会让五路"应该是 64.3°"的相机被渲染成 90°(声明≠渲染)。
@@ -246,7 +246,7 @@ def main() -> None:
     )
     # 6 相机:挂点 + 6DoF 姿态 + 逐通道 fov,全部由 `--rig` 选中的那一份表导出
     # (与写进 `calibrated_sensor` 的标定同源推导,见 `rig_tables`)。
-    # 样板 = `bin/collect_surround.py`(那一版从 §P-M 起就是对的)。
+    # 样板 = `autodrivedata/sim/collect_surround.py`(那一版从 §P-M 起就是对的)。
     cameras: dict[str, carla.Sensor] = {}
     for cam, (mount, rot) in cam_rig.items():
         cam_bp = bp_lib.find("sensor.camera.rgb")

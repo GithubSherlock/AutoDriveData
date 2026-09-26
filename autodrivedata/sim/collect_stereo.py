@@ -17,7 +17,7 @@
     ego_pose.json   — 逐帧 ego 位姿
 
 用法:
-  python bin/collect_stereo.py [--frames 60] [--baseline 0.4]
+  python -m autodrivedata.sim.collect_stereo [--frames 60] [--baseline 0.4]
 """
 
 from __future__ import annotations
@@ -29,12 +29,12 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, spawn_ego, sync_mode
 
 from autodrivedata.calib import CameraIntrinsics
-from autodrivedata.collect_rig import stereo_rig_offsets
 from autodrivedata.depth_codec import decode_depth
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import CAM_ATTRS, spawn_ego, sync_mode
+from autodrivedata.sim.collect_rig import stereo_rig_offsets
 
 
 def _depth_to_meter(image: carla.Image) -> np.ndarray:

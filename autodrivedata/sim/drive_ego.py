@@ -1,7 +1,7 @@
 """CARLA live 手动驾驶:在服务器终端用 WASD 遥控已运行场景里的 ego 车。
 
-**首选路径是 `bin/live_studio.py --keyboard`(键盘折进 tick 循环,单终端即可)**;
-本脚本保留"独立进程遥控"用法:当另一个进程(如 `bin/view_stream.py`)持有 tick 时,
+**首选路径是 `autodrivedata/sim/live_studio.py --keyboard`(键盘折进 tick 循环,单终端即可)**;
+本脚本保留"独立进程遥控"用法:当另一个进程(如 `autodrivedata/sim/view_stream.py`)持有 tick 时,
 本脚本只持续 `apply_control`(控制命令在下次 tick 生效),两者无冲突。
 ego 识别 = 挂着相机的车(cams 全部 attach_to=ego)。
 
@@ -9,7 +9,7 @@ ego 识别 = 挂着相机的车(cams 全部 attach_to=ego)。
   w/s 油门 0.8 / 刹车 0.8 · a/d 转向 ∓0.45 · x 滑行 · 空格 手刹急停 · q 退出
 
 用法(与 view_stream 并行,另开一个服务器终端):
-  python bin/drive_ego.py
+  python -m autodrivedata.sim.drive_ego
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from __future__ import annotations
 import time
 
 import carla
-from live_common import KeyboardState
+
+from autodrivedata.sim.live_common import KeyboardState
 
 
 def _find_ego(world: carla.World) -> carla.Vehicle | None:

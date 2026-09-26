@@ -87,7 +87,7 @@ def spawn_ego_at(world: carla.World, index: int) -> carla.Vehicle:
     **失败不换点**是刻意的——静默 fallback 会让"我要 88 号点"变成"随便哪条街",
     分段留出集就失去意义(同 `collect_ab_route` 的起点校验纪律)。
 
-    原为 `bin/collect_traj.py` 局部实现,2026-09-23 上移共享(§P-M.11 下游)。
+    原为 `autodrivedata/sim/collect_traj.py` 局部实现,2026-09-23 上移共享(§P-M.11 下游)。
     """
     pts = world.get_map().get_spawn_points()
     if not 0 <= index < len(pts):

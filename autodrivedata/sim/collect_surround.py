@@ -23,9 +23,9 @@ nuScenes 相机布局:**直接取官方 calibrated_sensor**(6DoF 四元数 + 平
   ego_pose.json     — 逐帧 ego2global(CARLA 世界系)
 
 用法:
-  python bin/collect_surround.py --frames 100 [--scene day_clear] [--npc-vehicles 15]
-  python bin/collect_surround.py --frames 400 --map Town13   # 多图扩数据:运行时切图
-  python bin/collect_surround.py --spawn-index 88 --stride 5 --frames 100  # 指定起点 + 0.5s/帧
+  python -m autodrivedata.sim.collect_surround --frames 100 [--scene day_clear] [--npc-vehicles 15]
+  python -m autodrivedata.sim.collect_surround --frames 400 --map Town13   # 多图扩数据:运行时切图
+  python -m autodrivedata.sim.collect_surround --spawn-index 88 --stride 5 --frames 100  # 指定起点 + 0.5s/帧
 
 多图切图(§5.14 Phase 2):`--map` 用 `client.load_world` 运行时切换(默认不动当前图,
 零副作用;每次切换 ~2 分钟加载)。**已采集数据的图标记**:default_map 写进 calib.json
@@ -62,14 +62,14 @@ import time
 from typing import Any, cast
 
 import carla
-from carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
-from collect_drive import spawn_route_walkers, spawn_traffic
 
 from autodrivedata.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
 from autodrivedata.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, merged_weather
+from autodrivedata.sim.carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
+from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic
+from autodrivedata.sim.scenarios import SCENES, merged_weather
 
 # 相机名 → 相对 ego 的 yaw(度)。**别名**,真值在 `autodrivedata/camera_rig.py`
 # (`NUS_CAMERA_RIG` 的完整 (平移, (pitch,yaw,roll)));本表只用于**遍历相机名的顺序**

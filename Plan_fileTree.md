@@ -222,12 +222,20 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 > | 阶段 | 判据 | 理由 |
 > |---|---|---|
 > | **0–1**(修陷阱 + 升级守卫) | **收集项 ≥ 895**,0 失败 | 这两阶段**有意新增回归钉子**(§4.0 要求),数字只增不减 |
-> | **2–8**(搬迁) | **收集项恒等于 910**(阶段 1 结束时的实际值) | 搬迁**不得**增删用例;数字一变就是丢了或重复收集 |
+> | **2–8**(搬迁) | **收集项恒等于 911** | 搬迁**不得**增删用例;数字一变就是丢了或重复收集 |
 > | 9(收口) | 同上,不再变化 | |
 >
 > **少一个就停手查;多一个也要查** —— 多通常意味着 `__init__.py` 缺失导致同名模块被两个测试根重复收集。
-> **实测轨迹**:阶段 0 结束时 **899**(895 + 4 条新钉子);阶段 1 结束时 **910**
-> (= 899 − 1 摘掉的旧守卫 + 12 条新层守卫)。**阶段 2 起以 910 为基准对账**。
+> **★ 计数台账(每次变动都要有归因,否则视同丢/重收)**:
+>
+> | 时点 | 收集项 | 增量归因 |
+> |---|---|---|
+> | 重构前基线 | 895 | — |
+> | 阶段 0 末 | 899 | +4:权重路径 / gitignore 三条 / PROJECT_ROOT / 相对 sys.path 的回归钉 |
+> | 阶段 1 末 | 910 | −1 摘旧守卫;+12 新层守卫(10 条自证 + 2 条包级) |
+> | **阶段 2 末** | **911** | +1:守卫「子目录须显式声明」判据缺陷的回归钉(见下) |
+> | 阶段 3–8 | 应恒为 **911** | 搬迁**不得**增删用例;变了就是丢了或重复收集 |
+>
 > 3 个模块级跳过(`auto3dlabel.schema` 缺失)全程不变。
 >
 > 阶段 2 的 `pyproject.toml` 只加 `exclude`(防打包),**`testpaths` 等到阶段 9 再加** ——
@@ -289,6 +297,41 @@ MASQUERADE_HINT = "ultralytics/mmdet3d/mmcv/lightning 会拉起 torch,已显式�
 6. grep 残留:`grep -rn 'bin/' --include='*.md' .` 只剩 §6 已知的历史条目
 
 **→ 停下来给用户看结果。满意再进阶段 3;不满意则回滚(§8),代价 = 1/5。**
+
+#### ★ 阶段 2 执行记录(已完成 2026-09-26)
+
+**六条验收判据全过**(逐条实测):
+
+| # | 判据 | 实测 |
+|---|---|---|
+| 1 | 两测试根全量绿 + 计数对账 | **911 passed / 3 skipped / 0 failed**;911 = 910 + 1(见下) |
+| 2 | `ruff check && ruff format --check` | 干净(183 文件) |
+| 3 | **真实采集** | `python -m autodrivedata.sim.collect_drive --scene rain_night --frames 5` 跑通,产物落**项目根** `outputs/kitti_rain_night` ⇒ **§5.6 的 `paths.py` 修复验证有效** |
+| 4 | 实时流起得来 | `/stream/main` 出帧(`Content-Length: 54885`),`--dump` 落 overlay+raw 两张,退出干净 |
+| 5 | 干净 env 可 import | `from autodrivedata.sim import carla_common` ✓(**editable finder 不须重装**,与预判一致) |
+| 6 | grep 残留 | 仅剩 `Plan.md`(冻结区) |
+
+**★ 试点抓到的四件事**(这就是先做试点的价值——它们都只在真搬之后才暴露):
+
+1. **两处漏网 import 形态**。批量替换只覆盖了 `from X import`,漏掉 `import X`(3 处 `import live_studio`)
+   与 `import collect_nus`(3 处)。**教训**:机械替换必须覆盖 `import X` / `from X import` / `import X as Y` 三种形态。
+2. **测试按路径读源码**。`test_nuscenes_calib_consistency.py` 用 `BIN / "collect_nus.py"` 读源码做 AST 检查,
+   搬迁后 `FileNotFoundError`。**教训**:「搬迁清单」不能只数 import,还要数 `路径常量 + 读文件`。
+   已加 `SIM = ROOT / "autodrivedata" / "sim"` 常量分流。
+3. **守卫的判据缺陷(守卫自己抓出来的)**。`test_every_subdirectory_has_an_explicit_rule` 原判据是
+   「目录名在 `LAYER_RULES` 表里」,建出 `autodrivedata/tests/sim/` 后误报 —— 而子目录由父规则覆盖**本就正确**。
+   已改为「命中的最长前缀键 != `""`」,并加回归钉(判据缺陷同 commit 修,§4.0 要求)。
+4. **pyright +7 是「解除遮蔽」不是「新增错误」**。`test_live_common.py` 在 HEAD 上零报错,搬进包后 7 条
+   `reportArgumentType`(`_FakeActor` 测试替身 vs `rig_mount_deviation(ego: Vehicle)`)。**根因**:搬迁前
+   `import live_common` 对 pyright **不可解析** ⇒ `lc.rig_mount_deviation` 是 `Unknown` ⇒ 实参根本不检查。
+   搬进包后导入可解析,签名才可见。**同范围对比:42 → 49,增量全在 `reportArgumentType`(7→14),其余类型数量不变**
+   ⇒ **净增 0 条真实错误**。
+
+**顺带发现一条预存缺陷(非本次引入)**:`live_common.py:352` 的
+`self.send_error(404, f"未知流;可选:{', '.join(slots)}")` 会把中文塞进 HTTP **状态行**,
+而 `http.server` 用 **latin-1** 编码状态行 ⇒ `UnicodeEncodeError`,请求线程崩、客户端收到 0 字节而非 404。
+`git show HEAD:bin/live_common.py` 确认搬迁前就是这样。**修法**:`send_error(404, "Unknown stream")` +
+中文改放 body。**未在本阶段修** —— 它不属于「搬迁」,按 §4.0「一个阶段一个关注点」应独立成 commit。
 
 ### 阶段 3..9 — 其余子树,每个一棵一 commit
 

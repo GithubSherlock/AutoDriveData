@@ -11,8 +11,8 @@
 - **不写图像**:SLAM 只用点云 + 位姿。150 帧图像 ≈ 400M,点云+位姿 ≈ 60M。
 
 用法:
-  python bin/collect_slam.py --frames 400 --out outputs/kitti_slam
-  python bin/collect_slam.py --frames 200 --speed 0 --map Town13 --out outputs/kitti_slam_t13
+  python -m autodrivedata.sim.collect_slam --frames 400 --out outputs/kitti_slam
+  python -m autodrivedata.sim.collect_slam --frames 200 --speed 0 --map Town13 --out outputs/kitti_slam_t13
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 
 from autodrivedata.export.kitti import frame_paths, write_pose
 from autodrivedata.geometry import carla_lidar_to_velodyne, carla_rotation_matrix
 from autodrivedata.paths import project_path
 from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.carla_common import LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 
 
 def ego_pose_matrix(ego_t: carla.Transform) -> np.ndarray:

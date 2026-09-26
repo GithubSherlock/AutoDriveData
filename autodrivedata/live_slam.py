@@ -1,7 +1,7 @@
 """在线激光 SLAM 会话(纯值,不 import carla / torch):tick 循环外的增量重建。
 
 把 `bin/slam_odometry.py` 的链式约定**逐字**封成一个可增量喂帧的会话对象
-(`LiveSlam.push`),供 `bin/live_studio.py --slam` 驱动。
+(`LiveSlam.push`),供 `autodrivedata/sim/live_studio.py --slam` 驱动。
 
 **成本口径订正(2026-09-20,Plan2.md §P-L.2)**:原计划写"离线 ICP 0.78 s/帧 ⇒ 必须
 worker 线程"。实测 0.78 s 是 400 帧**含转弯/重访的平均值**(`icp_stats.json`),而在线

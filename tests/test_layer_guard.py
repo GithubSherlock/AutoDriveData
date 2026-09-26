@@ -52,10 +52,15 @@ LAYER_RULES: dict[str, frozenset[str]] = {
 _DYNAMIC_IMPORTERS = frozenset({"import_module", "__import__"})
 
 
-def rule_for(rel_dir: str) -> frozenset[str]:
-    """给定相对目录(包根为 ""),返回其禁用集合 —— 最长前缀匹配。"""
+def rule_key_for(rel_dir: str) -> str:
+    """命中规则的**键**(最长前缀匹配);返回 `""` 表示只命中了包根回落。"""
     hits = [k for k in LAYER_RULES if k == "" or rel_dir == k or rel_dir.startswith(k + "/")]
-    return LAYER_RULES[max(hits, key=len)]
+    return max(hits, key=len)
+
+
+def rule_for(rel_dir: str) -> frozenset[str]:
+    """给定相对目录(包根为 ""),返回其禁用集合。"""
+    return LAYER_RULES[rule_key_for(rel_dir)]
 
 
 def _abs_of_relative(py_file: Path, pkg_root: Path, level: int, module: str | None) -> str:
@@ -138,21 +143,28 @@ class TestPackageLayers:
             f"  {f}: {mods}" for f, mods in sorted(offenders.items())
         )
 
-    def test_every_subpackage_is_declared(self):
-        """新增能力子目录**必须**在 `LAYER_RULES` 里显式声明。
+    def test_every_subdirectory_has_an_explicit_rule(self):
+        """每个子目录必须被**包根之外的**一条规则覆盖。
 
         漏声明的后果是**静默回落到包根规则** —— 而"静默回落的默认值"正是本守卫要消灭的东西:
-        新目录若需要 torch 却回落到 _PURE,你会得到一条莫名其妙的红;若需要纯值却回落到 _ANY,
+        新目录若需要 torch 却回落到 `_PURE`,你会得到一条莫名其妙的红;若需要纯值却回落到 `_ANY`,
         你会得到**假绿**。后者更坏,所以这里强制显式。
+
+        ⚠️ **判据是「命中的键 != ""」而不是「目录名在表里」** —— 这条区别有实际意义:
+        `tests/sim/`、`map/maptr/` 这类**子目录**本就该由父规则覆盖,不是遗漏。
+        (本条第一次写成「目录名在表里」,阶段 2 建出 `autodrivedata/tests/sim/` 时误报,
+        是守卫自己抓出来的判据缺陷。)
         """
         pkg = paths.PROJECT_ROOT / "autodrivedata"
-        actual = {
+        dirs = (
             p.relative_to(pkg).as_posix()
             for p in pkg.rglob("*")
             if p.is_dir() and p.name != "__pycache__" and not p.name.startswith(".")
-        }
-        missing = sorted(actual - {k for k in LAYER_RULES if k})
-        assert not missing, f"这些子目录未在 LAYER_RULES 声明(见本文件顶部规则表): {missing}"
+        )
+        undeclared = sorted(d for d in dirs if rule_key_for(d) == "")
+        assert not undeclared, (
+            f"这些子目录只命中了包根回落规则,未显式声明(见本文件顶部 LAYER_RULES): {undeclared}"
+        )
 
 
 class TestLayerGuardSelfCheck:
@@ -185,6 +197,17 @@ class TestLayerGuardSelfCheck:
     def test_allows_carla_where_declared(self):
         """立论的反面:规则必须**能区分**,不是"见 carla 就红"的蠢规则。"""
         assert self._scan("sim/collect.py", "import carla\n") == {}
+
+    def test_subdirectory_is_covered_by_its_parent_rule(self):
+        """父规则覆盖子目录 —— 与「未显式声明」是两回事(判据缺陷的回归钉)。
+
+        阶段 2 建出 `autodrivedata/tests/sim/` 时,旧判据(「目录名在表里」)把它误报为遗漏;
+        实际它由 `tests` 规则正确覆盖。真正的遗漏是**只命中包根回落**(`rule_key_for == ""`)。
+        """
+        assert rule_key_for("tests/sim") == "tests"
+        assert rule_key_for("map/maptr") == "map/maptr"  # 更具体者胜
+        assert rule_key_for("map") == "map"
+        assert rule_key_for("brand_new_dir") == "", "新目录若无人声明,必须落回包根(这才叫遗漏)"
 
     def test_allows_torch_where_declared(self):
         assert self._scan("perception/eval.py", "import torch\n") == {}

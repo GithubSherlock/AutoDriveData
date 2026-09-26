@@ -17,7 +17,7 @@ TTC 箱是安全余量语义(同一箱在不同速度对应不同距离,检出�
 
 注:速度档 `kitti_sweep_day_clear_{4,12}` 已于 2026-09-20 清理删除(§5.10 结论已归档),
 仅保留 `_8`(CLAUDE.md / README 的命令示例仍用它)。需要 4/12 m/s 档时重采:
-  python bin/collect_ab_route.py --scene day_clear --speed 4 --frames 140
+  python -m autodrivedata.sim.collect_ab_route --scene day_clear --speed 4 --frames 140
 """
 
 from __future__ import annotations

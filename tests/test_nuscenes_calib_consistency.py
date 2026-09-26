@@ -28,14 +28,13 @@ import pytest
 
 pytest.importorskip("carla")
 
-BIN = Path(__file__).resolve().parents[1] / "bin"
+ROOT = Path(__file__).resolve().parents[1]
+BIN = ROOT / "bin"  # 仍留在 bin/ 的脚本(verify_nus_calib 等)
+SIM = ROOT / "autodrivedata" / "sim"  # 阶段 2 起采集器在这里
 if str(BIN) not in sys.path:  # bin/ 不是包(采集脚本),按脚本目录加路径
     sys.path.insert(0, str(BIN))
 
 # `bin/` 不是包,静态分析跟不到上面那句运行时 `sys.path.insert` → 就地标注
-import collect_nus  # noqa: E402  # pyright: ignore[reportMissingImports]
-import collect_surround  # noqa: E402  # pyright: ignore[reportMissingImports]
-import live_common as lc  # noqa: E402  # pyright: ignore[reportMissingImports]
 import verify_nus_calib as vnc  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 from autodrivedata import geometry as g  # noqa: E402
@@ -51,6 +50,11 @@ from autodrivedata.camera_rig import (  # noqa: E402
     max_hfov_no_ego,
 )
 from autodrivedata.export import nuscenes as ne  # noqa: E402
+from autodrivedata.sim import (  # noqa: E402
+    collect_nus,
+    collect_surround,
+)
+from autodrivedata.sim import live_common as lc  # noqa: E402
 
 
 def _call_name(node: ast.AST) -> str:
@@ -222,7 +226,7 @@ class TestLidarMountAndRotation:
 
     def test_lidar_mount_differs_from_kitti_offset(self):
         """确认没退回 `carla_common.SENSOR_OFFSET = (1.2, 0, 1.65)`(KITTI 线口径,勿动)。"""
-        from carla_common import SENSOR_OFFSET  # noqa: PLC0415  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim.carla_common import SENSOR_OFFSET  # noqa: PLC0415
 
         kitti = (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z)
         assert collect_nus.LIDAR_MOUNT != pytest.approx(kitti, abs=1e-6)
@@ -480,7 +484,7 @@ class TestCollectNusRigSelection:
 
     def test_rig_choices_cover_the_export_side(self):
         """`--rig` 的 choices 就是导出侧的 `NUS_RIGS`(不另写一份元组)。"""
-        src = (BIN / "collect_nus.py").read_text(encoding="utf-8")
+        src = (SIM / "collect_nus.py").read_text(encoding="utf-8")
         assert "choices=NUS_RIGS" in src, "`--rig` 的 choices 必须直接引自 `NUS_RIGS`"
 
 
@@ -506,7 +510,7 @@ class TestSurroundRigMatchesStudio:
 
     def test_kitti_frame_constant_is_untouched(self):
         """`carla_common.CAM_ATTRS` 逐位不变(P1/KITTI 线的复现性红线)。"""
-        from carla_common import CAM_ATTRS  # noqa: PLC0415  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim.carla_common import CAM_ATTRS  # noqa: PLC0415
 
         assert CAM_ATTRS == {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}
 
@@ -579,7 +583,7 @@ class TestSurroundRigMatchesStudio:
 
     def test_spawn_index_and_stride_defaults_are_backward_compatible(self):
         """两个新参数的缺省必须**复现旧行为**(否则历史采集命令的语义静默变了)。"""
-        src = (BIN / "collect_surround.py").read_text(encoding="utf-8")
+        src = (SIM / "collect_surround.py").read_text(encoding="utf-8")
         assert '"--spawn-index"' in src and '"--stride"' in src
         assert 'type=int,\n        default=None,\n        help="固定用第 N 个 spawn point' in src, (
             "--spawn-index 缺省必须是 None(= 沿用 spawn_ego 首空位)"
@@ -592,7 +596,7 @@ class TestSurroundRigMatchesStudio:
         只取"要存的那一帧"会让其余相机积压 ⇒ 下一帧读到更早的图(症状:图像与 ego 位姿
         差一拍,且**与 stride 无关地**偶发)。锁法:保存循环里不再出现 `qs[...].get`。
         """
-        src = (BIN / "collect_surround.py").read_text(encoding="utf-8")
+        src = (SIM / "collect_surround.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
         gets = [n for n in ast.walk(main) if _call_name(n).endswith("].get") or _call_name(n) == "q.get"]
@@ -602,7 +606,7 @@ class TestSurroundRigMatchesStudio:
 
     def test_calib_json_carries_provenance(self):
         """落盘带 `spawn_index` / `stride` / `image_size`(旧产物无此键 = 旧口径)。"""
-        src = (BIN / "collect_surround.py").read_text(encoding="utf-8")
+        src = (SIM / "collect_surround.py").read_text(encoding="utf-8")
         for key in ('calib["spawn_index"]', 'calib["stride"]', 'calib["image_size"]'):
             assert key in src, f"calib.json 缺溯源键 {key}"
 

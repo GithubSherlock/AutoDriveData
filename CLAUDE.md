@@ -11,18 +11,18 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
   | 雨夜 | **-0.153 漏检型**(检出 0.72→0.48) | +0.017 噪声 |
   | 浓雾 | -0.013 FP 型(检出 0.72→0.85) | 0.000 |
   - 结论:相机三型可量化掉点;LiDAR 兜底不受天气/光照(平台边界:雨/雾无物理回波,退化只能人工注入)
-- **P2 ✅**(f66558c):静态 GT = **地图查询 API**(信号/标志是 landmark、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [bin/collect_static_gt.py](bin/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图。**更正**:Town10HD_Opt 有 15 个 traffic_light actor(xodr 17 个 dynamic 信号),原记"无信号 actor"有误——灯色属动态 GT,仍不入静态 json
+- **P2 ✅**(f66558c):静态 GT = **地图查询 API**(信号/标志是 landmark、车道线是 lane_marking 实体;semantic LiDAR 打不到)→ [autodrivedata/static_gt.py](autodrivedata/static_gt.py) + [autodrivedata/sim/collect_static_gt.py](autodrivedata/sim/collect_static_gt.py),落盘 `training/static_gt/{fid}.json` + overlay 目检图。**更正**:Town10HD_Opt 有 15 个 traffic_light actor(xodr 17 个 dynamic 信号),原记"无信号 actor"有误——灯色属动态 GT,仍不入静态 json
 - **M4 挂起**(§5.7a 用户裁决):定制街道 = CARLA **源码构建**(prebuilt 无 UnrealEditor,~170G 磁盘/Epic 账号),成本过载降级为扩展 P1。开源 AdditionalMaps(Town11-15,14.8G)已探明可下载,零构建扩地图池
 - **地图池扩展 ✅**(§5.7d):AdditionalMaps 14.8G 已装,Town11/12/13/15 入池(17 图)。**新图采集约束:Town11/12 禁采集**(spawn camera segfault)、Town13 TM 车流降级 0 NPC、可用 Town13/15;默认图仍 Town10HD_Opt(重启即恢复)
-- **可视化实时流 ✅**(§5.8):[bin/view_stream.py](bin/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
-- **灯色动态 GT ✅**(§5.9):[autodrivedata/traffic_light.py](autodrivedata/traffic_light.py)(纯值:状态归一/前向判据/相位查表/JSON 往返)+ [bin/collect_tl_states.py](bin/collect_tl_states.py)(记录模式 / `--cycle 6,2,6` 受控切灯 → 确定性变灯序列),落盘 `training/traffic_light/{fid}.json`。工业口径:灯态 = 独立时序层,Off/Unknown **不猜**;受控 90 帧状态变化点 = 帧 0/60/80 与计划逐帧吻合。**边界:不做视觉回归**——镜片 0.2m 在 f=621 下 30m 处仅约 4px,且黄色灯箱外壳同色相
+- **可视化实时流 ✅**(§5.8):[autodrivedata/sim/view_stream.py](autodrivedata/sim/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
+- **灯色动态 GT ✅**(§5.9):[autodrivedata/traffic_light.py](autodrivedata/traffic_light.py)(纯值:状态归一/前向判据/相位查表/JSON 往返)+ [autodrivedata/sim/collect_tl_states.py](autodrivedata/sim/collect_tl_states.py)(记录模式 / `--cycle 6,2,6` 受控切灯 → 确定性变灯序列),落盘 `training/traffic_light/{fid}.json`。工业口径:灯态 = 独立时序层,Off/Unknown **不猜**;受控 90 帧状态变化点 = 帧 0/60/80 与计划逐帧吻合。**边界:不做视觉回归**——镜片 0.2m 在 f=621 下 30m 处仅约 4px,且黄色灯箱外壳同色相
 - **P1 参数扫描 + 失效归因 ✅**(§5.10):[autodrivedata/attribution.py](autodrivedata/attribution.py) 纯值(逐帧匹配/分箱/逐帧速度自证)+ [bin/eval_attr.py](bin/eval_attr.py)(多跑 × 距离/框高/TTC 网格 + 漏检画像),与 AP 共用同一 `box_iou2d`。三结论:**尺度主导**(<32px 0.15–0.47 / ≥32px 0.78–1.00,断崖 ≈21–24px)、**CARLA 无运动模糊**(4/8/12 m/s 梯度能量 35.6/35.2/34.8,检出率 0.914/0.886/0.909 → 速度不改图像,退化只能人工注入)、**天气只前移断崖**(雨夜 40-50m 零检出→30-40m 0.32,雾最晚 0.91)
 - **MapTR 矢量管道 ✅**(§5.11):A 阶段矢量库(opendrive/mapvec + A6 oracle 0.00cm)→ B 阶段环视采集/组装/投影验收 → C 阶段**参考自实现**(`maptr_impl/`:GKT + 分层 query,单帧过拟合锚定正确性)→ D 阶段 chamfer AP。训练数据 200 帧(Town10HD_Opt@spawn0)
   - **第二轮 ep512 结果口径分化**:留出集 @0.2 **0.0674**(vs ep256 0.0510,+32%)、@0.3 0.0904、@0.4 0.1280(后两档持平略降)→ 保守操作点仍获益、高阈值已饱和;训练对照 0.2603 → **泛化间隙 3.9×**(ep256 时 2.1×)→ 下轮收益靠**扩数据**而非继续长训。权重 `outputs/maptr_ep512.pt`
   - **实时 overlay ✅**(§5.11f):`view_stream.py --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev`(rig 走 `live_common.rig_spec` 两处定义;推理用实挂相机世界位姿);实况数值验证 overlay 品红 25553 px vs raw 0、地平线以上 0/18496、FPS 1.1–1.4
   - **rig 两代并存(2026-09-19,§P-L.1)**:`legacy`(共用 `SENSOR_OFFSET` + BACK_LEFT/RIGHT 235/125)对 `maptr_ep256/ep512`;`nuscenes`(逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态)对 `maptr_600/1000`(**该两代权重均已于 2026-09-22 标废弃,见下条**)。**rig 必须与权重训练数据一致,不是"越新越好"**;`--rig auto`(默认)按权重名选。A/B 探针 `bin/probe_rig_mount.py`
   - **⚠️ 全部 MapTR 权重标废弃 + GKT 两处 bug(2026-09-22,§P-M)**:①**rig 镜像**——旧 `official` rig 的偏航是官方方位角原样抄的正数,漏了 `yaw_carla = −az_nus` ⇒ 四个侧/后相机左右互换(FRONT_LEFT 差 110.3°、BACK_LEFT 差 217.2°),pitch/roll 还硬编码 0;前/后相机因近自逆而"看着对",长期没暴露。真值改由 [autodrivedata/camera_rig.py](autodrivedata/camera_rig.py) 单点提供(官方四元数导出,`NUS_CAMERA_RIG`),采集器/实时流/导出器同源;`official` 更名 `nuscenes`。②**GKT 两处 bug**——infos 六元组是 `[x,y,z,yaw,pitch,roll]`,而 `_carla_rotation_torch` 要 `(pitch,yaw,roll)`,漏换序 ⇒ 5/6 相机指向错(yaw≈0 的 CAM_FRONT 看不出异常,单测 oracle 复刻了同一个错);K 未缩到特征图分辨率(FPN P2 = 311×94)⇒ 全分辨率像素与 `feat_w−1` 比。两坑叠加把 BEV 有效覆盖从 **94.6% 打到 1.25%**,head 采样 100% 零单元(实测 `head(真 BEV)` vs `head(零 BEV)` L1 仅 1.51 m)。修复后 `maptr_ep256/ep512/600/1000` **全部废弃**(采集数据本身就错),重采重训;`maptr_impl/gkt.py` 的 `_ROT_TO_CARLA` + `scale_k` + `tests/test_gkt.py` 三条回归钉死
-- **8 路实时 studio ✅**(2026-09-19 A 期 / 2026-09-20 B 期,Plan2.md §P-L):`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页 / 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载)+ `bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;`--keyboard` 折进 tick 循环)。`view_stream.py`/`drive_ego.py` 改薄编排
+- **8 路实时 studio ✅**(2026-09-19 A 期 / 2026-09-20 B 期,Plan2.md §P-L):`autodrivedata/sim/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页 / 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载)+ `autodrivedata/sim/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;`--keyboard` 折进 tick 循环)。`view_stream.py`/`drive_ego.py` 改薄编排
   - **拼图三层 + 不缩像素 ✅**(§P-L.6):用户报告"6 视角 FoV 缩得看不到地面"——根因是 **`PIL.Image.paste` 源图大于目标框时只贴左上角、不报错不缩放**,旧 4×2 等尺寸拼图把 1242×375 裁成 621×187,右半 + **下半(地面)** 无声丢弃(判据:与「源图左上角裁剪」差 **0.128** vs 与「整幅缩放」差 **66.18**)。改 `compose_rows`(按行拼、每格**原生像素**)+ `compose_grid` **尺寸守卫**(不符即 `ValueError`,钉死不复发)+ `GRID_ROWS` 三层(①左前/前/右前 ②右后/后/左后 ③第三方 + BEV,**不沿用 `SURROUND_CAMS` 字典序**)。画布 2484×374 → **3726×1170**,逐格与源图最大差 **0.0**;回归 `tests/test_live_common.py`(12 用例)
   - **B 期在线 SLAM ✅**(§P-L.2~P-L.4):`autodrivedata/live_slam.py`(`LiveSlam.push/snapshot` + 地图/轨迹换到当前 ego 系 + `SlamWorker`)+ `live_studio --slam`(语义 LiDAR → BEV 槽画地图点灰/轨迹青,HUD 显式报滞后)。**两条原前提都被实测推翻**:①离线 ICP 0.78 s/帧是 400 帧**含转弯的平均值**,在线逐帧只有 0.15–0.35 s;②**worker 线程被 GIL 饿死**(主线程 overlay/拼图/HUD 是纯 Python 字节码;同一对点云 worker eff 0.04–0.24 vs 主线程同步 0.90–1.00;钉 `OPENBLAS_NUM_THREADS=1` 不改结论 ⇒ 不是 BLAS 线程池)⇒ **默认同步执行**(~2.4 fps),`--slam-async` 留作对照
   - **有界丢旧队列 ≠ 滞后有界**(关键机制):队列有界的是**深度**不是 `prev_down` 与当前帧的**间隙**,而 ICP 成本随间隙爆炸(0.8 m 0.2 s → 8 m 2.8 s → 32 m 39 s)⇒ 丢帧→间隙更大→更慢→更多丢帧**无界正反馈**(异步实测:259 tick 只处理 8 帧、滞后涨到 157 帧/45 s)。修复 = **按帧号差止损**(`--slam-max-gap` 默认 3,超阈帧不做 ICP 直接恒速外推,`prev_down` 照推进)。**滞后口径 = 已 tick 帧号 − 已处理帧号**,不是 `n_offered − n_processed`(后者随丢帧无界增长,是假故障)
@@ -100,30 +100,30 @@ autolabel 从未迁移故只有真身一处;hivt 有真身但**没有链接**故
 bash tools/carla_server.sh        # 启动;停止用 stop(start/stop/status;勿手敲 pkill -f CarlaUE4,自匹配坑见 C19)
 
 # 场景采集(KITTI root,含 label_2 GT/velodyne/calib)
-python bin/collect_drive.py --scene rain_night --frames 70
-python bin/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B 专用:锚定 pt0 + 4 静置车
+python -m autodrivedata.sim.collect_drive --scene rain_night --frames 70
+python -m autodrivedata.sim.collect_ab_route --scene sunset_glare --frames 70   # P1 A/B 专用:锚定 pt0 + 4 静置车
 
 # 静态 GT(landmark + 车道线,含 overlay 目检图)
-python bin/collect_static_gt.py --frames 40
+python -m autodrivedata.sim.collect_static_gt --frames 40
 
 # 灯色动态 GT(记录模式默认不动灯;--cycle 绿,黄,红 秒数 = 受控切灯)
-python bin/collect_tl_states.py --frames 40 --speed 8
-python bin/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6
+python -m autodrivedata.sim.collect_tl_states --frames 40 --speed 8
+python -m autodrivedata.sim.collect_tl_states --frames 90 --speed 8 --cycle 6,2,6
 
 # 实时可视化(本地 ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 127.0.0.1:8080)
-python bin/view_stream.py --view follow --npcs        # 跟车视角
-python bin/view_stream.py --view top --map Town13     # 俯视看街区
-python bin/view_stream.py --scene rain_night --speed 8  # 天气 + 定速直行
-python bin/view_stream.py --view follow --dump outputs/dumps/f.png  # 落 raw+overlay 做差集诊断
+python -m autodrivedata.sim.view_stream --view follow --npcs        # 跟车视角
+python -m autodrivedata.sim.view_stream --view top --map Town13     # 俯视看街区
+python -m autodrivedata.sim.view_stream --scene rain_night --speed 8  # 天气 + 定速直行
+python -m autodrivedata.sim.view_stream --view follow --dump outputs/dumps/f.png  # 落 raw+overlay 做差集诊断
 # MapTR 实时预测 overlay(需 --view grid6;投影链与离线 viz 共用 autodrivedata/mapviz)
-PYTHONPATH=$PWD python bin/view_stream.py --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev --dump outputs/dumps/m.png
+python -m autodrivedata.sim.view_stream --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev --dump outputs/dumps/m.png
 # 8 路 studio(6 相机 + BEV + 第三方 + 拼图;WASD 操控 + 在线 SLAM)
-python bin/live_studio.py                             # 8 路 + 键盘(stdin 是 tty 时默认开)
-python bin/live_studio.py --speed 8 --npcs            # 定速直行(键盘自动关;两者互斥会报错)
-python bin/live_studio.py --slam --speed 8 --duration 90 --slam-report outputs/slam_gt/accept.json
-python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8  # 感知 + SLAM 同屏
+python -m autodrivedata.sim.live_studio                             # 8 路 + 键盘(stdin 是 tty 时默认开)
+python -m autodrivedata.sim.live_studio --speed 8 --npcs            # 定速直行(键盘自动关;两者互斥会报错)
+python -m autodrivedata.sim.live_studio --slam --speed 8 --duration 90 --slam-report outputs/slam_gt/accept.json
+python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8  # 感知 + SLAM 同屏
 # 落一段八视角视频(--video-fps 调到接近实际采集 fps 才是实时播放;结束会打印实测 fps 与倍速)
-PYTHONPATH=$PWD python bin/live_studio.py --npcs --speed 6 --duration 100 --fps 10 --no-keyboard \
+python -m autodrivedata.sim.live_studio --npcs --speed 6 --duration 100 --fps 10 --no-keyboard \
   --maptr-ckpt outputs/maptr_ep512.pt --slam --video outputs/videos/studio_8view.mp4 --video-fps 0.5
 PYTHONPATH=$PWD python bin/viz_maptr_pred.py --start 250 --frames 6   # 离线:预测回投 6 相机拼图 + BEV
 # 逐帧契约落盘(供 AutoLabel 消费;GT 同文件携带,见 autodrivedata/mapvec_schema.py)
@@ -144,12 +144,12 @@ cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti
 python bin/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对
 
 # nuScenes 迷你集(全传感器「渲染 = 声明」同源;重采后跑验收)
-python bin/collect_nus.py --frames 2                     # 重采(需 CARLA 在跑)
+python -m autodrivedata.sim.collect_nus --frames 2                     # 重采(需 CARLA 在跑)
 PYTHONPATH=$PWD python bin/verify_nus_calib.py --offline --live   # 八条判据 → outputs/nus_calib_check/
-bash bin/smoke_radar_collect.sh                          # devkit 直读四判据
+bash autodrivedata/sim/smoke_radar_collect.sh                          # devkit 直读四判据
 
 # wide rig(挂点后移 + 新 FoV,画幅内零车体像素;官方口径仍是默认)
-python bin/collect_nus.py --rig wide --out outputs/nus_mini_wide --frames 2
+python -m autodrivedata.sim.collect_nus --rig wide --out outputs/nus_mini_wide --frames 2
 PYTHONPATH=$PWD python bin/verify_nus_calib.py --rig wide --offline --live   # → report_wide.json
 PYTHONPATH=$PWD python bin/viz_rig_check.py --rig wide --live     # → outputs/calib_check/{rig_layout_*,views_*,report_*}
 

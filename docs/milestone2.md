@@ -8,7 +8,7 @@
 
 **交付**:CARLA 轨迹 → HiVT(TemporalData)训练管线闭环,含 3D 赛道记录。
 
-- 采集:`bin/collect_traj.py`(定速重发修复后)Town10 与 Town13 运动轨迹
+- 采集:`autodrivedata/sim/collect_traj.py`(定速重发修复后)Town10 与 Town13 运动轨迹
 - 组装:`bin/assemble_traj_pt.py`(xodr centerline lane 切段,滑动窗口 50 帧)
 - 转换:`bin/convert_hivt_pt.py`(plain dict → TemporalData,全排列 edge_index + agent 朝向)
 - 训练:HiVT-64,CPU(100 epoch)
@@ -68,7 +68,7 @@
 
 ## ✅ 双目视差(教程 09)
 
-**交付**:`bin/collect_stereo.py` CARLA 双目 rig(基线 0.4m)采集 + `autodrivedata/stereo.py`
+**交付**:`autodrivedata/sim/collect_stereo.py` CARLA 双目 rig(基线 0.4m)采集 + `autodrivedata/stereo.py`
 纯值双目链路 + `tests/test_stereo.py`(手算锚点 10 passed)。
 
 - 三角测量 z=f·B/d;SGBM 视差(OpenCV 可选,CV_8U)+ 自研 NCC 纯 numpy 匹配
@@ -120,14 +120,14 @@
 (手算锚点 8 passed)。
 
 - `ring_cam_pose`(3DGS 环绕位姿)+ `stereo_rig_offsets`(双目挂点 ±baseline/2)
-- `bin/collect_3dgs.py` / `bin/collect_stereo.py` 改为 import 纯函数,bin 只剩 carla 编排
+- `autodrivedata/sim/collect_3dgs.py` / `autodrivedata/sim/collect_stereo.py` 改为 import 纯函数,bin 只剩 carla 编排
 
 **结论**:采集器行为被单测锁定(回归测试先例);匹配纯函数 `match_dets_to_gt` 并入
 `attribution.py`(P-D 生产口径共用,IoU 与 AP 评估同口径)。
 
 ## ✅ 3DGS 重建(教程 16,降档链路验证)
 
-**交付**:`bin/collect_3dgs.py`(静态场景 360° 环绕采集,spectator 归位修复)+
+**交付**:`autodrivedata/sim/collect_3dgs.py`(静态场景 360° 环绕采集,spectator 归位修复)+
 `bin/train_3dgs_mini.py`(gsplat mini 训练)。
 
 - 采集:90 相机环绕(半径 6m)spawn 120 十字路口,RGB + 真值深度
@@ -223,11 +223,11 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 - **位姿约定 bug(94×)**:`icp_odometry` 原出口 `T_delta @ init_T` 把**点映射当位姿左乘**,
   纯平移看着像累加、一转弯就发散;正解 `T = init_T @ inv(T_delta)`(ATE 17.53 → 0.187 m)。
 - **坐标系换算**:`ego_pose = M·T_lidar·M @ inv(L)`(手性共轭 + 杆臂 `inv(L)`,方向写反差 2.44×)。
-- 评估工具:`bin/eval_slam.py` + `autodrivedata/slam_eval.py`;采集 `bin/collect_slam.py`。
+- 评估工具:`bin/eval_slam.py` + `autodrivedata/slam_eval.py`;采集 `autodrivedata/sim/collect_slam.py`。
 
 **路线 B 实测裁决 —— B1/B2 均不投(2026-09-19)**:
 
-- **B1 CARLA IMU 能否支撑 IESKF**(`bin/probe_imu.py`):IMU 陀螺读数就是物理引擎角速度,但 8 m/s
+- **B1 CARLA IMU 能否支撑 IESKF**(`autodrivedata/sim/probe_imu.py`):IMU 陀螺读数就是物理引擎角速度,但 8 m/s
   直行时 `gyro.z = −1.29°/s` 而旋转矩阵差分的真实 yaw 速率仅 −2e-5 rad/s(**差 1000×**,可复现,
   只在 6/7/8 m/s 档出现)。单步预测 IMU 位置 0.326 mm vs 恒速 **0.120 mm**、姿态 0.0903° vs
   **0.0041°**(只在绕圈时 IMU 才赢)。叠加"CARLA 不模拟帧内扫描延迟"⇒ FAST-LIO2 用 IMU 的
@@ -246,9 +246,9 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 目标(用户原话):「输出 六相机视角 + BEV 视角 + 第三方视角 共 8 个终端可视化输出,
 我操控汽车便可采集动静态目标和道路特征,输出感知结果的同时也做 slam 重建。」
 
-**交付**:`bin/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页、
+**交付**:`autodrivedata/sim/live_common.py`(共享件:单端口多槽 MJPEG `/stream/<name>` + `/` 索引页、
 拼图、GT overlay、环视 rig、第三方视角、`KeyboardState`、MapTR 懒加载)+
-`bin/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;
+`autodrivedata/sim/live_studio.py`(9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid` 拼图;
 `--keyboard` 折进 tick 循环)。`view_stream.py` / `drive_ego.py` 改为薄编排。
 
 **验收(数值)**:挂点自检 `平移 0.000 m / 偏航 0.000°`;第三方 ego 框 `中心偏移 0.001 画幅 /

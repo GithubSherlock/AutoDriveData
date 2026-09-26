@@ -5,7 +5,7 @@
 
 对照表(官方大陆 ars408 规格):
     水平 FOV 77°(±38.5°)、垂直 FOV 14.2°(±7.1°)、range 250m、~3300 pps。
-CARLA 0.9.16 两 FOV 属性交叉使用(bin/collect_nus.py RADAR_ATTRS 已对调):
+CARLA 0.9.16 两 FOV 属性交叉使用(autodrivedata/sim/collect_nus.py RADAR_ATTRS 已对调):
     设 horizontal_fov=14.2 / vertical_fov=77 → 实际 azi±38.1° / alt±7.0°
     (12 组属性扫描自洽,详见 Plan.md §radar)。
 
@@ -34,7 +34,7 @@ SPEC = {
     "pps": 3300,
 }
 
-# 换向后的 CARLA 属性(与 bin/collect_nus.py RADAR_ATTRS 一致)
+# 换向后的 CARLA 属性(与 autodrivedata/sim/collect_nus.py RADAR_ATTRS 一致)
 RADAR_ATTRS = {
     "horizontal_fov": "14.2",
     "vertical_fov": "77",
@@ -64,7 +64,7 @@ def main() -> int:
     client = carla.Client(args.host, args.port)
     client.set_timeout(30.0)
     world = client.get_world()
-    from carla_common import spawn_ego, spawn_npcs, sync_mode
+    from autodrivedata.sim.carla_common import spawn_ego, spawn_npcs, sync_mode
 
     sync_mode(world)
     ego = spawn_ego(world)
@@ -143,7 +143,7 @@ def main() -> int:
     alt_rad_all = np.abs(raws[:, 1])
     n_cone = int((alt_rad_all <= np.radians(SPEC["alt_half_deg"])).sum())
 
-    # 2b) 采集管线口径:与 bin/collect_nus.py 一致的组合过滤
+    # 2b) 采集管线口径:与 autodrivedata/sim/collect_nus.py 一致的组合过滤
     #     (devkit 默认过滤器 ∩ 垂直锥 → mask_radar_points),这才是会写进 pcd 的点。
     all18_collect = all18[mask_radar_points(all18)]
     n_collect = len(all18_collect)

@@ -1,6 +1,6 @@
 """CARLA 轨迹 → HiVT TemporalData 组装器(纯值,不 import carla)。
 
-消费 bin/collect_traj.py 的 traj.json(逐帧所有 agent x/y/yaw),滑窗切
+消费 autodrivedata/sim/collect_traj.py 的 traj.json(逐帧所有 agent x/y/yaw),滑窗切
 50 帧(20 历史 + 30 未来)场景,复用 §5.11 xodr centerline 做 lane 切段
 (替代 ArgoverseMap),产出 HiVT `ArgoverseV1Dataset` 同构的 processed/*.pt。
 

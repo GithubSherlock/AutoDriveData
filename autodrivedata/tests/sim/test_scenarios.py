@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from autodrivedata.scenarios import (
+from autodrivedata.sim.scenarios import (
     BASE_WEATHER,
     SCENES,
     WEATHER_KEYS,
@@ -52,14 +52,14 @@ class TestCatalog:
 
     def test_typo_key_rejected(self):
         """打错天气键必须抛错,不许静默出"假晴天"。"""
-        from autodrivedata.scenarios import Scene
+        from autodrivedata.sim.scenarios import Scene
 
         bad = Scene(name="bad", group="weather", weather={"sun_altidude": 1.0})
         with pytest.raises(KeyError):
             merged_weather(bad)
 
     def test_bad_traffic_key_rejected(self):
-        from autodrivedata.scenarios import Scene
+        from autodrivedata.sim.scenarios import Scene
 
         bad = Scene(name="bad", group="traffic", traffic={"npc_car": 3})
         with pytest.raises(KeyError):

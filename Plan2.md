@@ -31,14 +31,14 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | 06 | BEV + 语义分割融合 | `bin/sem_bev.py` 像素级语义 BEV(ground_intersection 投影 + 世界→ego 旋转) | ✅ |
 | 07 | 相机+LiDAR 融合,点云→图像 | `calib.world_to_img` / `tr_velo_to_cam` + `geometry.py` 完整投影链(含单测) | 已有 |
 | 08 | 单目测距(4 法) | `bin/mono_distance.py` + `autodrivedata/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
-| 09 | 双目测距(视差) | `bin/collect_stereo.py` 双目 rig + `autodrivedata/stereo.py`(SGBM/NCC/三角测量) | ✅ |
+| 09 | 双目测距(视差) | `autodrivedata/sim/collect_stereo.py` 双目 rig + `autodrivedata/stereo.py`(SGBM/NCC/三角测量) | ✅ |
 | 10 | 上帝视角可视化(OpenDRIVE+NPC) | `view_stream.py --view top` + `opendrive.py` + `mapviz` | 已有 |
 | 11 | LiDAR+语义建点云地图 | `autodrivedata/accum.py` + `bin/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
 | 12 | 点云地面提取 | `autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合) | ✅ |
 | 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(欧氏聚类) | ✅ |
 | 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `bin/slam_odometry.py` + `bin/slam_backend.py` + `bin/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
 | 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `bin/calib_multilidar.py` | ✅ |
-| 16 | 3DGS 重建 | `bin/collect_3dgs.py`(环绕采集)+ `bin/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
+| 16 | 3DGS 重建 | `autodrivedata/sim/collect_3dgs.py`(环绕采集)+ `bin/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
 
 图例:✅ = 链路已交付(详见 §7);「已有」= 补全前本仓已具备;「缺口」= 见 §8 遗留缺口。
 
@@ -129,12 +129,12 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - 输出 `outputs/multilidar/icp_result.json`
 
 ### P-F 双目测距(教程 09)——✅ 链路已通
-- `bin/collect_stereo.py` CARLA 双目 rig(基线 0.4m,同朝向 yaw=0、y 轴 ±0.2m)+ `autodrivedata/stereo.py` 纯值链路(z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 `reprojection_loss`)+ tests/test_stereo.py(手算锚点 10 passed)
+- `autodrivedata/sim/collect_stereo.py` CARLA 双目 rig(基线 0.4m,同朝向 yaw=0、y 轴 ±0.2m)+ `autodrivedata/stereo.py` 纯值链路(z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 `reprojection_loss`)+ tests/test_stereo.py(手算锚点 10 passed)
 - **实测**:定速 5.98 m/s(逐帧自证);SGM 近物点云 z≈5.5m ↔ GT 深度同值(三角测量链与真值深度对得上);depth_check.png 目检图已生成
 - 输出 `outputs/stereo/`(calib.json + left/right/depth 40 帧 + depth_pc 点云)
 
 ### P-G 3DGS 重建(教程 16,降档链路验证)——✅ 链路闭环
-- `bin/collect_3dgs.py` 静态场景 360° 环绕采集(spectator 归位修复:attach 子 actor set_transform 是**相对父**位姿,不归位会绕空场地、PSNR~10)+ `bin/train_3dgs_mini.py` gsplat mini 训练
+- `autodrivedata/sim/collect_3dgs.py` 静态场景 360° 环绕采集(spectator 归位修复:attach 子 actor set_transform 是**相对父**位姿,不归位会绕空场地、PSNR~10)+ `bin/train_3dgs_mini.py` gsplat mini 训练
 - 初始化真值深度网格反投影 ~40k 点;**位姿用 CARLA 真值**(定位降级:pycolmap SfM Sim3 对齐误差 ~5.7m/79.6° → outputs/3dgs/sfm_eval.json),留出帧 0 作 val
 - **实测**(train_result_ep1500.json):**psnr_all_mean 17.9、val 帧 0 13.56**;GT|渲染|差值三栏目检图 render_compare_ep1500.png 已生成
 - 输出 `outputs/3dgs/`(capture 90 帧 + gaussians_ep1500.ply + train_result_ep1500.json)
@@ -176,7 +176,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 #### P-H.1 精度口径修正 + 带 GT 的 400 帧基线(2026-09-19)
 
 此前所有 P-H 数字都建在**没有 GT 位姿**的 `outputs/kitti_drive`(ego autopilot)上,只能看轨迹形状。
-本次用 `bin/collect_slam.py` 重采 **400 帧带 GT 位姿**的序列(Town10HD_Opt,autopilot,路径 206.24 m,
+本次用 `autodrivedata/sim/collect_slam.py` 重采 **400 帧带 GT 位姿**的序列(Town10HD_Opt,autopilot,路径 206.24 m,
 `outputs/kitti_slam/`,位姿落 `training/pose/{fid}.txt`),才第一次能算真 ATE/RPE。
 
 - **位姿约定 bug(94×)**——`icp_odometry` 原出口是 `T_delta @ init_T`,把**点映射当位姿左乘**:
@@ -211,7 +211,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 
 用户指令"做 B1 的实测,没问题的话直接上 B2"。两项都做了实测,结论都是**负面**,故 B3/B4 不启动。
 
-- **B1(CARLA IMU 能否支撑 IESKF 预测)⇒ 不投**(`bin/probe_imu.py`,产物 `outputs/imu_probe/*.json`):
+- **B1(CARLA IMU 能否支撑 IESKF 预测)⇒ 不投**(`autodrivedata/sim/probe_imu.py`,产物 `outputs/imu_probe/*.json`):
   - IMU 陀螺读数**就是物理引擎报的角速度**(三轴比值恒 ≈1.000),但 8 m/s 直行时
     `gyro.z = −1.29°/s` 而旋转矩阵差分算出的真实 yaw 速率只有 −2e-5 rad/s(**差 1000×**);
     该伪角速度完全可复现(三次运行一致到 6 位小数),只在部分速度档出现(6/7/8 m/s 明显,4/9/10/12 几乎为 0)。
@@ -234,7 +234,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
     **结论边界**:单序列、Town10HD_Opt、autopilot 400 帧、体素 0.5、oracle GT 位姿;
     换到帧间重叠低的场景(高速、稀疏扫描、大转弯)**可能翻转**,届时本脚本可直接复跑复核。
 - **副产品**:`bin/eval_slam.py`(ATE/RPE,含双坐标换算)+ `autodrivedata/slam_eval.py`(纯值)
-  + `bin/collect_slam.py`(带 GT 位姿的采集)+ `tests/test_slam_eval.py`。
+  + `autodrivedata/sim/collect_slam.py`(带 GT 位姿的采集)+ `tests/test_slam_eval.py`。
 
 ### P-I 累积语义建图 / 地面提取 / 聚类(教程 11+12+13)——✅ 链路闭环
 - 累积:`autodrivedata/accum.py` + `bin/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
@@ -248,7 +248,7 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 ### P-J 采集器纯函数下沉(回归测试先例)——✅
 - `autodrivedata/collect_rig.py`(零 carla,AST 纪律守护)+ `tests/test_collect_rig.py` 8 passed
   - `ring_cam_pose`(3DGS 环绕位姿)+ `stereo_rig_offsets`(双目挂点 ±baseline/2)
-- `bin/collect_3dgs.py` / `bin/collect_stereo.py` 改为 import 纯函数,bin 只剩 carla 编排
+- `autodrivedata/sim/collect_3dgs.py` / `autodrivedata/sim/collect_stereo.py` 改为 import 纯函数,bin 只剩 carla 编排
 - 匹配纯函数 `match_dets_to_gt` 并入 `attribution.py`(P-D 生产口径共用,IoU 与 AP 评估同口径)
 
 ### P-K HiVT-CARLA 轨迹预测主线——✅ 管线闭环(原 §4 挂起项)
@@ -264,16 +264,16 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 我操控汽车便可采集动静态目标和道路特征,输出感知结果的同时也做 slam 重建。」
 
 **分期裁决**:① 分两期,先 A(8 路 + 键盘 + 第三方)后 B(在线 SLAM);② 抽
-`bin/live_common.py` + 新 `bin/live_studio.py`(**不动**已验证的 `--maptr` 路径)。
+`autodrivedata/sim/live_common.py` + 新 `autodrivedata/sim/live_studio.py`(**不动**已验证的 `--maptr` 路径)。
 
 **A 期交付**:
 
 | 文件 | 动作 | 要点 |
 |---|---|---|
-| `bin/live_common.py` | 新增 | 多槽 MJPEG(单端口 `/stream/<name>` + `/` 索引页)/ 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载 |
-| `bin/live_studio.py` | 新增 | 9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid`(拼图,当时是 4×2;2026-09-20 改**三层**且不缩像素,见 §P-L.6);`--keyboard` 折进 tick 循环 |
-| `bin/view_stream.py` | 改 | 薄编排:共享件全部改走 `live_common`;新增 `--rig` |
-| `bin/drive_ego.py` | 改 | 薄封装 `live_common.KeyboardState`(独立进程遥控用法保留,studio 内置键盘是首选) |
+| `autodrivedata/sim/live_common.py` | 新增 | 多槽 MJPEG(单端口 `/stream/<name>` + `/` 索引页)/ 拼图 / GT overlay / 环视 rig / 第三方视角 / `KeyboardState` / MapTR 懒加载 |
+| `autodrivedata/sim/live_studio.py` | 新增 | 9 槽 = 6 相机 + `BEV` + `THIRD_PERSON` + `grid`(拼图,当时是 4×2;2026-09-20 改**三层**且不缩像素,见 §P-L.6);`--keyboard` 折进 tick 循环 |
+| `autodrivedata/sim/view_stream.py` | 改 | 薄编排:共享件全部改走 `live_common`;新增 `--rig` |
+| `autodrivedata/sim/drive_ego.py` | 改 | 薄封装 `live_common.KeyboardState`(独立进程遥控用法保留,studio 内置键盘是首选) |
 
 **A 期验收(全部数值,不靠目检)**:
 
@@ -328,7 +328,7 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 - `outputs/maptr_600/map_infos.json` **逐帧查得**:帧 0-199 = legacy、帧 200-599 = official
   (600 帧轮是"重采 400 帧官方布局 + merge 旧 200 帧")⇒ `maptr_600.pt` 以 official 为主。
 - 引入时点:`SENSOR_MOUNTS` 与 108.6/−110.8 布局在 commit `38cfe90`(2026-09-16)引入,
-  **该 commit 未改 `bin/view_stream.py`** ⇒ 旧 rig 一直是 ep512 的正确口径。
+  **该 commit 未改 `autodrivedata/sim/view_stream.py`** ⇒ 旧 rig 一直是 ep512 的正确口径。
 
 **A/B 探针**(`bin/probe_rig_mount.py`,同一 ego 位姿同一 tick 帧,只变 rig):
 
@@ -355,7 +355,7 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 | 文件 | 动作 | 要点 |
 |---|---|---|
 | `autodrivedata/live_slam.py` | 新增(纯值) | `LiveSlam.push/snapshot`(链式约定逐字复用 `slam_odometry`)+ `map_in_ego_frame`/`traj_in_ego_frame`(LiDAR-0 系 → 当前 ego 系)+ **`SlamWorker`**(有界丢旧队列 + 帧间隙止损) |
-| `bin/live_studio.py` | 改 | `--slam` 挂语义 LiDAR → `SlamWorker`;BEV 槽画地图点(灰)+ 轨迹(青);HUD 显式报滞后;`--slam-report` 落验收 JSON;`finally` 先 join 再销毁 world |
+| `autodrivedata/sim/live_studio.py` | 改 | `--slam` 挂语义 LiDAR → `SlamWorker`;BEV 槽画地图点(灰)+ 轨迹(青);HUD 显式报滞后;`--slam-report` 落验收 JSON;`finally` 先 join 再销毁 world |
 | `autodrivedata/mapviz.py` | 改 | `bev_points`(散点,批量像素)/ `bev_trajectory`(只连窗内相邻点)/ `bev_window_mask`(窗口判据单一来源) |
 | `tests/test_live_slam.py` | 新增 | 26 passed:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ 滞后有界/止损/同步模式 |
 
@@ -445,7 +445,7 @@ ICP 0.15–0.35 s、零丢帧、滞后 0),代价 = 帧率 ~2.4 fps;`--slam-async
 **需求**:用户提交 GitHub 后问「现在怎么玩 Carla?可以输出八视角可视化的一段检测?」——
 即把 studio 的拼图槽逐帧编码成一段 mp4,而不是只留浏览器里的实时流。
 
-**实现**(`bin/live_studio.py`):`--video <path>` / `--video-fps` / `--video-tile`。
+**实现**(`autodrivedata/sim/live_studio.py`):`--video <path>` / `--video-fps` / `--video-tile`。
 
 - 编码器 **cv2(mp4v)**,惰性打开(**首帧到齐才开**,尺寸随 `--video-tile` 变,避免先猜尺寸);
   `vw.release()` 在 `finally` 里(与 worker 停止同一段,顺序:停 worker → 关编码器)。
@@ -498,12 +498,12 @@ studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全�
 
 **改动**:
 
-- `bin/live_common.py` 新增 **`compose_rows(rows, bg, center=True)`**:按行拼,**每格按自身原生像素
+- `autodrivedata/sim/live_common.py` 新增 **`compose_rows(rows, bg, center=True)`**:按行拼,**每格按自身原生像素
   原样摆**,行高 = 该行最高格、行宽 = 该行各格宽之和、整幅宽 = 最宽行、窄行居中。
 - `compose_grid` 加**永久回归守卫**:格尺寸不符直接 `ValueError`(措辞含"静默裁"与"改用
   compose_rows"),把这一类坑钉死不再静默复发。`view_stream.py --view grid6` 的调用不受影响
   (它的格子全是 `disp_w × disp_h`)。
-- `bin/live_studio.py` 新增布局常量 **`GRID_ROWS`**(**不沿用 `SURROUND_CAMS` 的字典序** ——
+- `autodrivedata/sim/live_studio.py` 新增布局常量 **`GRID_ROWS`**(**不沿用 `SURROUND_CAMS` 的字典序** ——
   那样第二行会变成"左后/右后"与地理直觉相反)+ `grid_rows()`(整行缺名则丢该行,`--dump` 的
   raw 拼图没有 BEV 时不留空行);tick 里改调 `compose_rows`。
 - 画布 **2484×374 → 3726×1170**(3×1242 宽;375+375+420 高)。`--video-tile` help 同步订正。
@@ -591,7 +591,7 @@ B = 采样 **torch** 栅格(FPN 特征图 / `grid_sample(align_corners=False)` /
 
 #### P-M.4 实时监看槽(`live_studio --calib`)+ CAM_BACK 平台边界
 
-`autodrivedata/calib_live.py`(纯值)+ `bin/live_studio.py --calib`:另挂 6 深度相机(同挂点/同内参/
+`autodrivedata/calib_live.py`(纯值)+ `autodrivedata/sim/live_studio.py --calib`:另挂 6 深度相机(同挂点/同内参/
 同分辨率,否则 overlay 无法逐像素对齐)+ `sensor.lidar.ray_cast` ⇒ LiDAR→世界系平面→投影回相机→
 按深度残差着色画进各相机槽;`draw_hud` **第二行**报 pooled |e| 与逐路样本数。离线探针与实时槽
 **共用同一套色带**(`calib_live.paint_residuals`)。
@@ -627,7 +627,7 @@ z 0.7818 ⇒ z≈1.556)高 **0.023 m** ⇒ 相当一部分画面被**自己的�
   (0.195 这个实测值必须判得出来)。
 
 **交付文件**:`autodrivedata/calib_live.py`(新)、`tests/test_calib_live.py`(新,51 用例)、
-`bin/live_studio.py`、`bin/live_common.py`(`build_surround_rig(kind=)` + `draw_hud(y=)`)、
+`autodrivedata/sim/live_studio.py`、`autodrivedata/sim/live_common.py`(`build_surround_rig(kind=)` + `draw_hud(y=)`)、
 `bin/probe_calib.py`。产物 `outputs/calib_check/{report.json,overlay.png,live.json}`。
 
 **回归测试(本次新增/扩展,三条锁)**:
@@ -701,7 +701,7 @@ z 0.7818 ⇒ z≈1.556)高 **0.023 m** ⇒ 相当一部分画面被**自己的�
 
 ⇒ 差值全部来自**手抄时的 4 位小数舍入**,不是另一套标定。**这一块可以不动**。
 
-##### P-M.7.2 ★ `bin/collect_nus.py`「声明位姿 ≠ 实际渲染位姿」— 新失效模式
+##### P-M.7.2 ★ `autodrivedata/sim/collect_nus.py`「声明位姿 ≠ 实际渲染位姿」— 新失效模式
 
 `collect_nus.py` **没被 §P-M 的修复扫到**(它既不 import `camera_rig`,也没在修复清单里):
 
@@ -722,7 +722,7 @@ z 0.7818 ⇒ z≈1.556)高 **0.023 m** ⇒ 相当一部分画面被**自己的�
 
 - **为什么比 §P-M.1 更危险**:§P-M.1 是「表错了」,这次是「**表对了、图错了**」——
   表看上去完全正确(A0 探针若只查表会全绿),错在**渲染**。二者都靠"图看着能出"通过目检。
-- **`bin/collect_surround.py` 是对照组(正确实现)**:line 46 import `NUS_CAMERA_RIG`、
+- **`autodrivedata/sim/collect_surround.py` 是对照组(正确实现)**:line 46 import `NUS_CAMERA_RIG`、
   line 117 逐相机 spawn `(mount, (pitch, yaw, roll))`、line 142 用**同一张表**写 `sensor2ego`
   ⇒ 不存在"布置与落盘两处维护"。**修 `collect_nus.py` 就照它抄。**
 
@@ -835,7 +835,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 
 1. **`NUS_CAMERA_CALIBS` 两份**:[autodrivedata/camera_rig.py](autodrivedata/camera_rig.py) 与
    [autodrivedata/export/nuscenes.py](autodrivedata/export/nuscenes.py) 各一份,**实测逐字节相等**,
-   但 `export/nuscenes.py` **不 import `camera_rig`**(`bin/collect_nus.py` 也不 import)
+   但 `export/nuscenes.py` **不 import `camera_rig`**(`autodrivedata/sim/collect_nus.py` 也不 import)
    ⇒ 单点来源在 §P-M 建立后**没被接上**,下次改官方表会静默分叉。
 2. **`camera_rig` 头注的四元数模长断言对本数据集为假**:头注写「官方四元数不是单位长度
    (模长 0.99994~1.00005),导出前必须归一化」。实测 mini 集 **120 条 `calibrated_sensor`
@@ -866,11 +866,11 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 
 | # | 改动 | 落点 |
 |---|---|---|
-| 1 | 相机 spawn 改走 `NUS_CAMERA_RIG`(挂点 + 6DoF 姿态),删 `CAM_YAW_OFFSET` | `bin/collect_nus.py:57,177-182` |
-| 2 | 相机蓝图 `fov` 逐通道(64.310/64.561/64.790/64.959/64.845/89.343) | `bin/collect_nus.py:65-69`(新增逐通道表) |
-| 3 | 雷达 spawn 偏航改官方(`−az_nus`):FRONT −0.20 / FRONT_LEFT −88.36 / FRONT_RIGHT +90.98 / BACK_LEFT −174.41 / BACK_RIGHT +176.11 | `bin/collect_nus.py:73-79` |
+| 1 | 相机 spawn 改走 `NUS_CAMERA_RIG`(挂点 + 6DoF 姿态),删 `CAM_YAW_OFFSET` | `autodrivedata/sim/collect_nus.py:57,177-182` |
+| 2 | 相机蓝图 `fov` 逐通道(64.310/64.561/64.790/64.959/64.845/89.343) | `autodrivedata/sim/collect_nus.py:65-69`(新增逐通道表) |
+| 3 | 雷达 spawn 偏航改官方(`−az_nus`):FRONT −0.20 / FRONT_LEFT −88.36 / FRONT_RIGHT +90.98 / BACK_LEFT −174.41 / BACK_RIGHT +176.11 | `autodrivedata/sim/collect_nus.py:73-79` |
 | 4 | `NUS_RADAR_OFFSETS` 的 yaw 改官方 n015 值(弧度) | `autodrivedata/export/nuscenes.py:65-71` |
-| 5 | LiDAR spawn 挂点改官方 `(0.9437, 0, 1.8402)` + 旋转 `(pitch −0.338, yaw +89.884, roll −1.388)`;`calib_lidar` 同步 | `bin/collect_nus.py:175,234-237` |
+| 5 | LiDAR spawn 挂点改官方 `(0.9437, 0, 1.8402)` + 旋转 `(pitch −0.338, yaw +89.884, roll −1.388)`;`calib_lidar` 同步 | `autodrivedata/sim/collect_nus.py:175,234-237` |
 | 6 | `camera_intrinsic` 换**逐通道官方 n015 K 表**,函数改名(去掉 `_fov90`) | `autodrivedata/export/nuscenes.py:147-156,296` |
 | 7 | `NUS_CAMERA_CALIBS` **去重**:`export/nuscenes.py` 改为 `from autodrivedata.camera_rig import NUS_CAMERA_CALIBS` | `autodrivedata/export/nuscenes.py:53-60` |
 | 8 | `camera_rig` 头注的四元数归因改成"手抄 4 位小数舍入"(官方原值 |q|=1.000000000000) | `autodrivedata/camera_rig.py:34` |
@@ -913,7 +913,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 
 落盘表 vs 官方(逐通道最大偏差):相机 `Δt ≤ 4.9e-05 m / Δq ≤ 5.0e-05`(仍是 §P-M.7.1 的
 **手抄 4 位小数**);**LiDAR 与 5 雷达 `Δt = Δq = 0.0`(逐位相同)** —— 因为它们的表是
-官方原值直接落盘,不经手抄。`bash bin/smoke_radar_collect.sh` 四判据全过(前雷达 x>0 占
+官方原值直接落盘,不经手抄。`bash autodrivedata/sim/smoke_radar_collect.sh` 四判据全过(前雷达 x>0 占
 1.00、左右雷达同侧 1.00、devkit `RadarPointCloud.from_file` 五通道可读、GT 关联 2/18 命中)。
 
 **★ 判据 ⑥ 的两个实测坑(写进 `verify_nus_calib` 的注释与回归测试)**:
@@ -944,8 +944,8 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 ```bash
 # 修后:六条判据的**唯一复现器**(离线 ③④⑤ + 在线 ①②⑥,落 outputs/nus_calib_check/report.json)
 PYTHONPATH=$PWD python bin/verify_nus_calib.py --offline --live
-PYTHONPATH=$PWD python bin/collect_nus.py --frames 2      # 重采(需 CARLA)
-bash bin/smoke_radar_collect.sh                           # devkit 直读四判据
+python -m autodrivedata.sim.collect_nus --frames 2      # 重采(需 CARLA)
+bash autodrivedata/sim/smoke_radar_collect.sh                           # devkit 直读四判据
 ```
 
 > **`/tmp/audit_*.py` 三个审计脚本已随重启消失**(它们是修前一次性对账用的)。数字全部
@@ -1015,9 +1015,9 @@ bash bin/smoke_radar_collect.sh                           # devkit 直读四判�
    而 [bin/viz_calib_check.py](bin/viz_calib_check.py) 绘制时硬写 `ImageFont.truetype(DejaVuSans-Bold)`;
 2. **PIL 没有字体回退链** —— `ImageDraw.text()` 只吃单个 `font` 对象(Pillow 12.3.0 无
    `font_chain`/`font_stack`)。**不传 `font=` 就用内置位图字体**,同样整行豆腐、而且只有 ~11 px。
-   [bin/live_common.py](bin/live_common.py)(HUD/拼图标签,**4 处**)、[autodrivedata/mapviz.py](autodrivedata/mapviz.py)、
-   [bin/probe_calib.py](bin/probe_calib.py)、[bin/carla_common.py](bin/carla_common.py)、
-   [bin/collect_static_gt.py](bin/collect_static_gt.py) 原本全属这一类。**"修了 DejaVu 就完事"是错的。**
+   [autodrivedata/sim/live_common.py](autodrivedata/sim/live_common.py)(HUD/拼图标签,**4 处**)、[autodrivedata/mapviz.py](autodrivedata/mapviz.py)、
+   [bin/probe_calib.py](bin/probe_calib.py)、[autodrivedata/sim/carla_common.py](autodrivedata/sim/carla_common.py)、
+   [autodrivedata/sim/collect_static_gt.py](autodrivedata/sim/collect_static_gt.py) 原本全属这一类。**"修了 DejaVu 就完事"是错的。**
 
 **判据(全数值,不目检,不依赖非本项目依赖)**:新建 [autodrivedata/fonts.py](autodrivedata/fonts.py)
 用**渲染探针**判"这个字体能不能画中文":
@@ -1268,7 +1268,7 @@ wide 后三路 x 的 CARLA 口径与 nus 口径**两处都钉**)、`tests/test_e
 (`ego_pose.rotation` 走 6DoF,不再经 `yaw_to_quat` 拍平)。相关单测 170 用例全过。
 
 **数据处置**:`outputs/nus_mini` 与 `outputs/nus_mini_wide` **已重采覆盖**(旧版是"表对了、原点错了",
-与 §P-M.7 同类:只能重采,不修补);`bash bin/smoke_radar_collect.sh` 四判据全过。
+与 §P-M.7 同类:只能重采,不修补);`bash autodrivedata/sim/smoke_radar_collect.sh` 四判据全过。
 **改动未提交,待用户手动 `git commit`**。
 
 #### P-M.11 ★ 标定口径**冻结**(2026-09-23 用户裁决:「以后就按照这样进行」)
@@ -1560,7 +1560,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
 
 **交付**:CARLA 采集 → HiVT(TemporalData)→ 训练 → 评估的闭环,补 §5.14a 缺口表"预测"能力面。
 
-- `bin/collect_traj.py`(每 tick 重发定速,修旧 Town10 后半程停车 bug)+ `bin/assemble_traj_pt.py`
+- `autodrivedata/sim/collect_traj.py`(每 tick 重发定速,修旧 Town10 后半程停车 bug)+ `bin/assemble_traj_pt.py`
   (xodr centerline lane 切段,50 帧滑窗)+ `bin/convert_hivt_pt.py`(dict → TemporalData,edge_index + agent 朝向)
 - **数据**:train = Town10 250 场景(4 agents,ego 8m/s 直线);val = Town10 211 场景(同图时间外推)
   - **跨图泛化(Town13)因旧 val 数据静止分布弃用**(ego 3s 位移 2.6m vs train 20m,近零目标压制运动;
@@ -1594,10 +1594,10 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
   - 实测:small(0.1rad/0.1m)**converged**(overlap 0.991、iter 5、恢复 t 0.15m/r 5.7°);
     large(1.2rad/2m)**not_converged**(overlap 仍 0.991,recovered t 10.26m/r 68.8° 被 plausible 否决)
     → RMSE 对平面场景天然低,overlap+合理性双闸分开真伪标定;`outputs/multilidar/icp_result.json`
-- **P-F 双目测距**(教程 09):`bin/collect_stereo.py`(基线 0.4m,y 轴 ±0.2m)+ `autodrivedata/stereo.py`
+- **P-F 双目测距**(教程 09):`autodrivedata/sim/collect_stereo.py`(基线 0.4m,y 轴 ±0.2m)+ `autodrivedata/stereo.py`
   (z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 reprojection_loss)
   - 实测:定速 5.98 m/s(逐帧自证);SGM 近物点云 z≈5.5m ↔ GT 深度同值;`outputs/stereo/`(40 帧)
-- **P-G 3DGS 重建**(教程 16,链路验证):`bin/collect_3dgs.py`(360° 环绕采集,spectator 归位修复)+
+- **P-G 3DGS 重建**(教程 16,链路验证):`autodrivedata/sim/collect_3dgs.py`(360° 环绕采集,spectator 归位修复)+
   `bin/train_3dgs_mini.py`(gsplat mini);位姿用 CARLA 真值(SfM 退化 5.7m/79.6°);psnr_all **17.9**/val 13.56
   - **调优(多俯仰,2026-09-18)**:采集 `--pitches "0,-15,-30"`(落盘分 pitch 目录
     images/p{p}/ + poses_{p}.json + pitches.json,位姿几何仍 collect_rig.ring_cam_pose);
@@ -1610,7 +1610,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
 - **累积建图 + 地面 + 聚类**(教程 11/12/13):`autodrivedata/accum.py` / `ground.py` / `cluster.py`
   + 对应 bin;150 帧产物齐全,聚类均值 117.97 簇/帧
 - **采集器纯函数下沉**(2026-09-18):`autodrivedata/collect_rig.py`(ring_cam_pose 环绕位姿 +
-  stereo_rig_offsets 双目挂点;零 carla,AST 纪律守护)→ bin/collect_3dgs.py / collect_stereo.py 改用,
+  stereo_rig_offsets 双目挂点;零 carla,AST 纪律守护)→ autodrivedata/sim/collect_3dgs.py / collect_stereo.py 改用,
   剩纯 carla 编排;回归测试先例 tests/test_collect_rig.py(手算锚点 8 passed)
 - **结论**:教程能力批量落地完成,7/16 能力达到"链路通+数值如实"(缺 14 FAST-LIO2 外部 ROS 栈);
   P-G 3DGS 调优(多俯仰采集 + --scale/--iters,见上)与 P-D 生产口径评估已完成

@@ -1,9 +1,9 @@
 """环视相机 rig 的**唯一来源**:官方 nuScenes 6 相机标定 → CARLA 采集口径。
 
-**为什么单独成模块(不留在 `bin/collect_surround.py`)**:同一张表有三个消费面 ——
+**为什么单独成模块(不留在 `autodrivedata/sim/collect_surround.py`)**:同一张表有三个消费面 ——
 采集器(spawn)、实时可视化(`live_common.rig_spec`)、导出器(`export/nuscenes`)。
 此前 `SURROUND_CAMS`(bin)与 `NUS_CAMERA_CALIBS`(autodrivedata)各写一份,两者
-**对不上**(见下),而 `bin/collect_surround_micro.py` 还抄了第三份。单一来源消除这个面。
+**对不上**(见下),而 `autodrivedata/sim/collect_surround_micro.py` 还抄了第三份。单一来源消除这个面。
 
 ## 两张表的关系(踩坑记录)
 

@@ -1,7 +1,7 @@
 """M1a 静态采集:ego 静止 + 摆 NPC + 相机/LiDAR 同步模式 → KITTI root 落盘(raw + GT)。
 
 用法(base env,CARLA 服务器运行中):
-  python bin/collect_kitti.py [--out outputs/kitti_scene] [--frames 10] [--host 127.0.0.1]
+  python -m autodrivedata.sim.collect_kitti [--out outputs/kitti_scene] [--frames 10] [--host 127.0.0.1]
 
 落盘布局照 auto3dlabel KittiFrame 契约(验收时 KITTI_OBJECT_ROOT=--out 零改动读入):
   {out}/training/{image_2,velodyne,calib,label_2}/000000.*
@@ -16,7 +16,6 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import CAM_ATTRS, LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, spawn_npcs, sync_mode
 
 from autodrivedata import geometry as g
 from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
@@ -24,6 +23,16 @@ from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
 from autodrivedata.paths import project_path
 from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.carla_common import (
+    CAM_ATTRS,
+    LIDAR_ATTRS,
+    SENSOR_OFFSET,
+    loc,
+    rad,
+    spawn_ego,
+    spawn_npcs,
+    sync_mode,
+)
 
 
 def main() -> None:

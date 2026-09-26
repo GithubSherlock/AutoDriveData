@@ -25,12 +25,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # 会把文字画到画面上的模块(新增绘制脚本请加进来)
 DRAWING_MODULES: tuple[str, ...] = (
-    "bin/live_common.py",
-    "bin/live_studio.py",
+    "autodrivedata/sim/live_common.py",
+    "autodrivedata/sim/live_studio.py",
     "bin/viz_calib_check.py",
     "bin/probe_calib.py",
-    "bin/carla_common.py",
-    "bin/collect_static_gt.py",
+    "autodrivedata/sim/carla_common.py",
+    "autodrivedata/sim/collect_static_gt.py",
     "autodrivedata/mapviz.py",
     "autodrivedata/calib_live.py",
 )

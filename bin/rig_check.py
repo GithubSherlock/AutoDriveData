@@ -29,13 +29,13 @@ from typing import Any, cast
 
 import carla
 import numpy as np
-from carla_common import loc, rad
-from live_common import rig_spec
 from probe_calib import CONE_DIST_M, CONE_Z_OFF_M, MIN_MASK_PX, decode_instance, place_cone_along
 
 from autodrivedata.calib import CameraIntrinsics, world_to_img
 from autodrivedata.camera_rig import coverage_table
 from autodrivedata.export.nuscenes import camera_fov, camera_k
+from autodrivedata.sim.carla_common import loc, rad
+from autodrivedata.sim.live_common import rig_spec
 
 # 与 nuScenes 落盘口径一致的分辨率(判据里的像素占比才有意义)
 CAM_W, CAM_H = 1600, 900

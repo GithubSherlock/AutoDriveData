@@ -3,7 +3,7 @@
 一路 = 一个 `/stream/<name>`(`CAM_FRONT` / `CAM_FRONT_LEFT` / `CAM_FRONT_RIGHT` /
 `CAM_BACK` / `CAM_BACK_LEFT` / `CAM_BACK_RIGHT` / `BEV` / `THIRD_PERSON`),另有 `/`
 索引页(8 个 `<img>` 网格)与 `grid` 拼图槽(**三层**拼成一张,只开一个隧道时用)。
-多路服务/拼图/rig/GT overlay/键盘全部来自 `bin/live_common.py`(与 `view_stream.py` 共用
+多路服务/拼图/rig/GT overlay/键盘全部来自 `autodrivedata/sim/live_common.py`(与 `view_stream.py` 共用
 同一实现,避免两处漂移)。
 
 **拼图三层(用户口径 2026-09-20)**:① 左前/前/右前 ② 右后/后/左后 ③ 第三方 + BEV。
@@ -36,7 +36,7 @@
 `--slam-async` 才起线程(留作对照/将来把 overlay 挪出主线程时用)。两条路径共用同一套
 **滞后止损**:帧号差超 `--slam-max-gap` 时那一帧不做 ICP,直接恒速外推(见 `SlamWorker`)。
 
-- LiDAR(`sensor.lidar.ray_cast_semantic`,口径同 `bin/collect_slam.py`)→ `offer`;
+- LiDAR(`sensor.lidar.ray_cast_semantic`,口径同 `autodrivedata/sim/collect_slam.py`)→ `offer`;
 - 跨线程只传**点云拷贝 + t_stamp + ego 世界位姿拷贝**;回来只读 `snapshot()`;
 - HUD **显式报滞后** `SLAM 滞后 N 帧 / X s`(N = 已 tick 帧号 − 已处理帧号)。**滞后无界
   增长 = 明确故障**:超 `--slam-lag-warn` 帧时 HUD 转红并在周期报告里打印告警,不装作"在跑";
@@ -68,14 +68,14 @@ BEV 槽 = SLAM 地图点(浅灰)+ 轨迹(青)+ 可选 MapTR 预测(品红)。在
   (场景自带绿/黄与着色带撞色,数绝对颜色会误判)。
 
 用法(CARLA 服务器运行中):
-  python bin/live_studio.py                          # 8 路 + 键盘(tty)
-  python bin/live_studio.py --speed 8 --npcs         # 定速直行(键盘自动关闭)
-  python bin/live_studio.py --scene rain_night       # 天气档
-  python bin/live_studio.py --calib --speed 8 --duration 30 --calib-report outputs/calib_check/live.json
-  python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt   # BEV 槽出感知结果
-  python bin/live_studio.py --slam --speed 8 --duration 90        # 在线 SLAM + 验收报告
+  python -m autodrivedata.sim.live_studio                          # 8 路 + 键盘(tty)
+  python -m autodrivedata.sim.live_studio --speed 8 --npcs         # 定速直行(键盘自动关闭)
+  python -m autodrivedata.sim.live_studio --scene rain_night       # 天气档
+  python -m autodrivedata.sim.live_studio --calib --speed 8 --duration 30 --calib-report outputs/calib_check/live.json
+  python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt   # BEV 槽出感知结果
+  python -m autodrivedata.sim.live_studio --slam --speed 8 --duration 90        # 在线 SLAM + 验收报告
   # 落一段八视角视频(拼图槽逐帧写 mp4;--video-fps 调到接近实际采集 fps 才是实时播放)
-  python bin/live_studio.py --slam --maptr-ckpt outputs/maptr_ep512.pt --npcs \
+  python -m autodrivedata.sim.live_studio --slam --maptr-ckpt outputs/maptr_ep512.pt --npcs \
     --speed 8 --duration 40 --video outputs/videos/studio_8view.mp4 --video-fps 3
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
@@ -95,7 +95,16 @@ from typing import Any, cast
 
 import carla
 import numpy as np
-from carla_common import (
+from PIL import Image, ImageDraw
+
+from autodrivedata import calib_live as cl
+from autodrivedata import calib_probe
+from autodrivedata.depth_codec import decode_depth
+from autodrivedata.live_slam import LiveSlam, SlamWorker
+from autodrivedata.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
+from autodrivedata.paths import project_path
+from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
     SENSOR_OFFSET,
     draw_traffic_lights,
@@ -106,8 +115,8 @@ from carla_common import (
     sync_mode,
     traffic_light_frame,
 )
-from collect_slam import ego_pose_matrix
-from live_common import (
+from autodrivedata.sim.collect_slam import ego_pose_matrix
+from autodrivedata.sim.live_common import (
     FrameSlot,
     KeyboardState,
     actor_box,
@@ -132,16 +141,7 @@ from live_common import (
     start_server,
     surround_calibs,
 )
-from PIL import Image, ImageDraw
-
-from autodrivedata import calib_live as cl
-from autodrivedata import calib_probe
-from autodrivedata.depth_codec import decode_depth
-from autodrivedata.live_slam import LiveSlam, SlamWorker
-from autodrivedata.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
-from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, merged_weather
-from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.scenarios import SCENES, merged_weather
 from autodrivedata.slam import DOWNSAMPLE_VOXEL, ICP_MAX_ITER
 
 try:  # opencv 只在 `--video` 时需要(与 stereo.py 同一处口径:可选依赖不挡主流程)

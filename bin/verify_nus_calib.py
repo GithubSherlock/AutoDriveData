@@ -354,7 +354,7 @@ def _radar_carla_spec() -> tuple[
     不成立(§P-M.7 的失效模式)。`collect_nus` 顶层 `import carla`,故本函数内延迟导入
     (模块要能在无 CARLA 的 `--offline` 模式下 import)。
     """
-    import collect_nus
+    from autodrivedata.sim import collect_nus
 
     mounts = {ch: collect_nus.NUS_RADAR_MOUNTS_CARLA[ch] for ch in NUS_RADAR_CHANNELS}
     rots = {ch: (0.0, collect_nus.RADAR_YAW_OFFSET[ch], 0.0) for ch in NUS_RADAR_CHANNELS}
@@ -538,10 +538,11 @@ def world_pose_chain(
 
 def run_live(host: str, port: int) -> dict[str, Any]:
     import carla
-    import collect_nus
     import probe_calib as pc
-    from carla_common import spawn_ego, sync_mode
-    from live_common import mount_deviation_of, rig_spec
+
+    from autodrivedata.sim import collect_nus
+    from autodrivedata.sim.carla_common import spawn_ego, sync_mode
+    from autodrivedata.sim.live_common import mount_deviation_of, rig_spec
 
     client = carla.Client(host, port)
     client.set_timeout(30.0)
@@ -716,7 +717,8 @@ def _rendered_fov(world, ego, pc) -> dict[str, Any]:
     `reason`,**不硬给一个凑合的数**。
     """
     import carla
-    from carla_common import loc, rad
+
+    from autodrivedata.sim.carla_common import loc, rad
 
     def drain() -> dict[str, bytes]:
         """tick 一次 + **抽干全部队列**,返回逐相机当前帧(不抽干就会积压陈旧帧)。"""

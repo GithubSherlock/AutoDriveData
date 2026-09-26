@@ -1,6 +1,6 @@
 """P-G 3DGS mini 训练:CARLA 360° 环绕采集 → Gaussian Splatting → outputs/3dgs/。
 
-输入:`outputs/3dgs/capture/`(bin/collect_3dgs.py 产物:多俯仰采集,每 pitch 一圈)。
+输入:`outputs/3dgs/capture/`(autodrivedata/sim/collect_3dgs.py 产物:多俯仰采集,每 pitch 一圈)。
   - 采集现按 pitch 分目录 images/p{p}/{i}.png + poses_{p}.json(见 pitches.json 枚举);
     本脚本跨 pitch 平铺(全局序号 = p_idx × frames_per_pitch + i),位姿仍用 CARLA 真值
     (定位降级:pycolmap SfM 对齐误差 ~5.7m,见 outputs/3dgs/sfm_eval.json)。

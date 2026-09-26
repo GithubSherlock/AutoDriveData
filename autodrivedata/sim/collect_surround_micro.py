@@ -1,7 +1,7 @@
 """B1 微采样:官方布局 tiny 段(10 帧)→ 与已采旧布局做「布局对照」微实验。
 
 用法(CARLA 服务器运行中):
-  python bin/collect_surround_micro.py --out outputs/surround_micro --frames 10 \
+  python -m autodrivedata.sim.collect_surround_micro --out outputs/surround_micro --frames 10 \
       --cam-back nuscenes --seed <seed>
 
 默认不 spawn NPC(纯道路 + 地图矢量 overlay 对照,不受车流变量污染);
@@ -24,11 +24,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import carla
-from carla_common import CAM_ATTRS, loc, sync_mode
 
 from autodrivedata.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.mapviz import calib_from_fov
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import CAM_ATTRS, loc, sync_mode
 
 # 官方布局:真值在 `autodrivedata/camera_rig.py`(6DoF,含 pitch/roll)
 NUSCENES_RIG = NUS_CAMERA_RIG
@@ -86,7 +86,7 @@ def main() -> None:
 
     if args.npc:
         # 轻量 NPC(复用 spawn_npcs 飞船级配置不想引)
-        from carla_common import spawn_npcs
+        from autodrivedata.sim.carla_common import spawn_npcs
 
         t = ego.get_transform()
         spawn_npcs(world, t)

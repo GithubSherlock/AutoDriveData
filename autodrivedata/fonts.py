@@ -10,7 +10,7 @@
    (`fc-list` 查不到任何中文字体),而绘制代码直接 `ImageFont.truetype(DejaVuSans-Bold)`;
 2. **PIL 没有字体回退链** —— `ImageDraw.text()` 只吃单个 `font` 对象(Pillow 12.3.0
    无 `font_chain`/`font_stack`)。**不传 `font=` 就用内置位图字体**,同样整行豆腐,
-   而且只有 ~11 px。[bin/live_common.py](../bin/live_common.py) 的 HUD、
+   而且只有 ~11 px。[autodrivedata/sim/live_common.py](../autodrivedata/sim/live_common.py) 的 HUD、
    [mapviz.py](mapviz.py) 的面板标题、[bin/probe_calib.py](../bin/probe_calib.py)
    的标签原本全属这一类。
 

@@ -37,7 +37,7 @@ OpenDRIVE 解析 → 矢量 GT 提取 → 环视采集/组装/投影验收 → *
 
 ### 8 路实时 studio + 在线 SLAM
 
-`bin/live_studio.py` 单端口多槽 MJPEG:6 相机 + BEV + 第三方视角 + 拼图,浏览器直接看采集链所见画面(真 UE 渲染 + GT 框/灯色 overlay,不依赖 carlaviz/RViz2)。
+`autodrivedata/sim/live_studio.py` 单端口多槽 MJPEG:6 相机 + BEV + 第三方视角 + 拼图,浏览器直接看采集链所见画面(真 UE 渲染 + GT 框/灯色 overlay,不依赖 carlaviz/RViz2)。
 
 - `--keyboard` WASD 操控(折进 tick 循环)、`--slam` 在线语义 LiDAR SLAM、`--maptr-ckpt` 实时 MapTR overlay、`--video` 落八视角视频段
 - **在线 SLAM 验收**:400 帧在线 vs 离线链式位姿逐元素差 **0.0**,ATE **0.18768 m**;滞后口径 = 已 tick 帧号 − 已处理帧号
@@ -60,16 +60,16 @@ OpenDRIVE 解析 → 矢量 GT 提取 → 环视采集/组装/投影验收 → *
 bash tools/carla_server.sh
 
 # 2. 场景采集(KITTI root:image_2 + label_2 GT + velodyne + calib)
-python bin/collect_drive.py --scene rain_night --frames 70
-python bin/collect_ab_route.py --scene sunset_glare --frames 70   # P1 A/B 专用:锚定起点 + 静置车布局
+python -m autodrivedata.sim.collect_drive --scene rain_night --frames 70
+python -m autodrivedata.sim.collect_ab_route --scene sunset_glare --frames 70   # P1 A/B 专用:锚定起点 + 静置车布局
 
 # 3. 静态 GT / 灯色动态 GT
-python bin/collect_static_gt.py --frames 40
-python bin/collect_tl_states.py --frames 90 --speed 8 --cycle 6,2,6   # 受控切灯 = 确定性变灯序列
+python -m autodrivedata.sim.collect_static_gt --frames 40
+python -m autodrivedata.sim.collect_tl_states --frames 90 --speed 8 --cycle 6,2,6   # 受控切灯 = 确定性变灯序列
 
 # 4. 8 路实时 studio(浏览器需本地 ssh -L 8080:127.0.0.1:8080 <host>)
-python bin/live_studio.py --speed 8 --npcs
-python bin/live_studio.py --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8
+python -m autodrivedata.sim.live_studio --speed 8 --npcs
+python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8
 
 # 5. 评估:2D A/B + 失效归因
 python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare

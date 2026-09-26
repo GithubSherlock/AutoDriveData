@@ -18,8 +18,6 @@ FoV 缩小得都看不到地面了"。数值判据(当时实测):拼图格与「
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,12 +25,8 @@ from PIL import Image
 
 pytest.importorskip("carla")
 
-BIN = Path(__file__).resolve().parents[1] / "bin"
-if str(BIN) not in sys.path:  # bin/ 不是包(采集/可视化脚本),按脚本目录加路径
-    sys.path.insert(0, str(BIN))
-
-# `bin/` 不是包,静态分析跟不到上面那句运行时 `sys.path.insert` → 就地标注,不改全局 pyright 配置
-from live_common import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+# 搬进包后不再需要 sys.path hack(这正是「tests/ 与 bin/ 必须一起搬」买到的东西)
+from autodrivedata.sim.live_common import (  # noqa: E402
     TILE_LABEL_BOTTOM,
     compose_grid,
     compose_rows,
@@ -142,7 +136,7 @@ class TestStudioGridRows:
     """studio 的三层布局口径(名 → 行序)与用户要求一致。"""
 
     def test_row_order_matches_user_spec(self):
-        import live_studio  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_studio
 
         assert live_studio.GRID_ROWS == (
             ("CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"),
@@ -152,14 +146,14 @@ class TestStudioGridRows:
 
     def test_missing_names_are_skipped(self):
         """`--dump` 的 raw 拼图没有 BEV:整行缺了就丢行,不留空行。"""
-        import live_studio  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_studio
 
         t = _solid(4, 4, (0, 0, 0))
         rows = live_studio.grid_rows({"CAM_FRONT": t, live_studio.SPECTATOR_NAME: t})
         assert rows == [[("CAM_FRONT", t)], [(live_studio.SPECTATOR_NAME, t)]]
 
     def test_grid_rows_builds_three_rows_with_full_name_set(self):
-        import live_studio  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_studio
 
         names = [
             "CAM_FRONT",
@@ -186,9 +180,8 @@ class TestRigSpec:
     """
 
     def test_nuscenes_spec_is_the_camera_rig_table(self):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
-
         from autodrivedata.camera_rig import NUS_CAMERA_RIG
+        from autodrivedata.sim import live_common as lc
 
         mounts, rots = lc.rig_spec(lc.RIG_NUSCENES)
         assert {n: mounts[n] for n in NUS_CAMERA_RIG} == {n: v[0] for n, v in NUS_CAMERA_RIG.items()}
@@ -201,7 +194,7 @@ class TestRigSpec:
         后侧两台只差 **14–16°**(legacy 的 `180±55` 恰好落在官方 `±108.6/110.8` 附近)——
         所以"差得多不多"不是判据,**挂点是否逐相机 + 有无 pitch/roll** 才是。
         """
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         leg_mounts, leg_rots = lc.rig_spec(lc.RIG_LEGACY)
         nus_mounts, nus_rots = lc.rig_spec(lc.RIG_NUSCENES)
@@ -224,7 +217,7 @@ class TestRigSpec:
         assert any(r[0] != 0.0 or r[2] != 0.0 for r in nus_rots.values())
 
     def test_auto_picks_legacy_for_legacy_ckpts(self):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         for tag in lc.LEGACY_CKPTS:
             assert lc.resolve_rig("auto", f"outputs/{tag}.pt") == lc.RIG_LEGACY
@@ -233,7 +226,7 @@ class TestRigSpec:
 
     def test_explicit_choice_is_not_overridden(self):
         """显式给 rig 时不猜 —— 否则"我明明指定了 legacy"会被文件名静默改掉。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         assert lc.resolve_rig(lc.RIG_LEGACY, "outputs/maptr_9999.pt") == lc.RIG_LEGACY
         assert lc.resolve_rig(lc.RIG_NUSCENES, "outputs/maptr_ep512.pt") == lc.RIG_NUSCENES
@@ -281,7 +274,7 @@ class TestRigMountDeviation:
 
     @staticmethod
     def _cams_and_ego(rig: str, ego_xy: tuple[float, float], order: str = "correct"):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         mounts, rots = lc.rig_spec(rig)
         ego_m = _pose((ego_xy[0], ego_xy[1], 0.0), (0.0, 0.0, 0.0))
@@ -293,7 +286,7 @@ class TestRigMountDeviation:
         return cams, _FakeActor(ego_m)
 
     def test_zero_deviation_when_rig_matches(self):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         cams, ego = self._cams_and_ego(lc.RIG_NUSCENES, (100.0, -50.0))
         dev_t, dev_y = lc.rig_mount_deviation(cams, ego, lc.RIG_NUSCENES)
@@ -301,7 +294,7 @@ class TestRigMountDeviation:
 
     def test_wrong_matrix_order_shows_in_translation_not_yaw(self):
         """**核心判据**:顺序写反 ⇒ 平移爆掉(≈ ego 到原点的距离)、偏航仍 ~0。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         cams, ego = self._cams_and_ego(lc.RIG_NUSCENES, (100.0, -50.0), order="wrong")
         dev_t, dev_y = lc.rig_mount_deviation(cams, ego, lc.RIG_NUSCENES)
@@ -310,7 +303,7 @@ class TestRigMountDeviation:
 
     def test_deviation_grows_with_distance_from_origin(self):
         """同一份错顺序,ego 离原点越远偏差越大(故不能用"绝对值小"当判据)。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         near = lc.rig_mount_deviation(
             *self._cams_and_ego(lc.RIG_NUSCENES, (1.0, 0.0), "wrong"), lc.RIG_NUSCENES
@@ -322,7 +315,7 @@ class TestRigMountDeviation:
 
     def test_catches_a_mirrored_rig(self):
         """把 legacy 的实挂位姿拿去对 nuscenes 规格 ⇒ 必须报出大偏差(镜像 rig 的判据形式)。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         cams, ego = self._cams_and_ego(lc.RIG_LEGACY, (0.0, 0.0))
         dev_t, dev_y = lc.rig_mount_deviation(cams, ego, lc.RIG_NUSCENES)
@@ -331,7 +324,7 @@ class TestRigMountDeviation:
 
     def test_stale_zero_transforms_are_not_silently_zero_deviation(self):
         """tick 前 `get_transform()` 返回全 0(陈旧值)⇒ 必须**报出偏差**,不能判成"通过"。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         ego = _FakeActor(_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)))
         cams = {n: (_FakeActor(np.zeros((4, 4))), None) for n in lc.rig_spec(lc.RIG_NUSCENES)[0]}
@@ -344,7 +337,7 @@ class TestDrawHudSecondLine:
     """`draw_hud(..., y=)` 的第二行:`--calib` 槽靠它叠 HUD,不能把第一行覆盖掉。"""
 
     def test_second_line_leaves_first_line_intact(self):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         img = _solid(240, 40, (0, 0, 0))
         lc.draw_hud(img, "first", warn=False)
@@ -355,7 +348,7 @@ class TestDrawHudSecondLine:
 
     def test_default_y_is_the_first_line(self):
         """不传 y 必须与旧行为逐像素一致(不然所有既有调用点的外观都会变)。"""
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         a, b = _solid(240, 40, (0, 0, 0)), _solid(240, 40, (0, 0, 0))
         lc.draw_hud(a, "same text")
@@ -363,7 +356,7 @@ class TestDrawHudSecondLine:
         assert np.array_equal(np.asarray(a), np.asarray(b))
 
     def test_warn_flag_changes_color(self):
-        import live_common as lc  # pyright: ignore[reportMissingImports]
+        from autodrivedata.sim import live_common as lc
 
         a, b = _solid(240, 40, (0, 0, 0)), _solid(240, 40, (0, 0, 0))
         lc.draw_hud(a, "x")

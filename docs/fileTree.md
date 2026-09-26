@@ -1,5 +1,17 @@
 # 文件树:AutoDriveData 仓库结构与文件职责
 
+> ## ⚠️ 目录重构进行中(2026-09-26 起)
+>
+> 本文件正在随一次**分阶段的目录重构**同步。**目标结构与权威计划见
+> [Plan_fileTree.md](../Plan_fileTree.md)**;本文档是「现状索引」,两者冲突时以 Plan_fileTree 为准。
+>
+> 已完成:`bin/` 的 CARLA 层已迁入 **`autodrivedata/sim/`**(22 模块 + `smoke_radar_collect.sh`),
+> 对应测试迁入 `autodrivedata/tests/sim/`。命令形式随之从 `python bin/x.py` 改为
+> **`python -m autodrivedata.sim.x`**。
+>
+> **本文档的目录表尚未逐行重排**(排在重构的收尾阶段)——下面涉及 `bin/` 的各表可能仍列着已迁走的条目,
+> **以磁盘为准**。全部阶段完成后会按新树重写 §1–§5。
+
 > **本文档的用处**:仓库的**文件级索引**——"某个文件是干什么的、该改哪、产物落在哪"。
 > 定位是**导航**,不是事实源:方案定案看 [Plan.md](../Plan.md),新计划/待办看 [Plan2.md](../Plan2.md),
 > 里程碑看 [milestone.md](milestone.md) / [milestone2.md](milestone2.md),AI 协作纪律看 [CLAUDE.md](../CLAUDE.md)。
@@ -28,7 +40,8 @@ AutoDriveData/
 ├── .envrc                       # direnv:进目录自动激活 autodrivedata env(首次需 `direnv allow`)
 ├── .gitignore                   # 排除权重/产物/图像/本地配置(见各条【未入库】)
 │
-├── autodrivedata/               # ★ 纯值库:不 import carla,任何 env 可单测
+├── autodrivedata/               # ★ 主包。**按目录分层**:包根=纯值(36 模块,不 import carla);
+│                                #   `sim/`=CARLA 仿真交互层(22 模块,import carla)
 ├── maptr_impl/                  # ★ MapTR 参考自实现(torch2.x 现代栈)
 ├── maptr_official/              #   官方 MapTR/MapQR 项目侧胶水(仅适配器与配置)
 ├── bin/                         # ★ 可执行入口:采集 / 评估 / 可视化 / 探针(依赖 pycarla)
@@ -47,10 +60,14 @@ AutoDriveData/
 └── .vscode/ .claude/ .pytest_cache/ .ruff_cache/ .ipynb_checkpoints/   # 【未入库】本地工具配置与缓存
 ```
 
-**依赖方向(硬纪律)**:`bin/` → `autodrivedata/` / `maptr_impl/`;`autodrivedata/` **绝不 import carla**;
-项目整体 → AutoLabel(3D 检测消费方)单向,**禁止反向**。
+**依赖方向(硬纪律)**:`bin/` → `autodrivedata/` / `maptr_impl/`;项目整体 → AutoLabel(3D 检测消费方)单向,**禁止反向**。
 
-## 2 `autodrivedata/` — 纯值库(不 import carla)
+**「谁允许 import 什么」由 [tests/test_layer_guard.py](../tests/test_layer_guard.py) 的 `LAYER_RULES` 机械强制**
+(**按目录**声明,不是一条全局禁令):包根 / `utils` / `gt` / `slam` / `export` 禁 carla+torch;
+`calib` 许 carla 禁 torch;`sim` / `map` / `perception` 等按各自需要放开。
+马甲库(`ultralytics` / `mmdet3d` / `mmcv` / `lightning` —— import 即拉起 torch)与字面量动态导入同样在守。
+
+## 2 `autodrivedata/` — 按目录分层的主包
 
 | 文件 | 职责 |
 |---|---|

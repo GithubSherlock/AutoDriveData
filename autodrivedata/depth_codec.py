@@ -1,6 +1,6 @@
 """CARLA 深度相机编解码(纯值,不 import carla)。
 
-**单一来源**:此前 `bin/collect_stereo.py:38` 与 `bin/collect_3dgs.py:44` 各有一份逐字
+**单一来源**:此前 `autodrivedata/sim/collect_stereo.py:38` 与 `autodrivedata/sim/collect_3dgs.py:44` 各有一份逐字
 重复的实现(公式相同、注释各自有误),本模块合并它们。
 
 CARLA `sensor.camera.depth` 的编码:BGRA 四通道,深度值以 24 bit 定点的**归一化**
@@ -12,7 +12,7 @@ CARLA 的 BGRA 布局里 `arr[:, :, 0]` 是 **B**(高位,×65536)、`[:, :, 1]` 
 `[:, :, 2]` 是 **R**(低位)。实测锚点:`B=255` 其余 0 → **996.09 m**(近满量程)、
 `R=255` 其余 0 → **0.0152 m**(近 0)—— 见 `tests/test_depth_codec.py`。
 
-⚠️ 两处旧注释都写错了(`bin/collect_stereo.py:39` 写 `B + G·256 + R·256²`,
+⚠️ 两处旧注释都写错了(`autodrivedata/sim/collect_stereo.py:39` 写 `B + G·256 + R·256²`,
 其行 13 又写 `/255`),而**代码是对的**;本模块以代码 + 上述实测锚点为准。
 
 **深度语义 = 光轴 z 深度**(不是射线距离):`bin/train_3dgs_mini.py:122` 反投影时把

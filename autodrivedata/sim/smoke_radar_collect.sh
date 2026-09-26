@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 OUT="${1:-outputs/nus_mini}"
 PY=/root/autodl-tmp/envs/autodrivedata/bin/python
-$PY bin/collect_nus.py --out "$OUT" --frames 2
+$PY autodrivedata/sim/collect_nus.py --out "$OUT" --frames 2
 
 echo "=== [1/4] devkit 直读:RadarPointCloud.from_file × 5 通道(两帧内各通道至少一帧非空) ==="
 $PY - "$OUT" <<'EOF'

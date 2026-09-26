@@ -52,9 +52,9 @@
   gyroscope 是 **rad/s** 的体轴角速度(与 actor 角速度同源,已实测)。
 
 用法:
-  python bin/probe_imu.py --frames 60 --speed 8 --out outputs/imu_probe --tag drive
-  python bin/probe_imu.py --frames 60 --speed 8 --accel-std 0.05 --gyro-std 0.005 --tag noisy
-  python bin/probe_imu.py --frames 80 --turn --tag turn    # 真转向(标定轴向/尺度)
+  python -m autodrivedata.sim.probe_imu --frames 60 --speed 8 --out outputs/imu_probe --tag drive
+  python -m autodrivedata.sim.probe_imu --frames 60 --speed 8 --accel-std 0.05 --gyro-std 0.005 --tag noisy
+  python -m autodrivedata.sim.probe_imu --frames 80 --turn --tag turn    # 真转向(标定轴向/尺度)
 """
 
 from __future__ import annotations
@@ -68,9 +68,9 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import SENSOR_OFFSET, spawn_ego, sync_mode
 
 from autodrivedata.paths import project_path
+from autodrivedata.sim.carla_common import SENSOR_OFFSET, spawn_ego, sync_mode
 
 
 def _rot_from_rpy(rpy: tuple[float, float, float]) -> np.ndarray:

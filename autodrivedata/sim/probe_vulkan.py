@@ -6,10 +6,10 @@ RenderThread` 这种下游症状)。这里直接问加载器"有几个 Vulkan �
 UE4 层切开。缺 `libnvidia-gpucomp.so.<驱动版本>` 时本脚本输出 `count=0`。
 
 用法(项目 env 即可,只需 ctypes):
-    python bin/probe_vulkan.py                     # 默认 ICD 全扫
-    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json python bin/probe_vulkan.py
+    python -m autodrivedata.sim.probe_vulkan                     # 默认 ICD 全扫
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json python -m autodrivedata.sim.probe_vulkan
                                                    # lavapipe 软件 ICD 对照(验证探针本身)
-    LD_LIBRARY_PATH=<compat> python bin/probe_vulkan.py   # 带 GPUCOMP 兼容层(carla_server.sh 同款)
+    LD_LIBRARY_PATH=<compat> python -m autodrivedata.sim.probe_vulkan   # 带 GPUCOMP 兼容层(carla_server.sh 同款)
 
 退出码:0 = 枚举到设备;2 = 0 个设备(驱动层问题);1 = 建实例失败。
 实现注:`VkPhysicalDeviceProperties` 真实尺寸 ~824 B,给 1024 B 缓冲;**探针函数签名要

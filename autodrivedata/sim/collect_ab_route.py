@@ -8,9 +8,9 @@ A/B 纪律(2026-09-08 教训):autopilot/TM 路线失控使帧内容不可对齐(
 → 帧级配对:同位置同车同角,唯一变量 = 光照(采集史:残留 actor 阻塞
 pt0 曾致 fallback 反向出生点、65m 曾卡 GT 阈值——已修,详见 Plan.md §5.5a)。
 
-用法: python bin/collect_ab_route.py --scene day_clear --frames 220 [--out ...]
-      python bin/collect_ab_route.py --scene sunset_glare --frames 220 [--out ...]
-      python bin/collect_ab_route.py --scene day_clear --speed 4 --frames 140  # 参数扫描(定里程)
+用法: python -m autodrivedata.sim.collect_ab_route --scene day_clear --frames 220 [--out ...]
+      python -m autodrivedata.sim.collect_ab_route --scene sunset_glare --frames 220 [--out ...]
+      python -m autodrivedata.sim.collect_ab_route --scene day_clear --speed 4 --frames 140  # 参数扫描(定里程)
 """
 
 from __future__ import annotations
@@ -21,7 +21,13 @@ from typing import cast
 
 import carla
 import numpy as np
-from carla_common import (
+
+from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
+from autodrivedata.export.kitti import write_frame
+from autodrivedata.gt import ActorBox, box_to_gt_line
+from autodrivedata.paths import project_path
+from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
     SENSOR_OFFSET,
@@ -30,13 +36,7 @@ from carla_common import (
     spawn_ego,
     sync_mode,
 )
-
-from autodrivedata.calib import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
-from autodrivedata.export.kitti import write_frame
-from autodrivedata.gt import ActorBox, box_to_gt_line
-from autodrivedata.paths import project_path
-from autodrivedata.scenarios import SCENES, merged_weather
-from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.sim.scenarios import SCENES, merged_weather
 
 SPEED = 8.0  # m/s 定速
 # 2026-09-09:65.0→62.0——第4台车曾恰好卡 GT max_distance=65.0 边界,起步

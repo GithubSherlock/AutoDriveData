@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from autodrivedata.collect_rig import ring_cam_pose, stereo_rig_offsets
+from autodrivedata.sim.collect_rig import ring_cam_pose, stereo_rig_offsets
 
 
 class TestRingCamPose:

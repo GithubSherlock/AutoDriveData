@@ -11,7 +11,7 @@
 
 注:两个微采样目录(surround_micro_legacy / surround_micro_official)已于 2026-09-20
 清理删除(§P-L.1 结论已归档),本脚本因此没有在库的默认输入 —— 用前先重采:
-  python bin/collect_surround_micro.py --out outputs/surround_micro_legacy   # 及 _official
+  python -m autodrivedata.sim.collect_surround_micro --out outputs/surround_micro_legacy   # 及 _official
 """
 
 from __future__ import annotations
