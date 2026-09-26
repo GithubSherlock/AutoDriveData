@@ -19,7 +19,7 @@ def _find_project_root() -> Path:
     **不要改回 `parents[N]` 写法**:写死深度在本文件被移位时会**静默**指错 ——
     本文件确实踩过:从包根 `autodrivedata/paths.py` 挪进 `autodrivedata/utils/paths.py` 后,
     `parents[1]` 就从**项目根**变成了 `autodrivedata/`,于是 `project_path("outputs/x")`
-    解析到 `autodrivedata/outputs/x`,**所有产物落错地方且不报错**。见 Plan_fileTree.md §5.6。
+    解析到 `autodrivedata/outputs/x`,**所有产物落错地方且不报错**。见 docs/refactor-2026-09.md §5.6。
     """
     for parent in Path(__file__).resolve().parents:
         if (parent / "pyproject.toml").is_file():

@@ -19,6 +19,12 @@ include = ["autodrivedata*"]
 # tests/ 已收进包内(autodrivedata/tests/),但它不是分发内容 —— 排除,免得装上却不该被 import。
 exclude = ["autodrivedata.tests*"]
 
+[tool.pytest.ini_options]
+# 裸敲 `pytest` 不再被 hdMapGitHub 下的 6 个上游克隆拖出 190 个 collection error。
+# ★ 不要加 `norecursedirs`:它是**覆盖**不是追加(默认 9 项会被换成你写的那几项),
+#   实测只加 testpaths 就已解决,列它的那几个目录本来就是 0 个 .py。
+testpaths = ["autodrivedata/tests"]
+
 [tool.ruff]
 # 项目实际风格 ~110 列(默认 88 会把中文注释/表格式行反复折行)
 line-length = 110

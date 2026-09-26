@@ -1,7 +1,7 @@
 """字体落点的回归钉:**中文字形不许静默变成豆腐块**。
 
 症状是 `outputs/calib_check/check_geometry.png` 里中文字符位全是方框。根因有两条,
-只修一条不够(见 [autodrivedata/utils/fonts.py](../autodrivedata/utils/fonts.py) 的模块 docstring):
+只修一条不够(见 [autodrivedata/utils/fonts.py](../../utils/fonts.py) 的模块 docstring):
 ① 本机字体族**一个 CJK 字形都没有**,绘制代码却硬写 `DejaVuSans-Bold`;
 ② **PIL 没有字体回退链**,不传 `font=` 就用内置位图字体(同样没有 CJK)。
 

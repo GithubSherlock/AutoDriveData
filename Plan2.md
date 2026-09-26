@@ -5,6 +5,12 @@
 > §5 里程碑归档、§6 骨架、§7 待办快照,均**冻结不再新增**)。
 > 起点是「16 篇教程能力 → 本仓库栈补全」的路线图,现已扩展为**全项目计划载体**(§3 执行项、
 > §7 执行进度、§8 遗留缺口);红线纪律/接口契约/环境表仍以 Plan.md 为准(§6 复述其要点)。
+>
+> **⚠️ 路径口径(2026-09-26 目录重构后)**:本文件 §P-L / §P-M 等**执行记录**里的 `bin/x.py`、`tests/test_x.py`、
+> `maptr_impl/` 是**重构前口径**,现已不存在。映射:`bin/x.py` → `python -m autodrivedata.<能力>.x`、
+> `tests/test_x.py` → `autodrivedata/tests/<能力>/test_x.py`、`maptr_impl/` → `autodrivedata/map/maptr/`。
+> **历史记录不逐一回改**(它们记的是当时怎么跑的);**新写的计划请用当前路径** —— 当前路径看
+> [docs/fileTree.md](docs/fileTree.md),结构与理由看 [docs/refactor-2026-09.md](docs/refactor-2026-09.md)。
 
 ## 1 定位
 
@@ -546,7 +552,7 @@ studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全�
 | CAM_FRONT / CAM_BACK | ≈0 / 180 | −0.32 / −179.85 | 近自逆 ⇒ **长期没暴露** |
 
 **为什么长期没被发现**:前/后两台相机在镜像下"看着对"(光轴近自逆),而"能画出图"从来不是
-投影正确的证据(与 §5.11f 同一条教训)。**真值改为单点提供**:[autodrivedata/camera_rig.py](autodrivedata/camera_rig.py)
+投影正确的证据(与 §5.11f 同一条教训)。**真值改为单点提供**:[autodrivedata/camera_rig.py](autodrivedata/calib/camera_rig.py)
 从官方 `calibrated_sensor` 四元数导出 `NUS_CAMERA_RIG`(导出前**归一化** —— 官方存储的四元数
 不是单位长度),采集器 / 实时流 / 导出器同源;`official` 更名 **`nuscenes`**。
 
@@ -833,7 +839,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 
 ##### P-M.7.6 两处一致性缺陷(与标定数值无关,但必须一并修)
 
-1. **`NUS_CAMERA_CALIBS` 两份**:[autodrivedata/camera_rig.py](autodrivedata/camera_rig.py) 与
+1. **`NUS_CAMERA_CALIBS` 两份**:[autodrivedata/camera_rig.py](autodrivedata/calib/camera_rig.py) 与
    [autodrivedata/gt/export/nuscenes.py](autodrivedata/gt/export/nuscenes.py) 各一份,**实测逐字节相等**,
    但 `export/nuscenes.py` **不 import `camera_rig`**(`autodrivedata/sim/collect_nus.py` 也不 import)
    ⇒ 单点来源在 §P-M 建立后**没被接上**,下次改官方表会静默分叉。
@@ -1042,7 +1048,7 @@ Droid 仍缺 4 个码位(`−` U+2212 / `∘` U+2218 / `⚠` U+26A0 / `⁻` U+20
 
 **改动落点**:新建 `fonts.py`(`font_path`/`has_cjk`/`missing`/`sanitize`/`get_font`/`draw_text`/`width`/`bbox`/`diagnostics`);
 [autodrivedata/calib/viz_calib_check.py](autodrivedata/calib/viz_calib_check.py) 删掉 `_font()` 与 `DejaVu` 常量、全部 `d.text` 改走 `fonts.draw_text`;
-上列 5 个绘制文件同样迁移。回归钉 [tests/test_fonts.py](tests/test_fonts.py) —— 最强的一条是
+上列 5 个绘制文件同样迁移。回归钉 [tests/test_fonts.py](autodrivedata/tests/utils/test_fonts.py) —— 最强的一条是
 `test_distinct_cjk_chars_paint_distinct_pixels`(两个不同汉字**画布上必须像素不同**;豆腐块下它们逐像素相同),
 外加 **AST 根因钉** `test_no_module_draws_with_a_bare_text_call`(不许再出现不带 `font=` 的 `d.text(...)`)。
 

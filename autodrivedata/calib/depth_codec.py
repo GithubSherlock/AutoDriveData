@@ -20,7 +20,7 @@ CARLA 的 BGRA 布局里 `arr[:, :, 0]` 是 **B**(高位,×65536)、`[:, :, 1]` 
 ⚠️ 该结论**尚未由本仓的独立探针复核**:此前注释引用的 `bin/probe_depth_semantics.py`
 **并不存在于磁盘**(文档与代码不一致,已如实更正)。若要钉死,判据应是
 "渲染深度 / LiDAR 预测光轴 z − 1 ≈ 0" vs "…/ 射线距离 − 1 ≈ sec θ − 1"
-(θ 为离轴角,边缘可差 44%),见 `autodrivedata/calib_probe.py:41` 的同款推理;
+(θ 为离轴角,边缘可差 44%),见 `autodrivedata/calib/selfcheck.py:41` 的同款推理;
 `autodrivedata/calib/probe_calib.py` 的 A3 锚已在**假定 z 深度**下给出 median|e| 0.0003 m,间接支持该语义。
 
 量化精度:24 bit / 1000 m ≈ **0.06 mm**,可忽略。

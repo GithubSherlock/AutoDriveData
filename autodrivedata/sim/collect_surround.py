@@ -8,7 +8,7 @@ MapTR 端到端训练的输入侧:6 视角图像 + sensor2ego 外参 + 相机内
 A/B 采集器**(P1 复现性红线)。NPC 布置复用 collect_drive 的既有函数。
 
 nuScenes 相机布局:**直接取官方 calibrated_sensor**(6DoF 四元数 + 平移),
-由 [autodrivedata/camera_rig.py](../autodrivedata/camera_rig.py) 转成 CARLA 口径
+由 [autodrivedata/camera_rig.py](../calib/camera_rig.py) 转成 CARLA 口径
 (平移 y 翻号、姿态走 `nus_camera_rotation_to_carla`)。采集器不再自己维护角度表。
 
 ⚠️ **历史 bug(2026-09-22 修)**:此前 `SURROUND_CAMS` 把官方**方位角**原样抄成正数,

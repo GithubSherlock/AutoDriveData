@@ -497,6 +497,39 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 **阶段 0–8 合计**:搬迁 **~150 个文件**、重写 **~600 行引用**、涉及 **11 类引用形态**;
 全程 `ruff` 干净、**收集项从 895 稳定推到 913 后一条未丢**、每阶段全量跑通。
 
+#### ★ 阶段 9 执行记录(已完成 2026-09-26)——**重构全部结束**
+
+**收口范围**:`pyproject.toml` 加 `testpaths` + 删空 `tests/`(已于阶段 8 顺带)+
+**`CLAUDE.md` / `README.md` / `docs/fileTree.md` / `Plan2.md` / `Plan.md` 五份文档同步** +
+**新增文档腐化守卫**。
+
+**结果**:`920 收集项 = 917 passed + 3 条件跳过`(+3 模块级),**0 失败**;ruff 干净;**全文档坏链 0**。
+
+**★ 本阶段做的两件超出原计划的事**:
+
+1. **CLAUDE.md 的结构重写**(原计划只要求「改命令路径」)。
+   机械核对发现:57 条文件引用 **21 条失效**、markdown 坏链 **8/24**;
+   其中 `python -m pytest tests/ -q` 是**提交前两件套里的一件、当时就是坏的**。
+   更严重的是**结构**:「当前进度」段占全文 **57.4%**(17,673 字符)且横在所有可执行信息之前 ——
+   新会话要拿到第一条命令得先读 **69.6%** 的内容。
+   **处置**:18 条进度 bullet(每条已自带 §锚点,详细内容在 Plan.md §5.x / Plan2.md §P-* 有真身)
+   压成一张「结论 + 指针」表;**30,787 → 12,803 字符(−58%)**。同时修掉
+   `:79`「包不 import carla」这条**已反向失真**的纪律断言(实测 34 个文件 import carla)。
+2. **新增 [autodrivedata/tests/test_docs.py](../autodrivedata/tests/test_docs.py) 文档腐化守卫**。
+   这次 21 条引用失效全部是**静默**的(文档不报错,只有照着做的人拿到 `FileNotFoundError`)——
+   失效模式与 `paths.py::parents[1]` 同族:**写的时候对、挪了之后静默错**。
+   判据:① 三份权威文档的 markdown 链接必须可解析;② 其中的 `python -m autodrivedata.X`
+   必须能被 `find_spec` 解析。**已做反向自证**(改坏一个模块名 → 红)。
+   7 条用例,含 1 条**扫描器自证**(防正则腐化后空过)。
+
+**★ 三个阶段性的坑(都值得记)**:
+- **`testpaths` 与 `norecursedirs` 不是一回事**:后者是**覆盖**不是追加(pytest 默认 9 项会被换掉)。
+  实测只加 `testpaths` 就把裸跑从「933 collected / **190 errors**」治成「913 / 0 errors」。
+- **官方 CLAUDE.md 口径**(抓自 code.claude.com/docs):**≤200 行**、**只放「去掉它 Claude 就会做错」的内容**、
+  「**强调多了就一条都不突出**」(本仓 362 处加粗)。本文件 186 行原本合规,问题在**结构**不在长度。
+- **`docs/*` 与 `Plan.md` 是历史记录,不做回改** —— 改为在**头部加路径口径声明**
+  (Plan.md / Plan2.md / milestone2.md / testLog.md 各一条),把「已知失效」固化,而不是篡改历史。
+
 #### ★ 阶段 6 执行记录(已完成 2026-09-26)
 
 **搬迁**:**17** 模块 → `autodrivedata/perception/` + 9 测试 → `autodrivedata/tests/perception/`;
@@ -634,7 +667,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]  # autodrivedata/paths.py →
 
 > ⚠️ 本文档 §5.7c 之后的路径为 **2026-09-26 目录重构前口径**。
 > `bin/x.py` → `autodrivedata/<能力>/x.py`、`tests/test_x.py` → `autodrivedata/tests/<能力>/test_x.py`,
-> 完整映射见 [Plan_fileTree.md](Plan_fileTree.md) §2。
+> 完整映射见 [本文件 §2](refactor-2026-09.md#2-目标树)。
 
 ---
 

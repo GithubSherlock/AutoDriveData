@@ -19,7 +19,7 @@ class TestProjectRoot:
         ⚠️ 不要退回「只断言含 pyproject.toml」:`paths._find_project_root()` 的定义就是
         「向上找第一个含 pyproject.toml 的目录」,单这一条是**恒真**的,钉不住任何东西。
         `.git` 与 `autodrivedata/utils/paths.py` 才是真判据 —— 若哪天包内混进一个 pyproject.toml,
-        向上搜索会停在那里,这两条立刻红(见 Plan_fileTree.md §5.6)。
+        向上搜索会停在那里,这两条立刻红(见 docs/refactor-2026-09.md §5.6)。
         """
         assert (paths.PROJECT_ROOT / "pyproject.toml").is_file()
         assert (paths.PROJECT_ROOT / "autodrivedata" / "utils" / "paths.py").is_file()
@@ -51,7 +51,7 @@ class TestProjectRoot:
 
     # 「包不 import carla/torch」的守卫**已迁到 test_layer_guard.py**,并升级为按目录的规则表
     # (旧版 `test_package_stays_pure_value` 只有一条全局拒绝清单,且漏马甲库与动态导入)。
-    # 见 Plan_fileTree.md §3。
+    # 见 docs/refactor-2026-09.md §3。
 
     @pytest.mark.parametrize("name", ["outputs/carla/libmhookshim.so", "outputs/carla/nvidia-compat"])
     def test_state_paths_are_inside_project(self, name: str):
@@ -59,7 +59,7 @@ class TestProjectRoot:
 
 
 class TestWeightPaths:
-    """权重路径回归钉(Plan_fileTree.md §5.1)。
+    """权重路径回归钉(docs/refactor-2026-09.md §5.1)。
 
     实际故障:`autodrivedata/perception/sem_bev.py` 写 `project_path("yolo11s-seg.pt")`(行内注释也说「权重放项目根」),
     而文件实际在 `models/` —— **代码 / 文档 / 文件位置三处同口径地错**,谁都不报错,
@@ -108,11 +108,11 @@ class TestWeightPaths:
                     f"但同名文件在 {elsewhere[0]!s}"
                 )
         assert checked >= 2, f"只扫到 {checked} 处 project_path('*.pt') —— 扫描失效,测试形同虚设"
-        assert not offenders, "权重路径写错(见 Plan_fileTree.md §5.1):\n" + "\n".join(offenders)
+        assert not offenders, "权重路径写错(见 docs/refactor-2026-09.md §5.1):\n" + "\n".join(offenders)
 
 
 class TestGitignoreTraps:
-    """`.gitignore` 陷阱回归钉(Plan_fileTree.md §5.2–§5.4)。
+    """`.gitignore` 陷阱回归钉(docs/refactor-2026-09.md §5.2–§5.4)。
 
     三条都是**静默**失效:`git add` 不报错 —— 该忽略的被悄悄纳入(1.2 G 侧车),
     该入库的被悄悄跳过(assets/ 里的图)。人眼与代码评审都看不见。

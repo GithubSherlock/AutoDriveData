@@ -198,7 +198,7 @@ def draw_hud(img: Image.Image, text: str, warn: bool = False, y: int = 0) -> Ima
     底条宽度按**实测**文本宽度定:旧实现是 `7 * len(text) + 8`,那个 7 是 PIL 内置位图字体
     的经验字宽 —— 换真字体、或文本含中文(CJK 字宽 ≈ 2× ASCII)后常数必然错。
     **字体一律走 `autodrivedata.fonts`**:直接 `d.text(...)` 不传 `font=` 会用内置位图字体,
-    中文整行画成豆腐块(见 [autodrivedata/utils/fonts.py](../autodrivedata/utils/fonts.py))。
+    中文整行画成豆腐块(见 [autodrivedata/utils/fonts.py](../utils/fonts.py))。
     """
     d = ImageDraw.Draw(img)
     bg = (140, 0, 0) if warn else (0, 0, 0)

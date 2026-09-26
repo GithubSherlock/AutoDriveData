@@ -25,7 +25,7 @@ class CameraIntrinsics:
     """CARLA 相机内参(方形像素);fov_h_deg 为水平视场角(CARLA 的 fov 属性)。
 
     主点默认 = **索引约定中心** `(w−1)/2`(不是 `w/2`)。依据见
-    [autodrivedata/calib/probe_calib.py](autodrivedata/calib/probe_calib.py) 的 A4/A6 锚:轴目标物掩膜**索引**中点直读给出
+    [autodrivedata/calib/probe_calib.py](probe_calib.py) 的 A4/A6 锚:轴目标物掩膜**索引**中点直读给出
     `cx = 620.50 = (1242−1)/2`,跨 5 档横移线性回归残差 0.200 px;A3(深度图交叉验证)在
     corner 采样约定下 median|e| 0.0003 m vs center 约定 0.023 m(~70×)。`fx` 仍按
     `(w/2)/tan(fov/2)` 算——"半 FOV ↔ 半宽"与"索引中心"是两件事,并存不矛盾

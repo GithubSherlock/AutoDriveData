@@ -1,7 +1,7 @@
 """地图矢量投影与绘制(纯值):ego 系折线 → 相机像素 + BEV 面板。
 
-离线目检([autodrivedata/map/viz_maptr_pred.py](autodrivedata/map/viz_maptr_pred.py))与实时流
-([autodrivedata/sim/view_stream.py](autodrivedata/sim/view_stream.py) `--maptr-ckpt`)共用同一条链,避免两处
+离线目检([autodrivedata/map/viz_maptr_pred.py](viz_maptr_pred.py))与实时流
+([autodrivedata/sim/view_stream.py](../sim/view_stream.py) `--maptr-ckpt`)共用同一条链,避免两处
 各写一遍投影。坐标链:
 
   ego 局部系(x 前向 / y 左向 / z=0)
@@ -11,7 +11,7 @@
 **旋转单位是弧度** —— `cam_pose` 的出口口径与 probe_mapvec_proj 参考实现一致
 (`world_to_img`/`carla_rotation_matrix` 都吃弧度)。踩坑记录:曾把度数值直接传
 进去,6 相机里只有 yaw≈0 的 CAM_FRONT 恰好接近正确,侧/后相机 overlay 全画在错
-位置。数值判据(见 [tests/test_mapviz.py](tests/test_mapviz.py)):命中点方位角
+位置。数值判据(见 [tests/test_mapviz.py](../tests/map/test_mapviz.py)):命中点方位角
 落在该相机 yaw±45°(其 90° FOV)内的比例——弧度口径 91~100%,度数口径 0~6%。
 
 配色(C23 撞色口径):预测品红 / GT 青绿 —— 路面场景与既有 overlay(GT 框

@@ -31,7 +31,7 @@ CARLA 0.9.16 仿真数据输出流水线:在自定义地图/场景中采集**车
 
 OpenDRIVE 解析 → 矢量 GT 提取 → 环视采集/组装/投影验收 → **参考自实现**(GKT + 分层 query,单帧过拟合锚定正确性)→ chamfer AP 评估 → 逐帧契约落盘。
 
-- 留出集 chamfer AP @0.2 = **0.0674**(@0.3 0.0904 / @0.4 0.1280),训练集对照 0.2603 ⇒ **泛化间隙 3.9×**,下轮收益靠扩数据而非继续长训
+- chamfer AP @`--score-thr 0.2`:**帧级留出 0.3043 / 路线级留出 0.1114**(训练集自身 0.2727)⇒ 真泛化看**路线级**(差 2.7×);下轮收益靠扩数据而非继续长训。三条口径护栏见 Plan2.md §P-M.12
 - 该口径是 3 阈值 precision 均值、**无 recall 项**,跨权重比较必须固定 `--score-thr`,单报一个 mAP 数字而不写阈值 = 无效结论
 - 逐帧契约 `mapvec_pred/1`(`outputs/surround_pred/{token}.json`)schema/帧归属/坐标系/窗口/阈值/溯源齐全,GT 同文件携带,供 AutoLabel 消费(**消费方未接**)
 
@@ -69,7 +69,7 @@ python -m autodrivedata.sim.collect_tl_states --frames 90 --speed 8 --cycle 6,2,
 
 # 4. 8 路实时 studio(浏览器需本地 ssh -L 8080:127.0.0.1:8080 <host>)
 python -m autodrivedata.sim.live_studio --speed 8 --npcs
-python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8
+python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_v2_singleF.pt --slam --speed 8
 
 # 5. 评估:2D A/B + 失效归因
 python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
@@ -77,11 +77,11 @@ python -m autodrivedata.perception.eval_attr --run day8=outputs/kitti_sweep_day_
                         --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
 # 6. MapTR:逐帧推理 + chamfer AP + 逐帧契约落盘
-python -m autodrivedata.map.eval_maptr --infos outputs/surround_train/map_infos.json \
-  --root outputs/surround_train --ckpt outputs/maptr_ep512.pt --start 200 --out-frames outputs/surround_pred
+python -m autodrivedata.map.eval_maptr --infos outputs/surround_v2/map_infos.json \
+  --root outputs/surround_v2 --ckpt outputs/maptr_v2_singleF.pt --start 200 --out-frames outputs/surround_pred
 
 # 7. 测试
-python -m pytest tests/ -q          # 510 passed / 3 skipped
+python -m pytest -q                 # testpaths 已钉在 pyproject;基线收集项见 CLAUDE.md 常用命令
 ```
 
 ## 环境
@@ -93,15 +93,18 @@ python -m pytest tests/ -q          # 510 passed / 3 skipped
 | **hivt** | 3.8.20 | HiVT 复现栈(torch1.8 / pl1.5 / pyg1.7),CPU 推理;**只能用绝对路径调**(未注册进 `envs_dirs`) |
 | **base** | 3.10.8 | conda 底座 + direnv,不承担项目职责 |
 
-**硬纪律**:`autodrivedata/` 包**绝不 import carla**(纯值,任何 env 可单测);依赖单向 AutoDriveData → AutoLabel,**禁止反向**。
+**硬纪律**:**按目录分层** —— 谁允许 import 什么由 `autodrivedata/tests/test_layer_guard.py` 的 `LAYER_RULES` 机械强制。
+依赖单向 AutoDriveData → AutoLabel,**禁止反向**。
+
+> **入口形式**:重构后顶层 `bin/` 与 `tests/` 已删除,可执行入口一律 **`python -m autodrivedata.<能力>.<模块>`**。
 
 ## 项目结构
 
 ```txt
-autodrivedata/    纯值库:几何/标定/GT/场景目录/地图矢量/归因/SLAM 评估(不 import carla)
-maptr_impl/       MapTR 参考自实现(ResNet50+FPN + GKT + 分层 query head)
-bin/              可执行入口:采集器 / 组装转换 / 训练 / 评估 / 可视化 / 探针
-tests/            单测 + oracle 对比(510 passed)
+autodrivedata/    ★ 主包 —— 按能力面分 10 个目录(包根只有 __init__.py):
+                  sim/(CARLA 仿真层 + 全部采集器)· calib/ · map/(含 maptr/ MapTR 自实现)
+                  slam/ · perception/ · gt/ · traj/ · gs/ · utils/(几何/路径/字体) · tests/
+tools/            开放性工具:CARLA 服务器启动(含 GPU 修复栈 + Vulkan 兼容层自愈)
 docs/             文件级索引 / 里程碑 / 测试日志 / 16 篇 CARLA 教程
 outputs/          【未入库】全部产物的唯一落点(权重/数据集/可视化)
 ```
@@ -117,7 +120,8 @@ outputs/          【未入库】全部产物的唯一落点(权重/数据集/�
 | [docs/fileTree.md](docs/fileTree.md) | 文件级索引与维护约定 |
 | [docs/milestone.md](docs/milestone.md) · [milestone2.md](docs/milestone2.md) | 版本里程碑 / 教程能力线里程碑 |
 | [docs/testLog.md](docs/testLog.md) | 测试与踩坑日志(现象 → 修复 → 回归保护) |
-| [CLAUDE.md](CLAUDE.md) | AI 协作入口:A/B 实验纪律与已踩坑红线 |
+| [docs/refactor-2026-09.md](docs/refactor-2026-09.md) | **目录结构与重构决策**:能力面划分的依据、已实测否决的方案、搬迁清单 |
+| [CLAUDE.md](CLAUDE.md) | AI 协作入口:当前状态 / 项目结构 / 常用命令 / A/B 实验纪律与已踩坑红线 |
 
 ## 边界(已实测的平台限制)
 

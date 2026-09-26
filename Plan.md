@@ -8,6 +8,13 @@
 > 具体:① **CARLA 采集/场景/教程能力线**的后续规划(含教程 04 IPM 缺口、SLAM 阶段 2、多图扩数据等)
 > 全在 Plan2.md §3/§8;② Plan2.md 的里程碑记录落 docs/milestone2.md;③ 本文件 §5.x 记录**不再新增**,
 > 只在既有条目上补"已迁移"指针;④ 红线纪律、接口契约、环境表仍以本文件为准(Plan2.md §6 复述)。
+>
+> **⚠️ 路径口径声明(2026-09-26)**:本文档是**冻结的历史记录**,其正文里的文件路径是
+> **2026-09-26 目录重构之前**的口径,故 `bin/` 与 `tests/` 之类的路径**现在已不存在**。
+> 映射:`bin/x.py` → `autodrivedata/<能力>/x.py`、`tests/test_x.py` → `autodrivedata/tests/<能力>/test_x.py`、
+> `maptr_impl/` → `autodrivedata/map/maptr/`、包根模块 → 各能力目录(`calib.py`→`calib/core.py` 等)。
+> **不修改正文**(冻结纪律),完整映射与理由见 [docs/refactor-2026-09.md](docs/refactor-2026-09.md) §2。
+> 查**当前**路径请用 [docs/fileTree.md](docs/fileTree.md)。
 
 ## 1. 定位
 

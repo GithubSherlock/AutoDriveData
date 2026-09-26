@@ -1,4 +1,4 @@
-"""层守卫:`autodrivedata/**` 的每个目录允许 import 什么(Plan_fileTree.md §3)。
+"""层守卫:`autodrivedata/**` 的每个目录允许 import 什么(docs/refactor-2026-09.md §3)。
 
 **这是项目最有价值的那条不变量的可执行版本。** 旧版(`test_paths.py` 的
 `test_package_stays_pure_value`)只有一条「整包不许 carla/torch」,它有两个洞、一个表达力缺陷:
@@ -139,8 +139,9 @@ class TestPackageLayers:
 
     def test_package_respects_layer_rules(self):
         offenders = scan_package_layers(paths.PROJECT_ROOT / "autodrivedata")
-        assert not offenders, "目录层级违规(见 Plan_fileTree.md §3.2;改规则前先想清楚为什么):\n" + "\n".join(
-            f"  {f}: {mods}" for f, mods in sorted(offenders.items())
+        assert not offenders, (
+            "目录层级违规(见 docs/refactor-2026-09.md §3.2;改规则前先想清楚为什么):\n"
+            + "\n".join(f"  {f}: {mods}" for f, mods in sorted(offenders.items()))
         )
 
     def test_every_subdirectory_has_an_explicit_rule(self):

@@ -2,8 +2,8 @@
 
 预测折线(模型 BEV 输出系 = ego 局部系,x 前向 / y 左向,z=0)→ 世界 → 各相机
 像素,画到原图上:pred 品红 / GT 青绿(路面场景罕见色,C23 撞色口径避让)。
-投影/绘制走纯值模块 [autodrivedata/map/mapviz.py](autodrivedata/map/mapviz.py)——与实时流
-[autodrivedata/sim/view_stream.py](autodrivedata/sim/view_stream.py) 是同一条链(单一投影实现),旋转单位为
+投影/绘制走纯值模块 [autodrivedata/map/mapviz.py](mapviz.py)——与实时流
+[autodrivedata/sim/view_stream.py](../sim/view_stream.py) 是同一条链(单一投影实现),旋转单位为
 **弧度**(单位口径的坑见 mapviz docstring)。每帧一张拼图:6 相机 3×2 + BEV 面板
 (窗口同模型输出系 x∈[−15,15] / y∈[−30,30])。
 

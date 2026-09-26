@@ -10,8 +10,8 @@
    (`fc-list` 查不到任何中文字体),而绘制代码直接 `ImageFont.truetype(DejaVuSans-Bold)`;
 2. **PIL 没有字体回退链** —— `ImageDraw.text()` 只吃单个 `font` 对象(Pillow 12.3.0
    无 `font_chain`/`font_stack`)。**不传 `font=` 就用内置位图字体**,同样整行豆腐,
-   而且只有 ~11 px。[autodrivedata/sim/live_common.py](../autodrivedata/sim/live_common.py) 的 HUD、
-   [mapviz.py](mapviz.py) 的面板标题、[autodrivedata/calib/probe_calib.py](../autodrivedata/calib/probe_calib.py)
+   而且只有 ~11 px。[autodrivedata/sim/live_common.py](../sim/live_common.py) 的 HUD、
+   [mapviz.py](../map/mapviz.py) 的面板标题、[autodrivedata/calib/probe_calib.py](../calib/probe_calib.py)
    的标签原本全属这一类。
 
 ## 判据(全部数值,不目检)
@@ -37,14 +37,14 @@ CARLA 本来就是本项目的硬依赖(`tools/carla_server.sh`)。候选表仍�
 
 DroidSansFallback 仍缺 4 个码位(实测):`−` U+2212 / `∘` U+2218 / `⚠` U+26A0 /
 `⁻` U+207B —— `sanitize()` 把它们换成等价 ASCII,**绝不把豆腐块留给用户**。
-本轮排查里真正画进画面、又踩中这条的只有 `−`(见 [autodrivedata/calib/viz_calib_check.py](../autodrivedata/calib/viz_calib_check.py)
+本轮排查里真正画进画面、又踩中这条的只有 `−`(见 [autodrivedata/calib/viz_calib_check.py](../calib/viz_calib_check.py)
 的 `yaw_carla = −az_nus` 与 `(w−1)/2`),其余三个只在注释/文档串里出现。
 
 ## 退化行为(诚实报,不假装)
 
 找不到任何含中文字形的字体时(换机器、字体被删),`sanitize()` 把画不出的字符换成
 `?` 而不是留豆腐块,并在首次解析时 `warnings.warn` 一次。判据见
-[tests/test_fonts.py](../tests/test_fonts.py)。
+[tests/test_fonts.py](../tests/utils/test_fonts.py)。
 """
 
 from __future__ import annotations

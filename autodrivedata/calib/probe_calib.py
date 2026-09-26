@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """环视相机标定自证探针:把 CARLA 渲染器当**第二把尺子**,数值裁决 (K, 外参)。
 
-数值核心全在 [autodrivedata/calib_probe.py](../autodrivedata/calib_probe.py)(纯值、有单测);
+数值核心全在 [autodrivedata/calib/selfcheck.py](selfcheck.py)(纯值、有单测);
 本文件只做 CARLA 编排 + 判据 + 落盘。
 
 ## 为什么不能"反投影再重投影"
@@ -95,7 +95,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata.calib import calib_live as cl
-from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib import selfcheck as sc
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import (
@@ -173,7 +173,7 @@ MAX_MIDLINE_DEV_PX = 3.0  # 逐行中点散得过开 = 掩膜不干净,该锥弃
 # 而 LiDAR 量程只有 70 m ⇒ "r<30" 实际只留了车前 154 点。距离必须**相对 LiDAR 自身**。
 PLANE_RADIUS_M = 1.2  # 逐点局部平面拟合半径(m)
 PLANE_MAX_DIST_M = 50.0  # 参与平面拟合的最远点(相对 LiDAR)
-PLANE_RMS_MAX_M = 0.08  # 局部平面 RMS 闸(m)。**刻意比 `calib_probe.MAX_PLANE_RESIDUAL_M`(0.03)宽**
+PLANE_RMS_MAX_M = 0.08  # 局部平面 RMS 闸(m)。**刻意比 `selfcheck.MAX_PLANE_RESIDUAL_M`(0.03)宽**
 # —— 0.03 下 CAM_BACK 只分到 2 个样本(它的最近几何在 15.9 m 外、局部平面普遍更糙),
 # 0.08 下六相机各 200–1000 样本而 med|e| 仍只有 0.009–0.028 m(判据 0.1 m)。
 # 放宽闸门**不会**把残差判据放松:平面糙 → 预测深度糙 → 残差自己变大,闸门在下一环。
@@ -427,7 +427,7 @@ def world_planes(
     down = voxel_downsample(pts_world[d < PLANE_MAX_DIST_M], LIDAR_VOXEL_M)[:, :3]
     if down.shape[0] > MAX_PLANE_SAMPLES:
         down = down[rng.choice(down.shape[0], MAX_PLANE_SAMPLES, replace=False)]
-    normals, rms = cp.fit_local_planes(down, PLANE_RADIUS_M)
+    normals, rms = sc.fit_local_planes(down, PLANE_RADIUS_M)
     keep = np.isfinite(rms) & (rms <= PLANE_RMS_MAX_M)
     pts, nrm = down[keep], normals[keep]
     return pts, nrm, np.einsum("ij,ij->i", nrm, pts)
@@ -440,18 +440,18 @@ def depth_residuals(
     cam_pose: tuple[tuple[float, float, float], tuple[float, float, float]],
     depth_img: np.ndarray,
     occlusion_radius_px: float,
-) -> cp.DepthSamples:
+) -> sc.DepthSamples:
     """单相机的深度残差采样(射线-平面求交 vs 渲染深度,含遮挡剔除)。"""
-    return cp.collect_samples(
+    return sc.collect_samples(
         pts, normals, offsets, cam_pose[0], cam_pose[1], K, depth_img, PIXEL_CONVENTION, occlusion_radius_px
     )
 
 
-def merge_samples(ss: list[cp.DepthSamples]) -> cp.DepthSamples:
+def merge_samples(ss: list[sc.DepthSamples]) -> sc.DepthSamples:
     """多帧采样并集(静态 ego 下各帧独立同分布,并集只是把样本量做大)。"""
     if not ss:
-        return cp.DepthSamples(np.zeros((0, 2)), np.zeros(0), np.zeros(0), np.zeros((0, 2)))
-    return cp.DepthSamples(
+        return sc.DepthSamples(np.zeros((0, 2)), np.zeros(0), np.zeros(0), np.zeros((0, 2)))
+    return sc.DepthSamples(
         np.concatenate([s.uv for s in ss]),
         np.concatenate([s.z_lidar for s in ss]),
         np.concatenate([s.z_render for s in ss]),
@@ -459,7 +459,7 @@ def merge_samples(ss: list[cp.DepthSamples]) -> cp.DepthSamples:
     )
 
 
-def draw_residuals(img: Image.Image, samples: cp.DepthSamples) -> int:
+def draw_residuals(img: Image.Image, samples: sc.DepthSamples) -> int:
     """把采样点按 |残差| 着色画到图上(绿 <0.05m / 黄 <0.15m / 红 其余)。返回画上的点数。
 
     着色带与实时槽(`live_studio --calib`)必须**同源**,否则"离线自证看到的图"与"开着车
@@ -511,10 +511,10 @@ def mask_centre_u(mask: np.ndarray) -> float | None:
     """锥体掩膜 → 逐行中点列的中位数(**索引**口径);掩膜太小/不稳 → None(不硬给数)。"""
     if int(mask.sum()) < MIN_MASK_PX:
         return None
-    mids = cp.mask_row_midpoints(mask)[1]
-    if mids.size < 3 or not np.isfinite(cp.midline_deviation(mids)):
+    mids = sc.mask_row_midpoints(mask)[1]
+    if mids.size < 3 or not np.isfinite(sc.midline_deviation(mids)):
         return None
-    if cp.midline_deviation(mids) > MAX_MIDLINE_DEV_PX:
+    if sc.midline_deviation(mids) > MAX_MIDLINE_DEV_PX:
         return None
     return float(np.median(mids))
 
@@ -522,10 +522,10 @@ def mask_centre_u(mask: np.ndarray) -> float | None:
 def lateral_cone_positions(cam_pose: tuple[tuple[float, float, float], tuple[float, float, float]]) -> list:
     """沿相机光轴 z=LATERAL_Z_M 处、按相机自身"右"轴横移 LATERAL_XS 的世界点。
 
-    相机局部(KITTI 口径:x 右 / y 下 / z 前)→ 世界走 `calib_probe.cam_to_world_rot`,
+    相机局部(KITTI 口径:x 右 / y 下 / z 前)→ 世界走 `selfcheck.cam_to_world_rot`,
     与 `project_world` 严格互逆 —— **不在 bin 里另拼一遍旋转**。
     """
-    r = cp.cam_to_world_rot(cam_pose[1])
+    r = sc.cam_to_world_rot(cam_pose[1])
     o = np.asarray(cam_pose[0], dtype=np.float64)
     return [tuple(o + r @ np.array([x, 0.0, LATERAL_Z_M])) for x in LATERAL_XS]
 
@@ -550,7 +550,7 @@ def pass_a3(
         f"(相对 LiDAR 截断 {PLANE_MAX_DIST_M} m / 半径 {PLANE_RADIUS_M} m / 体素 {LIDAR_VOXEL_M} m)"
     )
 
-    per_cam: dict[str, list[cp.DepthSamples]] = {n: [] for n in NUS_CAMERA_RIG}
+    per_cam: dict[str, list[sc.DepthSamples]] = {n: [] for n in NUS_CAMERA_RIG}
     overlay_rows: list[list[tuple[str, Image.Image]]] = []
     for i in range(args.frames):
         f = frames if i == 0 else rig.capture()
@@ -574,7 +574,7 @@ def pass_a3(
     a3: dict[str, Any] = {}
     print(
         f"[A3] 判据 median|e| < 0.1 m(采样约定 {PIXEL_CONVENTION});可见性单侧判据 "
-        f"max({cp.OCCLUSION_TOL_M} m, {cp.OCCLUSION_TOL_FRAC:.2f}·z),边缘窗 r={args.edge_radius_px} px"
+        f"max({sc.OCCLUSION_TOL_M} m, {sc.OCCLUSION_TOL_FRAC:.2f}·z),边缘窗 r={args.edge_radius_px} px"
     )
     print(
         f"  {'相机':<17}{'样本':>7}{'|e|中位':>10}{'|e|P90':>9}{'δu px':>9}{'σδu':>7}"
@@ -583,8 +583,8 @@ def pass_a3(
     for name, ss in per_cam.items():
         m = merge_samples(ss)
         e = np.abs(m.residual)
-        fu, fv = cp.estimate_delta_uv(m)
-        slope = cp.radial_error_profile(m, K)[3]
+        fu, fv = sc.estimate_delta_uv(m)
+        slope = sc.radial_error_profile(m, K)[3]
         a3[name] = {
             "n": len(m),
             "median_abs_residual_m": float(np.median(e)) if e.size else None,
@@ -643,7 +643,7 @@ def pass_cones(
         rows: dict[str, Any] = {}
         for name in NUS_CAMERA_RIG:
             cam_loc, cam_rot = meta["poses"][name]
-            uv, z = cp.project_world(np.asarray(target)[None], cam_loc, cam_rot, K)
+            uv, z = sc.project_world(np.asarray(target)[None], cam_loc, cam_rot, K)
             u, v = float(uv[0, 0]), float(uv[0, 1])
             in_fov = bool(0.0 <= u < W and 0.0 <= v < H and z[0] > 0.5)
             px = int(masks[name].sum())
@@ -713,7 +713,7 @@ def pass_cones(
         if len(used_x) >= 3:
             # `prop_axis_regression` 的截距在**索引**口径;+shift 才是图像坐标。故用
             # shift=0 解出**原始截距**,再由它换算两种约定(不两次调回归、不重复拟合)。
-            raw_intercept, slope, resid = cp.prop_axis_regression(
+            raw_intercept, slope, resid = sc.prop_axis_regression(
                 np.asarray(used_x), np.asarray(centres), 0.0
             )
             cx_corner = raw_intercept  # corner:索引即图像坐标
@@ -812,8 +812,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cx_corner_px": (W - 1) / 2.0,
         "cy_center_px": H / 2.0,
         "cy_corner_px": (H - 1) / 2.0,
-        "occlusion_tol_m": cp.OCCLUSION_TOL_M,
-        "occlusion_tol_frac": cp.OCCLUSION_TOL_FRAC,
+        "occlusion_tol_m": sc.OCCLUSION_TOL_M,
+        "occlusion_tol_frac": sc.OCCLUSION_TOL_FRAC,
         "edge_radius_px": args.edge_radius_px,
         "plane_max_dist_m": PLANE_MAX_DIST_M,
         "plane_rms_max_m": PLANE_RMS_MAX_M,

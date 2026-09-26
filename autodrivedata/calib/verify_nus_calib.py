@@ -64,7 +64,7 @@ from typing import Any, cast
 import numpy as np
 
 # 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
-from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib import selfcheck as sc
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG  # noqa: E402
 from autodrivedata.gt.export.nuscenes import (  # noqa: E402
     NUS_CAMERAS,
@@ -743,7 +743,7 @@ def _rendered_fov(world, ego, pc) -> dict[str, Any]:
         for cam in rig_cameras():
             t = iseg[cam][0].get_transform()
             pose = (loc(t), rad(t.rotation))
-            r_cam = cp.cam_to_world_rot(pose[1])
+            r_cam = sc.cam_to_world_rot(pose[1])
             origin = np.asarray(pose[0], dtype=np.float64)
             row: dict[str, Any] = {"z_ladder": list(FOV_Z_LADDER)}
             for z in FOV_Z_LADDER:
@@ -764,7 +764,7 @@ def _rendered_fov(world, ego, pc) -> dict[str, Any]:
                 for _, a in placed:
                     a.destroy()
                 if len(samples) >= MIN_FOV_SAMPLES:
-                    _, slope, resid = cp.prop_axis_regression(
+                    _, slope, resid = sc.prop_axis_regression(
                         np.asarray([s[0] for s in samples]), np.asarray([s[1] for s in samples]), 0.0
                     )
                     fx_est = slope * z

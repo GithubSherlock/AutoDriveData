@@ -1,9 +1,9 @@
 """实时标定槽(`live_studio --calib`)的纯值件:点云预算 / 残差着色 / 逐相机统计 / HUD 行。
 
-与离线探针 [autodrivedata/calib/probe_calib.py](../autodrivedata/calib/probe_calib.py) 的关系:那个是**一次性自证**
+与离线探针 [autodrivedata/calib/probe_calib.py](probe_calib.py) 的关系:那个是**一次性自证**
 (静态 ego、训练口径全分辨率、落 `report.json` + `overlay.png`);本模块服务的是
 **开着车时的持续监看**。两者共用同一套数值核心
-([autodrivedata/calib_probe.py](calib_probe.py)),差别只在预算与呈现:
+([autodrivedata/calib/selfcheck.py](selfcheck.py)),差别只在预算与呈现:
 
 | | 离线探针 | 实时槽 |
 |---|---|---|
@@ -40,7 +40,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib import selfcheck as sc
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import CONVENTION_CORNER
 from autodrivedata.slam.accum import voxel_downsample
@@ -133,15 +133,15 @@ def live_planes(
     down = voxel_downsample(pts[d < max_dist], voxel)[:, :3]
     if down.shape[0] > max_samples:
         down = down[rng.choice(down.shape[0], max_samples, replace=False)]
-    normals, rms = cp.fit_local_planes(down, radius)
+    normals, rms = sc.fit_local_planes(down, radius)
     keep = np.isfinite(rms) & (rms <= rms_max)
     pts_k, nrm_k = down[keep], normals[keep]
     return pts_k, nrm_k, np.einsum("ij,ij->i", nrm_k, pts_k)
 
 
-def empty_samples() -> cp.DepthSamples:
+def empty_samples() -> sc.DepthSamples:
     """空采样集(某相机一个点都没投进来时的合法返回值,不是 None —— 免得调用方各写一份)。"""
-    return cp.DepthSamples(np.zeros((0, 2)), np.zeros(0), np.zeros(0), np.zeros((0, 2)))
+    return sc.DepthSamples(np.zeros((0, 2)), np.zeros(0), np.zeros(0), np.zeros((0, 2)))
 
 
 def sample_camera(
@@ -149,16 +149,16 @@ def sample_camera(
     cam_pose: tuple[tuple[float, float, float], tuple[float, float, float]],
     intrinsics: CameraIntrinsics,
     depth: np.ndarray,
-) -> cp.DepthSamples:
+) -> sc.DepthSamples:
     """单相机采样(实时槽口径:`CONVENTION_CORNER` + **不开**窗口极差)。
 
     窗口极差那一路(`occlusion_radius_px`)实测在 r=16 px 时把样本塌 95%,而单侧可见性
-    判据在 r=0 就等价生效 ⇒ 实时槽一律不传(理由见 `calib_probe.collect_samples`)。
+    判据在 r=0 就等价生效 ⇒ 实时槽一律不传(理由见 `selfcheck.collect_samples`)。
     """
     pts, nrm, off = planes
     if pts.shape[0] == 0:
         return empty_samples()
-    return cp.collect_samples(
+    return sc.collect_samples(
         pts, nrm, off, cam_pose[0], cam_pose[1], intrinsics, depth, CONVENTION_CORNER, None
     )
 
@@ -226,7 +226,7 @@ class CameraResidual:
 
 
 def summarize(
-    samples: dict[str, cp.DepthSamples],
+    samples: dict[str, sc.DepthSamples],
     near: dict[str, float] | None = None,
 ) -> dict[str, CameraResidual]:
     """逐相机采样 → 统计。样本数 < `MIN_CAM_SAMPLES` 时 median/p90 记 `None`(不报假数字)。"""

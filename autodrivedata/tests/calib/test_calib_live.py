@@ -2,7 +2,7 @@
 
 三类锚:
 
-1. **几何**:传感器系点 → 世界系不翻 y;平面截距口径与 `calib_probe.collect_samples` 对齐
+1. **几何**:传感器系点 → 世界系不翻 y;平面截距口径与 `selfcheck.collect_samples` 对齐
    (正对相机的平面残差恒 0)。
 2. **像素约定**:着色用 `index = u`(corner),不减 0.5 —— 注入 uv=1.0 必须落在**索引 1**。
 3. **统计口径**(本文件的核心):样本数不足时 `median_abs is None`,**不许**拿 3 个样本
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from autodrivedata.calib import calib_live as cl
-from autodrivedata.calib import calib_probe as cp
+from autodrivedata.calib import selfcheck as sc
 from autodrivedata.calib.core import CameraIntrinsics
 
 W, H, FOV = 640, 360, 90.0
@@ -25,9 +25,9 @@ CAM_LOC = (0.0, 0.0, 0.0)
 CAM_ROT_FWD = (0.0, 0.0, 0.0)  # CARLA 相机局部系:x 前 / y 右 / z 上
 
 
-def _samples(n: int, e: float) -> cp.DepthSamples:
+def _samples(n: int, e: float) -> sc.DepthSamples:
     """n 个残差恒为 e 的样本(uv/z 只为占位)。"""
-    return cp.DepthSamples(
+    return sc.DepthSamples(
         uv=np.zeros((n, 2)), z_lidar=np.full(n, 20.0), z_render=np.full(n, 20.0 + e), grad=np.zeros((n, 2))
     )
 
@@ -36,7 +36,7 @@ def _world(uv: np.ndarray, z: float) -> np.ndarray:
     """图像坐标 + 光轴深度 → 世界系点(KITTI 相机系 z 前 ⇒ 光轴落在世界 +x)。"""
     u = np.asarray(uv, dtype=np.float64).reshape(-1, 2)
     cam = np.stack([(u[:, 0] - K.cx) * z / K.fx, (u[:, 1] - K.cy) * z / K.fy, np.full(u.shape[0], z)], axis=1)
-    return cam @ cp.cam_to_world_rot(CAM_ROT_FWD).T
+    return cam @ sc.cam_to_world_rot(CAM_ROT_FWD).T
 
 
 class TestWorldPoints:
@@ -195,7 +195,7 @@ class TestSummarize:
 
     def test_p90_reported(self):
         e = np.linspace(0.0, 1.0, 100)
-        s = cp.DepthSamples(np.zeros((100, 2)), np.full(100, 20.0), 20.0 + e, np.zeros((100, 2)))
+        s = sc.DepthSamples(np.zeros((100, 2)), np.full(100, 20.0), 20.0 + e, np.zeros((100, 2)))
         st = cl.summarize({"CAM_FRONT": s})["CAM_FRONT"]
         assert st.median_abs == pytest.approx(float(np.median(e)))
         assert st.p90_abs == pytest.approx(float(np.percentile(e, 90)))
