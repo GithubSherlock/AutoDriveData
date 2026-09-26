@@ -45,7 +45,7 @@ import numpy as np
 import pytest
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 # 官方 mini(标定权威,优先)→ 本仓自产(只有一套标定,做对照)
 OFFICIAL_MINI = Path("/root/autodl-tmp/Documents/datasets/nuscenes_mini")
@@ -580,7 +580,7 @@ class TestOfficialVsRepo:
         ego 系"解释点云 ⇒ 整片点云绕 z 转 90°(`num_lidar_pts` 复现比值 1.0000 → 0.0854)。
         现在两侧同源 `export.nuscenes.NUS_LIDAR_CALIB`,官方值 = 绕 z −89.879° + 1.4289° 倾角。
         """
-        from autodrivedata.export.nuscenes import NUS_LIDAR_CALIB
+        from autodrivedata.gt.export.nuscenes import NUS_LIDAR_CALIB
 
         r = find_pose(self._repo_rows(), "LIDAR_TOP")
         assert r.translation == pytest.approx(NUS_LIDAR_CALIB[0], abs=1e-9)

@@ -11,7 +11,7 @@ import pytest
 
 carla = pytest.importorskip("carla")
 
-from autodrivedata import geometry as g  # noqa: E402
+from autodrivedata.utils import geometry as g  # noqa: E402
 
 # (pitch, yaw, roll) 度——覆盖单轴、双轴与一般姿态
 CASES_DEG = [

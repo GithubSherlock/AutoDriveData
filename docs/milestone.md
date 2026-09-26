@@ -64,7 +64,7 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 ## P2 静态 GT(2026-09-08)✅
 
 - 选型裁决(probe 实测):semantic LiDAR 后处理**出局**(信号灯非 actor、车道线非实体,LiDAR 打不到);RoadRunner 资产化挂起 → **地图查询 API 定案**(landmark 65 个 + waypoint lane_marking)
-- 交付:`autodrivedata/static_gt.py` 纯值格式(StaticFrame:signals + lane_lines)+ `collect_static_gt.py`(锚定 pt0 定速直行,65m 视距),落盘 `training/static_gt/{fid}.json` + overlay 目检图
+- 交付:`autodrivedata/gt/static_gt.py` 纯值格式(StaticFrame:signals + lane_lines)+ `collect_static_gt.py`(锚定 pt0 定速直行,65m 视距),落盘 `training/static_gt/{fid}.json` + overlay 目检图
 - 验收:人工目检通过——信号锚点在真实灯杆基座处、车道线双线透视收敛正确、跨帧一致性 ✓
 - 边界:静态 GT 与天气/光照解耦(换地图即换真值,M4 复用本链路);灯色属**动态** GT 不入静态 json(2026-09-09 更正:Opt 图**有** 15 个灯 actor,原记"无 actor"有误,见下)
 
@@ -93,7 +93,7 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 ## 灯色动态 GT(2026-09-09)✅
 
 - 工业口径:灯态 = 独立时序语义层(BDD 挂框属性无时序 / WOMD 逐帧序列但 71.7% 缺失 / nuScenes 地图层只有静态几何)→ 本项目取 WOMD 形态,Off/Unknown **不猜**
-- 交付:`autodrivedata/traffic_light.py`(纯值:normalize_state / in_front / phase_at / Frame JSON 往返)+ `autodrivedata/sim/collect_tl_states.py`(记录模式 / `--cycle 6,2,6` 受控切灯)+ `carla_common.traffic_light_frame`/`draw_traffic_lights`(采集器与实时流共用)
+- 交付:`autodrivedata/gt/traffic_light.py`(纯值:normalize_state / in_front / phase_at / Frame JSON 往返)+ `autodrivedata/sim/collect_tl_states.py`(记录模式 / `--cycle 6,2,6` 受控切灯)+ `carla_common.traffic_light_frame`/`draw_traffic_lights`(采集器与实时流共用)
 - 落盘:KITTI root 扩展 `training/traffic_light/{fid}.json` + `image_2/` + `overlay/`
 - 验收(受控 90 帧):状态变化点 = 帧 0/60/80 与计划逐帧吻合;管制车道/停车线非空;overlay 差集与画面内灯数相关 0.99;view_stream 回归差集 3522 px
 - 实测驱动的两处修正:①圆形 horizon 收进 79% 身后灯 → 加前向半平面过滤(1046→221 灯次);②同步模式首个 `get_actors()` 为空致清场漏清 → 修在 `sync_mode()`

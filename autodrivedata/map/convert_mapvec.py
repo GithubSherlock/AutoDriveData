@@ -20,7 +20,7 @@ import json
 import os
 
 from autodrivedata.map.mapvec import to_ego_frame, to_maptr_annotation, vecs_load
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

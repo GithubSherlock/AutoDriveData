@@ -7,14 +7,14 @@ import math
 import numpy as np
 import pytest
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.camera_rig import (
     NUS_CAMERA_CALIBS,
     NUS_CAMERA_RIG,
     NUS_CAMERAS,
     nus_camera_rig,
 )
-from autodrivedata.export import nuscenes as ne
+from autodrivedata.gt.export import nuscenes as ne
+from autodrivedata.utils import geometry as g
 
 
 class TestCarlaToNus:
@@ -59,7 +59,7 @@ class TestQuat:
 
     def test_quat_semantics_matches_autolabel(self):
         """quat 语义与 auto3dlabel 一致(单测锁定;oracle 文件另有逐点对照)。"""
-        from autodrivedata.geometry import quat_to_yaw as ours
+        from autodrivedata.utils.geometry import quat_to_yaw as ours
 
         # auto3dlabel quat_to_yaw 实现:wrap_pi(2*arctan2(z, w))
         q = g.yaw_to_quat(1.234)

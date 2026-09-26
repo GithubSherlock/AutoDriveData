@@ -21,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.perception.multilidar import convergence_metrics, point_to_plane_icp
+from autodrivedata.utils.paths import project_path
 
 
 def _load_frame(root: Path, frame: int) -> np.ndarray:

@@ -33,7 +33,7 @@ from autodrivedata.map.mapviz import (
     draw_projected_lines,
     intrinsics_from_k,
 )
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 _CAM_SCALE = 0.5  # 相机图 1242×375 → 621×187 拼图
 _BEV_W, _BEV_H = 420, 420  # BEV 面板像素

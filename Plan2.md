@@ -308,7 +308,7 @@ ego 系必须左乘 ego 逆。写成右乘会把 ego 的**世界坐标**混进�
 而**偏航恰好仍是 0.000°** ⇒ 只看偏航自检会漏掉,故 `rig_mount_deviation` 同时报平移。
 
 **踩坑 2 —— `rotation_matrix_to_carla` 的 pitch 符号**:写成 `pitch = asin(−R[2,0])`
-会静默反号(第三方视角俯仰 −12° → +12°)。已落 `autodrivedata/geometry.py` 纯值实现 +
+会静默反号(第三方视角俯仰 −12° → +12°)。已落 `autodrivedata/utils/geometry.py` 纯值实现 +
 `tests/test_geometry.py::TestRotationMatrixToCarla` 往返单测(200 随机旋转逐元素 <1e-12)。
 
 #### P-L.1 环视 rig **两代并存** —— rig 必须匹配权重训练数据(2026-09-19 实测订正)
@@ -534,7 +534,7 @@ studio 的**录制出口**——检测框/灯色/BEV 地图点与轨迹/HUD 全�
 #### P-M.1 根因:rig 镜像(`yaw_carla = −az_nus` 漏翻)+ pitch/roll 硬编码 0
 
 旧 `official` rig 的偏航是**官方方位角原样抄的正数**,漏了 CARLA/nuScenes 的符号转换
-(`yaw_carla = −az_nus`,见 [autodrivedata/geometry.py](autodrivedata/geometry.py) `carla_yaw_to_nus_yaw`)
+(`yaw_carla = −az_nus`,见 [autodrivedata/utils/geometry.py](autodrivedata/utils/geometry.py) `carla_yaw_to_nus_yaw`)
 ⇒ **四个侧/后相机左右互换**,pitch/roll 还硬编码 `0`:
 
 | 相机 | 旧值(bug) | 应为(−az_nus) | 偏差 |
@@ -834,7 +834,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 ##### P-M.7.6 两处一致性缺陷(与标定数值无关,但必须一并修)
 
 1. **`NUS_CAMERA_CALIBS` 两份**:[autodrivedata/camera_rig.py](autodrivedata/camera_rig.py) 与
-   [autodrivedata/export/nuscenes.py](autodrivedata/export/nuscenes.py) 各一份,**实测逐字节相等**,
+   [autodrivedata/gt/export/nuscenes.py](autodrivedata/gt/export/nuscenes.py) 各一份,**实测逐字节相等**,
    但 `export/nuscenes.py` **不 import `camera_rig`**(`autodrivedata/sim/collect_nus.py` 也不 import)
    ⇒ 单点来源在 §P-M 建立后**没被接上**,下次改官方表会静默分叉。
 2. **`camera_rig` 头注的四元数模长断言对本数据集为假**:头注写「官方四元数不是单位长度
@@ -869,10 +869,10 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 | 1 | 相机 spawn 改走 `NUS_CAMERA_RIG`(挂点 + 6DoF 姿态),删 `CAM_YAW_OFFSET` | `autodrivedata/sim/collect_nus.py:57,177-182` |
 | 2 | 相机蓝图 `fov` 逐通道(64.310/64.561/64.790/64.959/64.845/89.343) | `autodrivedata/sim/collect_nus.py:65-69`(新增逐通道表) |
 | 3 | 雷达 spawn 偏航改官方(`−az_nus`):FRONT −0.20 / FRONT_LEFT −88.36 / FRONT_RIGHT +90.98 / BACK_LEFT −174.41 / BACK_RIGHT +176.11 | `autodrivedata/sim/collect_nus.py:73-79` |
-| 4 | `NUS_RADAR_OFFSETS` 的 yaw 改官方 n015 值(弧度) | `autodrivedata/export/nuscenes.py:65-71` |
+| 4 | `NUS_RADAR_OFFSETS` 的 yaw 改官方 n015 值(弧度) | `autodrivedata/gt/export/nuscenes.py:65-71` |
 | 5 | LiDAR spawn 挂点改官方 `(0.9437, 0, 1.8402)` + 旋转 `(pitch −0.338, yaw +89.884, roll −1.388)`;`calib_lidar` 同步 | `autodrivedata/sim/collect_nus.py:175,234-237` |
-| 6 | `camera_intrinsic` 换**逐通道官方 n015 K 表**,函数改名(去掉 `_fov90`) | `autodrivedata/export/nuscenes.py:147-156,296` |
-| 7 | `NUS_CAMERA_CALIBS` **去重**:`export/nuscenes.py` 改为 `from autodrivedata.camera_rig import NUS_CAMERA_CALIBS` | `autodrivedata/export/nuscenes.py:53-60` |
+| 6 | `camera_intrinsic` 换**逐通道官方 n015 K 表**,函数改名(去掉 `_fov90`) | `autodrivedata/gt/export/nuscenes.py:147-156,296` |
+| 7 | `NUS_CAMERA_CALIBS` **去重**:`export/nuscenes.py` 改为 `from autodrivedata.camera_rig import NUS_CAMERA_CALIBS` | `autodrivedata/gt/export/nuscenes.py:53-60` |
 | 8 | `camera_rig` 头注的四元数归因改成"手抄 4 位小数舍入"(官方原值 |q|=1.000000000000) | `autodrivedata/camera_rig.py:34` |
 
 **★ 第 5 项隐含一个签名改动(别漏)**:`NusSample.calib_lidar` 现在是
@@ -885,7 +885,7 @@ ars408 实测锥 = 方位角 ±38.1° / 俯仰 ±7.0° / range 250 m(采集侧�
 - **(不推荐)** 新增一个 quaternion 版函数并存 ⇒ 两条链会分叉,违反本仓"单点来源"纪律。
 
 **连带改动(签名一改,这三处必须同 commit 跟上)**:
-`autodrivedata/export/nuscenes.py:275-276`(写表时 `_quat(yaw)` → 直写官方四元数)、
+`autodrivedata/gt/export/nuscenes.py:275-276`(写表时 `_quat(yaw)` → 直写官方四元数)、
 `tests/test_export_nuscenes.py:66` 与 `tests/test_nuscenes_oracle_autolabel.py:35`(测试构造点)。
 
 **验收判据(全数值,不许目检)**:
@@ -1019,7 +1019,7 @@ bash autodrivedata/sim/smoke_radar_collect.sh                           # devkit
    [autodrivedata/calib/probe_calib.py](autodrivedata/calib/probe_calib.py)、[autodrivedata/sim/carla_common.py](autodrivedata/sim/carla_common.py)、
    [autodrivedata/sim/collect_static_gt.py](autodrivedata/sim/collect_static_gt.py) 原本全属这一类。**"修了 DejaVu 就完事"是错的。**
 
-**判据(全数值,不目检,不依赖非本项目依赖)**:新建 [autodrivedata/fonts.py](autodrivedata/fonts.py)
+**判据(全数值,不目检,不依赖非本项目依赖)**:新建 [autodrivedata/utils/fonts.py](autodrivedata/utils/fonts.py)
 用**渲染探针**判"这个字体能不能画中文":
 `U+10FFFF`(noncharacter,Unicode 永久保留 ⇒ 任何字体都不该有它的字形)渲染到固定画布取像素 SHA-256
 = 该字体的 **`.notdef` 签名**(豆腐块的像素指纹);某字符签名与之相同 ⇒ 画出来就是豆腐块。

@@ -32,7 +32,6 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
 from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.calib.probe_calib import (
@@ -48,10 +47,11 @@ from autodrivedata.calib.probe_calib import (
     place_cone_along,
     world_planes,
 )
-from autodrivedata.geometry import quat_normalize, quat_to_matrix
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
 from autodrivedata.sim.live_common import RIG_LEGACY, RIG_NUSCENES, compose_rows, image_to_pil, rig_spec
+from autodrivedata.utils import fonts
+from autodrivedata.utils.geometry import quat_normalize, quat_to_matrix
+from autodrivedata.utils.paths import project_path
 
 # 历史字面值(修前的 `autodrivedata/sim/collect_surround.py:SURROUND_CAMS`,已随本次修正删除)——
 # 官方方位角被**原样抄成正数**,漏了 `yaw_carla = −az_nus`。列在此处只为让复核图能并排显示

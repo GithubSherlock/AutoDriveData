@@ -29,8 +29,6 @@ pytest.importorskip("carla")
 # 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物);ROOT 改走 paths.PROJECT_ROOT ——
 # 不再用 `Path(__file__).parents[N]`,那条路径会随本文件在包内挪动而**静默指错**
 # (阶段 3 本文件从 tests/ 挪到 autodrivedata/tests/calib/,parents[1] 就从仓库根变成了 tests/)。
-from autodrivedata import geometry as g
-from autodrivedata import paths
 from autodrivedata.calib import verify_nus_calib as vnc
 from autodrivedata.calib.camera_rig import (
     NUS_CAMERA_CALIBS,
@@ -43,12 +41,14 @@ from autodrivedata.calib.camera_rig import (
     NUS_WIDE_REAR_X_CARLA,
     max_hfov_no_ego,
 )
-from autodrivedata.export import nuscenes as ne
+from autodrivedata.gt.export import nuscenes as ne
 from autodrivedata.sim import (
     collect_nus,
     collect_surround,
 )
 from autodrivedata.sim import live_common as lc
+from autodrivedata.utils import geometry as g
+from autodrivedata.utils import paths
 
 ROOT = paths.PROJECT_ROOT
 CALIB = ROOT / "autodrivedata" / "calib"  # 阶段 3 起标定层在这里(源码检查按路径读)

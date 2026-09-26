@@ -440,6 +440,38 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 > | 8 | **同名多义**(包名 / 输出目录 / env 名) | 阶段 4 的 `maptr_official` |
 > | 9 | **`import <包>.<模块> as 别名`** | 阶段 5 漏 1 处(`import autodrivedata.live_slam as ls`) |
 > | 10 | **同一条目里同一路径出现两次**(`[X](X)` 型 markdown 链接) | 阶段 6:替换脚本每条规则只换**第一处** |
+> | 11 | **散文里的 `包/模块.属性` 混合写法**(无 `.py` 后缀) | 阶段 7:`autodrivedata/paths.project_path` |
+
+#### ★ 阶段 7 执行记录(已完成 2026-09-26)
+
+**搬迁**:`gt.py`/`static_gt.py`/`traffic_light.py` + `export/` 子包(3)→ `autodrivedata/gt/`
+(**`gt.py` 改名 `gt/core.py`**,与 `calib/core.py`、`slam/core.py` 同款);
+`geometry.py`/`paths.py`/`fonts.py` → `autodrivedata/utils/`。12 测试随迁,
+`test_layer_guard.py` 归 `autodrivedata/tests/` 根(它是包级守卫,不属于任何能力面)。
+引用重写 **147 行 / 83 文件**——本次量最大,因为 `paths.py` 被 42 处引用(全仓最多的模块)。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`,**0 失败**;ruff 干净。
+
+**★ 方法升级(阶段 6 那个 bug 的正解)**:替换脚本从「逐条规则 `find`+一次赋值」改为
+**单一正则 `PAT.sub(lambda m: MAP[m.group(0)], ln)`**。`re.sub` **不重扫替换结果**,
+从机制上杜绝二次命中,不再依赖手写的幂等护栏。**后续阶段一律用这个写法。**
+
+**★ 四个发现**:
+
+1. **`parents[N]` 陷阱第三次出现**(`test_fonts.py` 从 `tests/` 挪进 `autodrivedata/tests/utils/`)。
+   这一次**不只是修,而是把判据机械化**:写了个脚本遍历包内所有 `.py`,
+   用 `p.parents[N] == 仓库根` 逐一判定,一次列出全部命中(含 docstring 里的假阳性)。
+   ⇒ **沉淀成阶段 9 的一个候选**:把这条做成常驻守卫,格式如
+   「若某文件的 `parents[N]` 解析结果既不是仓库根也不是 `autodrivedata/` 等已知锚点,则报错」。
+2. **`.ipynb_checkpoints` 又冒出 5 处**(`autodrivedata/`、`tools/`、`autodrivedata/utils/`、`autodrivedata/perception/`)。
+   VS Code 在编辑文件时会重建它们 ⇒ **阶段 0 的清理是一次性的,不是一劳永逸**。
+   (已被 `.gitignore` 覆盖,不影响 git;只是视觉噪音 + 那个"纯值包里的过期副本"隐患。)
+3. **两个预判断点都命中,预判有效**:① `test_paths.py:25` 断言 `autodrivedata/paths.py` 存在;
+   ② `test_fonts` 的判据 `n.module in ("autodrivedata", ...)` 在 `fonts` 搬进 `utils/` 后失效。
+   两条都在动手前就写下来了,修起来零排查成本 —— **这就是"搬迁清单先扫一遍"的回报**。
+4. **我自己的编辑引入了回退**:`re.sub` 规则跑完后,我手写 `from autodrivedata import paths`
+   去改 `test_fonts.py`,又把已经改好的形式写回了旧的(规则不会再跑第二遍)。
+   ⇒ **教训:替换脚本跑完之后的手工编辑,必须按新口径写;改完要再扫一次残留。**
 
 #### ★ 阶段 6 执行记录(已完成 2026-09-26)
 

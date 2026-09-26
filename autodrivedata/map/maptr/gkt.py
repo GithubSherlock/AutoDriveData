@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from autodrivedata import geometry as g
+from autodrivedata.utils import geometry as g
 
 # CARLA 系 → KITTI 相机系基变换的转置(geometry.CARLA_TO_CAM 正交、det=−1,转置即逆)
 _C2K_T = torch.tensor(g.CARLA_TO_CAM.T, dtype=torch.float32)

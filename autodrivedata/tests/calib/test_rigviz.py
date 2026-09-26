@@ -22,8 +22,6 @@ import numpy as np
 import pytest
 from PIL import Image
 
-# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
-from autodrivedata import fonts  # noqa: E402
 from autodrivedata.calib import viz_rig_check as vrc  # noqa: E402
 from autodrivedata.calib.camera_rig import (  # noqa: E402
     camera_azimuth_nus,
@@ -40,7 +38,10 @@ from autodrivedata.calib.rigviz import (  # noqa: E402
     azimuth_of,
     draw_rig_layout,
 )
-from autodrivedata.export.nuscenes import camera_calibs, camera_fov  # noqa: E402
+from autodrivedata.gt.export.nuscenes import camera_calibs, camera_fov  # noqa: E402
+
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
+from autodrivedata.utils import fonts  # noqa: E402
 
 RIGS = ("nuscenes", "wide")
 # wide rig 的设计预算(§P-M.9):三个盲区 + 合计 + 覆盖率。改 rig 就必须改这里,不许放宽。

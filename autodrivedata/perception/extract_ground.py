@@ -21,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.perception.ground import grid_ground, ground_stats, ransac_plane
+from autodrivedata.utils.paths import project_path
 
 
 def parse_range(spec: str) -> list[int]:

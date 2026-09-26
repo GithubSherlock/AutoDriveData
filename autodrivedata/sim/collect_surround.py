@@ -64,12 +64,12 @@ from typing import Any, cast
 import carla
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
-from autodrivedata.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
+from autodrivedata.gt.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.map.mapviz import calib_from_fov
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
 from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic
 from autodrivedata.sim.scenarios import SCENES, merged_weather
+from autodrivedata.utils.paths import project_path
 
 # 相机名 → 相对 ego 的 yaw(度)。**别名**,真值在 `autodrivedata/camera_rig.py`
 # (`NUS_CAMERA_RIG` 的完整 (平移, (pitch,yaw,roll)));本表只用于**遍历相机名的顺序**

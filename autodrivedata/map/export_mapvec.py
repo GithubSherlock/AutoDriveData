@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.map.mapvec import crop_to_ego, extract_mapvec, resample, to_carla, vecs_dump
 from autodrivedata.map.opendrive import parse_xodr
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 XODR_GLOB = "/root/autodl-tmp/CARLA_0.9.16/CarlaUE4/Content/Carla/Maps/**/*.xodr"
 OUT_DIR = "training/map"

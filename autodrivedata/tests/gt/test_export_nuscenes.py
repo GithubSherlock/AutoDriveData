@@ -8,9 +8,9 @@ import math
 import numpy as np
 import pytest
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.camera_rig import NUS_WIDE_REAR_X_CARLA
-from autodrivedata.export import nuscenes as ne
+from autodrivedata.gt.export import nuscenes as ne
+from autodrivedata.utils import geometry as g
 
 SIZE = (2.0, 4.0, 2.0)  # (w,l,h)
 ORIGIN = (0.0, 0.0, 0.0)

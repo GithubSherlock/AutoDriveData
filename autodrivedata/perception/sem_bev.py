@@ -37,9 +37,11 @@ import cv2
 import numpy as np
 import torch
 
-from autodrivedata.geometry import ground_intersection  # noqa: F401 — 语义 BEV 与采集/实时流共用同一投影
 from autodrivedata.map.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose, intrinsics_from_k
-from autodrivedata.paths import project_path
+from autodrivedata.utils.geometry import (
+    ground_intersection,  # noqa: F401 — 语义 BEV 与采集/实时流共用同一投影
+)
+from autodrivedata.utils.paths import project_path
 
 try:
     from ultralytics import YOLO

@@ -40,7 +40,7 @@ import numpy as np
 from autodrivedata.map.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
 from autodrivedata.map.mapvec import BEV_RANGE
 from autodrivedata.map.mapvec_schema import load_frame
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 DEFAULT_CLASSES = ("divider", "ped_crossing", "boundary", "centerline")
 

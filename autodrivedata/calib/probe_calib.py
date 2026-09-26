@@ -94,7 +94,6 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import calib_probe as cp
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
@@ -105,14 +104,6 @@ from autodrivedata.calib.depth_codec import (
     convention_shift,
     decode_depth,
 )
-from autodrivedata.geometry import (
-    carla_rotation_matrix,
-    carla_to_nus_global,
-    quat_normalize,
-    quat_to_matrix,
-    wrap_pi,
-)
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
@@ -130,6 +121,15 @@ from autodrivedata.sim.live_common import (
     rig_spec,
 )
 from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.utils import fonts
+from autodrivedata.utils.geometry import (
+    carla_rotation_matrix,
+    carla_to_nus_global,
+    quat_normalize,
+    quat_to_matrix,
+    wrap_pi,
+)
+from autodrivedata.utils.paths import project_path
 
 W, H, FOV = int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]), float(CAM_ATTRS["fov"])
 K = CameraIntrinsics(width=W, height=H, fov_h_deg=FOV)

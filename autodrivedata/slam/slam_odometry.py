@@ -30,7 +30,6 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.slam.accum import voxel_downsample
 from autodrivedata.slam.core import (
     DOWNSAMPLE_VOXEL,
@@ -38,6 +37,7 @@ from autodrivedata.slam.core import (
     closure_error,
     icp_odometry,
 )
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

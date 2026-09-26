@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from autodrivedata import paths
+from autodrivedata.utils import paths
 
 # --------------------------------------------------------------------------- 规则表
 # 键 = 目录(相对 autodrivedata/,`/` 分隔;"" = 包根);值 = 该目录下【禁止】import 的三方顶层名。

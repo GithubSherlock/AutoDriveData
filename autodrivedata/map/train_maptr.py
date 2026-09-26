@@ -39,7 +39,7 @@ from autodrivedata.map.maptr.dataset import (
 from autodrivedata.map.maptr.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from autodrivedata.map.maptr.head import maptr_loss, match_assign
 from autodrivedata.map.maptr.model import MapTR, load_map_weights
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 
 def _to_device(images: dict | list, dev: torch.device):

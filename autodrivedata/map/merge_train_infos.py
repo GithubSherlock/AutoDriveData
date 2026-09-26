@@ -17,7 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

@@ -51,7 +51,7 @@ def box_to_ground_distance(
     框底中心投到地平面 z=ground_z,再取相机前向距离。相机 z 低于地面
     (相机在地平面以上)或射线不出图时返回 None。
     """
-    from autodrivedata.geometry import ground_intersection
+    from autodrivedata.utils.geometry import ground_intersection
 
     g = ground_intersection(
         (cam_location, cam_rotation_rad),

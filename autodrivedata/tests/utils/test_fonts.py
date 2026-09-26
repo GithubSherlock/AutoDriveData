@@ -1,7 +1,7 @@
 """字体落点的回归钉:**中文字形不许静默变成豆腐块**。
 
 症状是 `outputs/calib_check/check_geometry.png` 里中文字符位全是方框。根因有两条,
-只修一条不够(见 [autodrivedata/fonts.py](../autodrivedata/fonts.py) 的模块 docstring):
+只修一条不够(见 [autodrivedata/utils/fonts.py](../autodrivedata/utils/fonts.py) 的模块 docstring):
 ① 本机字体族**一个 CJK 字形都没有**,绘制代码却硬写 `DejaVuSans-Bold`;
 ② **PIL 没有字体回退链**,不传 `font=` 就用内置位图字体(同样没有 CJK)。
 
@@ -19,9 +19,14 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
+from autodrivedata.utils import fonts, paths
 
-ROOT = Path(__file__).resolve().parents[1]
+# ★ 走 `paths.PROJECT_ROOT`,**不要**写 `Path(__file__).resolve().parents[N]` ——
+# 本文件阶段 7 从 `tests/` 挪进 `autodrivedata/tests/utils/`,`parents[1]` 就从仓库根
+# 变成了 `autodrivedata/tests/`,而 `DRAWING_MODULES` 里的相对路径全按仓库根写 ⇒ **静默断**
+# (症状:FileNotFoundError 指向 `autodrivedata/tests/autodrivedata/sim/...`)。
+# 同款陷阱已出现三次(§5.6 `paths.py` / 阶段 3 `test_nuscenes` / 本处)。
+ROOT = paths.PROJECT_ROOT
 
 # 会把文字画到画面上的模块(新增绘制脚本请加进来)
 DRAWING_MODULES: tuple[str, ...] = (
@@ -241,7 +246,7 @@ class TestDrawnStringsAreRenderable:
                     continue
                 if node.func.attr != "text":
                     continue
-                # `autodrivedata/fonts.py` 自己就是那个落点,不在此列(它不在 DRAWING_MODULES 里)
+                # `autodrivedata/utils/fonts.py` 自己就是那个落点,不在此列(它不在 DRAWING_MODULES 里)
                 if not any(k.arg == "font" for k in node.keywords):
                     offenders.append(f"{rel}:{node.lineno}")
         assert not offenders, "这些位置没传 font=(会用内置位图字体,中文变豆腐块):" + repr(offenders)
@@ -251,7 +256,7 @@ class TestDrawnStringsAreRenderable:
 def test_drawing_module_imports_the_font_module(rel: str) -> None:
     """**碰文字渲染的模块**必须经 `autodrivedata.fonts` 落点 —— 否则会悄悄退回豆腐块。
 
-    判据 = 「源码里出现 `fonts`」⇒ 必须真的 `from autodrivedata.fonts import ...`。
+    判据 = 「源码里出现 `fonts`」⇒ 必须真的 `from autodrivedata.utils.fonts import ...`。
     只**委托**绘制、自己不碰文字的模块跳过(`live_studio.py` 只调 `draw_hud`,
     `calib_live.py` 只构造 `hud_line` 字符串)—— 它们进 `DRAWING_MODULES` 是为了
     **字面量扫描**,不是为了这个判据。
@@ -266,14 +271,15 @@ def test_drawing_module_imports_the_font_module(rel: str) -> None:
     src = (ROOT / rel).read_text(encoding="utf-8")
     if "fonts" not in src:
         pytest.skip(f"{rel} 不碰文字渲染(仅委托绘制),无需 import 字体落点")
-    # 两种惯用形式都得认:`from autodrivedata.fonts import ...` 与 `from autodrivedata import fonts`。
+    # 两种惯用形式都得认:`from autodrivedata.utils.fonts import ...` 与 `from autodrivedata.utils import fonts`。
     # 关键是**后者只认别名恰为 `fonts` 的那一种** —— 旧判据在这里失守:
     # 它接受 `from autodrivedata import <任何东西>`,于是被无关的 import 喂饱。
+    # (阶段 7 起 `fonts.py` 在 `autodrivedata/utils/` 下,故基线包名是 `autodrivedata.utils`。)
     imported = any(
         isinstance(n, ast.ImportFrom)
         and (
-            n.module == "autodrivedata.fonts"
-            or (n.module == "autodrivedata" and any(a.name == "fonts" for a in n.names))
+            n.module == "autodrivedata.utils.fonts"
+            or (n.module == "autodrivedata.utils" and any(a.name == "fonts" for a in n.names))
         )
         for n in ast.walk(ast.parse(src))
     )

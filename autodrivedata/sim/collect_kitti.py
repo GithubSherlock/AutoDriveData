@@ -17,11 +17,9 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.core import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
-from autodrivedata.export.kitti import write_frame
-from autodrivedata.gt import ActorBox, box_to_gt_line
-from autodrivedata.paths import project_path
+from autodrivedata.gt.core import ActorBox, box_to_gt_line
+from autodrivedata.gt.export.kitti import write_frame
 from autodrivedata.perception.semantic import semantic_to_velodyne_bin
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
@@ -33,6 +31,8 @@ from autodrivedata.sim.carla_common import (
     spawn_npcs,
     sync_mode,
 )
+from autodrivedata.utils import geometry as g
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

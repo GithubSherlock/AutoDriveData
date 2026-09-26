@@ -25,18 +25,18 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
-from autodrivedata import geometry as g
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
-from autodrivedata.paths import project_path
-from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
-from autodrivedata.static_gt import (
+from autodrivedata.gt.static_gt import (
     LaneSegment,
     StaticFrame,
     StaticSignal,
     landmark_kind,
     merge_lane_marks,
 )
+from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
+from autodrivedata.utils import fonts
+from autodrivedata.utils import geometry as g
+from autodrivedata.utils.paths import project_path
 
 SPEED = 8.0  # m/s 定速直行(A/B 纪律:起点/轨迹可复现)
 LANDMARK_HORIZON = 65.0  # 与 GT max_distance 一致的静态锚点视距

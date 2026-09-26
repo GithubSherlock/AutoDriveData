@@ -69,13 +69,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import (
     CONVENTION_CORNER,
     convention_shift,
     sample_bilinear_many,
 )
+from autodrivedata.utils import geometry as g
 
 # 平面拟合:最少点数 / 最大残差(m)/ 平面性判据 s3/s2 上限
 MIN_PLANE_PTS = 12

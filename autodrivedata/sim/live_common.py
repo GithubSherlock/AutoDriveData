@@ -55,14 +55,14 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
-from autodrivedata.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
-from autodrivedata.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
-from autodrivedata.gt import ActorBox, box_center_world, box_corners_world, box_to_gt_line
+from autodrivedata.gt.core import ActorBox, box_center_world, box_corners_world, box_to_gt_line
+from autodrivedata.gt.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.map.mapviz import calib_from_fov
 from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
+from autodrivedata.utils import fonts
+from autodrivedata.utils.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 
 if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --maptr 路径真需要
     import torch
@@ -198,7 +198,7 @@ def draw_hud(img: Image.Image, text: str, warn: bool = False, y: int = 0) -> Ima
     底条宽度按**实测**文本宽度定:旧实现是 `7 * len(text) + 8`,那个 7 是 PIL 内置位图字体
     的经验字宽 —— 换真字体、或文本含中文(CJK 字宽 ≈ 2× ASCII)后常数必然错。
     **字体一律走 `autodrivedata.fonts`**:直接 `d.text(...)` 不传 `font=` 会用内置位图字体,
-    中文整行画成豆腐块(见 [autodrivedata/fonts.py](../autodrivedata/fonts.py))。
+    中文整行画成豆腐块(见 [autodrivedata/utils/fonts.py](../autodrivedata/utils/fonts.py))。
     """
     d = ImageDraw.Draw(img)
     bg = (140, 0, 0) if warn else (0, 0, 0)

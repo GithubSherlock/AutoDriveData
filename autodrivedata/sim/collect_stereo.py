@@ -32,9 +32,9 @@ import numpy as np
 
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import decode_depth
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, spawn_ego, sync_mode
 from autodrivedata.sim.collect_rig import stereo_rig_offsets
+from autodrivedata.utils.paths import project_path
 
 
 def _depth_to_meter(image: carla.Image) -> np.ndarray:

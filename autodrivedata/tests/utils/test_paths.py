@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from autodrivedata import paths
+from autodrivedata.utils import paths
 
 
 class TestProjectRoot:
@@ -18,11 +18,11 @@ class TestProjectRoot:
 
         ⚠️ 不要退回「只断言含 pyproject.toml」:`paths._find_project_root()` 的定义就是
         「向上找第一个含 pyproject.toml 的目录」,单这一条是**恒真**的,钉不住任何东西。
-        `.git` 与 `autodrivedata/paths.py` 才是真判据 —— 若哪天包内混进一个 pyproject.toml,
+        `.git` 与 `autodrivedata/utils/paths.py` 才是真判据 —— 若哪天包内混进一个 pyproject.toml,
         向上搜索会停在那里,这两条立刻红(见 Plan_fileTree.md §5.6)。
         """
         assert (paths.PROJECT_ROOT / "pyproject.toml").is_file()
-        assert (paths.PROJECT_ROOT / "autodrivedata" / "paths.py").is_file()
+        assert (paths.PROJECT_ROOT / "autodrivedata" / "utils" / "paths.py").is_file()
         assert (paths.PROJECT_ROOT / ".git").exists(), "PROJECT_ROOT 必须是仓库根,不是包目录"
         assert paths.OUTPUTS == paths.PROJECT_ROOT / "outputs"
         # 反例钉:产物目录绝不能落在包内(§5.6 的实际故障形态)

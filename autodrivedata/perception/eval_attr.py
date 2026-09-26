@@ -36,7 +36,6 @@ from PIL import Image
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from autodrivedata.paths import project_path
 from autodrivedata.perception.attribution import (
     DISTANCE_EDGES,
     HEIGHT_EDGES,
@@ -51,6 +50,7 @@ from autodrivedata.perception.attribution import (
     norm_cls,
     ttc_s,
 )
+from autodrivedata.utils.paths import project_path
 
 DELTA_S = 0.1  # 同步模式固定步长(同 carla_common.sync_mode / 各采集器)
 

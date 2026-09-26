@@ -27,8 +27,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from autodrivedata import geometry as g
-
 # 单点来源,勿在此另抄一份。两个 rig 的**姿态设计**都在 `camera_rig`:
 # `nuscenes` = 官方 calibrated_sensor;`wide` = 官方表 + 后移挂点/换轴(见 §P-M.8)。
 from autodrivedata.calib.camera_rig import (
@@ -36,6 +34,7 @@ from autodrivedata.calib.camera_rig import (
     NUS_WIDE_CAMERA_CALIBS,
     NUS_WIDE_CAMERA_FOV,
 )
+from autodrivedata.utils import geometry as g
 
 NUS_CAMERAS = (
     "CAM_FRONT",

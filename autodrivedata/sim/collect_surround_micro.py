@@ -27,8 +27,8 @@ import carla
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.map.mapviz import calib_from_fov
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, loc, sync_mode
+from autodrivedata.utils.paths import project_path
 
 # 官方布局:真值在 `autodrivedata/camera_rig.py`(6DoF,含 pitch/roll)
 NUSCENES_RIG = NUS_CAMERA_RIG

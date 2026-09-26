@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata import geometry as g
+from autodrivedata.utils import geometry as g
 
 
 @dataclass

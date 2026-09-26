@@ -26,8 +26,8 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
+from autodrivedata.utils import fonts
 
 PRED_COLOR = (255, 0, 255)  # 品红:路面场景罕见
 GT_COLOR = (0, 255, 255)  # 青绿:同罕见(植被绿与其可区分)

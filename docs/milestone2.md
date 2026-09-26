@@ -261,7 +261,7 @@ val~10。链路结论不变(链路验证非重建质量);多俯仰的价值在**
 1. 世界系相机位姿 → ego 系必须 `inv_ego @ cam`,写成 `cam @ inv_ego` 会把 ego 世界坐标混进
    平移块 —— 实测偏差 **138.243 m**,而**偏航仍恰好 0.000°**(只看偏航自检会漏掉)。
 2. 旋转阵逆分解 `pitch = asin(R[2,0])`,写成 `asin(−R[2,0])` 静默反号(俯角 −12° → +12°)
-   → 已下沉 `autodrivedata/geometry.rotation_matrix_to_carla` + 往返单测。
+   → 已下沉 `autodrivedata/utils/geometry.rotation_matrix_to_carla` + 往返单测。
 
 **环视 rig 两代并存(重要订正)**:rig **不是"越新越好",必须与权重训练数据一致**。
 `legacy`(共用 `SENSOR_OFFSET` + BACK_LEFT/RIGHT 235/125)对应 `maptr_ep256/ep512`;
@@ -399,7 +399,7 @@ CAM_BACK 落在车身中部时的读数;修正后重测**六路 `near_fraction` 
 ## ✅ 覆盖层中文豆腐块:字体落点收敛(2026-09-23,§P-M.8)
 
 `check_geometry.png` 的中文全成方框 ⇒ 裁定**是字体问题不是编码问题且本机可解**(不降级英文)。
-新建 `autodrivedata/fonts.py` 收敛为**唯一字体落点**:渲染探针判字形(`U+10FFFF` 像素签名 = `.notdef`
+新建 `autodrivedata/utils/fonts.py` 收敛为**唯一字体落点**:渲染探针判字形(`U+10FFFF` 像素签名 = `.notdef`
 签名,`文相机字` 四签名必须互不相同),`sanitize` 缺字换 ASCII、兜底 `?`,**绝不留豆腐块**;
 六个绘制文件全部迁移,回归 `tests/test_fonts.py`(含 AST 根因钉)。
 

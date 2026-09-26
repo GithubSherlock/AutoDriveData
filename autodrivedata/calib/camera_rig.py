@@ -88,7 +88,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from autodrivedata import geometry as g
+from autodrivedata.utils import geometry as g
 
 # 官方 nuScenes 6 相机 calibrated_sensor(translation 米, rotation 四元数 w,x,y,z)——
 # 照 nuscenes_mini 实测(每通道取第一条记录)。**nusScenes 全局系**(y 左)。
@@ -156,7 +156,7 @@ NUS_WIDE_CAMERA_AZ: dict[str, float] = {
     "CAM_BACK_RIGHT": -145.0,  # ≡ 真方位角 215°
 }
 
-# 用户口径的逐通道水平 FoV(度)。口径由 `autodrivedata/export/nuscenes.py` 的
+# 用户口径的逐通道水平 FoV(度)。口径由 `autodrivedata/gt/export/nuscenes.py` 的
 # `NUS_WIDE_CAMERA_INTRINSICS` 反推(K 由渲染反推,不抄官方)。
 NUS_WIDE_CAMERA_FOV: dict[str, float] = {
     "CAM_FRONT": 55.0,

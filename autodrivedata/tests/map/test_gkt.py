@@ -22,7 +22,6 @@ import numpy as np
 import pytest
 import torch
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.map.maptr.gkt import (
@@ -34,6 +33,7 @@ from autodrivedata.map.maptr.gkt import (
     project_pts,
     scale_k,
 )
+from autodrivedata.utils import geometry as g
 
 CAM = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)  # B1 CAM_ATTRS 口径
 K_NP = np.array([[CAM.fx, 0.0, CAM.cx], [0.0, CAM.fy, CAM.cy], [0.0, 0.0, 1.0]])

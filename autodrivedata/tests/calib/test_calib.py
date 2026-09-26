@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata import geometry as g
 from autodrivedata.calib import core as calib
+from autodrivedata.utils import geometry as g
 
 CAM0 = (0.0, 0.0, 0.0)
 

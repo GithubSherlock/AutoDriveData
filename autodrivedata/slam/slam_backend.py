@@ -31,7 +31,6 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.slam.accum import voxel_downsample
 from autodrivedata.slam.core import (
     KEYFRAME_EVERY,
@@ -50,6 +49,7 @@ from autodrivedata.slam.core import (
     pose_graph_optimize,
     sc_candidates,
 )
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

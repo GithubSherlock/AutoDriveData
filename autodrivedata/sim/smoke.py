@@ -11,7 +11,7 @@ import queue
 import carla
 import numpy as np
 
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 CAM_ATTRS = {"image_size_x": "1242", "image_size_y": "375", "fov": "90"}  # 对齐 KITTI 口径
 LIDAR_ATTRS = {

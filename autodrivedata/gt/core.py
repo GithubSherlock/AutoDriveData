@@ -13,8 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.utils import geometry as g
 
 # CARLA type_id → KITTI 类:精确名优先,兜底前缀规则(未知 vehicle 归 Car,非 vehicle 归 Misc)
 _TRUCK_TYPES = frozenset(

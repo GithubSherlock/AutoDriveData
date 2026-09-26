@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from autodrivedata import traffic_light as tl
+from autodrivedata.gt import traffic_light as tl
 
 PLAN = (("Green", 6.0), ("Yellow", 2.0), ("Red", 6.0))
 

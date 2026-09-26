@@ -101,7 +101,6 @@ from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import calib_probe
 from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
-from autodrivedata.paths import project_path
 from autodrivedata.perception.semantic import semantic_to_velodyne_bin
 from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
@@ -143,6 +142,7 @@ from autodrivedata.sim.live_common import (
 from autodrivedata.sim.scenarios import SCENES, merged_weather
 from autodrivedata.slam.core import DOWNSAMPLE_VOXEL, ICP_MAX_ITER
 from autodrivedata.slam.live_slam import LiveSlam, SlamWorker
+from autodrivedata.utils.paths import project_path
 
 try:  # opencv 只在 `--video` 时需要(与 stereo.py 同一处口径:可选依赖不挡主流程)
     import cv2

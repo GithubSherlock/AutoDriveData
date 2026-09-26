@@ -49,9 +49,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.geometry import CARLA_TO_CAM, carla_rotation_matrix
 from autodrivedata.map.mapvec import MAPTR_CLASSES
-from autodrivedata.paths import project_path
+from autodrivedata.utils.geometry import CARLA_TO_CAM, carla_rotation_matrix
+from autodrivedata.utils.paths import project_path
 
 SCENE_TOKEN = "carla_town10hd_scene_000"
 MAP_LOCATION = "carla_town10hd"

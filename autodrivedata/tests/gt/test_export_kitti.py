@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from autodrivedata.calib.core import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
-from autodrivedata.export.kitti import (
+from autodrivedata.gt.export.kitti import (
     frame_paths,
     normalize_frame_id,
     pose_path,

@@ -32,8 +32,6 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
-# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
-from autodrivedata import fonts  # noqa: E402
 from autodrivedata.calib.camera_rig import coverage_table  # noqa: E402
 from autodrivedata.calib.rigviz import (  # noqa: E402
     CAM_COLOR,
@@ -43,8 +41,11 @@ from autodrivedata.calib.rigviz import (  # noqa: E402
     INK,
     draw_rig_layout,
 )
-from autodrivedata.export.nuscenes import NUS_RIGS, camera_calibs, camera_fov  # noqa: E402
-from autodrivedata.paths import project_path  # noqa: E402
+from autodrivedata.gt.export.nuscenes import NUS_RIGS, camera_calibs, camera_fov  # noqa: E402
+
+# 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
+from autodrivedata.utils import fonts  # noqa: E402
+from autodrivedata.utils.paths import project_path  # noqa: E402
 
 TILE_LABEL_SIZE = 26
 # 底部方位尺:6 条泳道(每相机一行)+ 并集/盲区行 + 刻度与注脚

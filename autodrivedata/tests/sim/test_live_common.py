@@ -260,7 +260,7 @@ class _FakeActor:
 
 def _pose(mount: tuple[float, float, float], rot_deg: tuple[float, float, float]) -> np.ndarray:
     """(平移米, (pitch,yaw,roll) 度) → 4×4 位姿,与 CARLA `get_matrix()` 同口径。"""
-    from autodrivedata.geometry import carla_rotation_matrix
+    from autodrivedata.utils.geometry import carla_rotation_matrix
 
     m = np.eye(4)
     pitch, yaw, roll = (math.radians(v) for v in rot_deg)

@@ -37,7 +37,7 @@ from PIL import Image
 from torch import nn
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 _DOWNSAMPLE = 2  # 1242x375 → 621x187
 _N_INIT_PER_FRAME = 800  # 每帧深度采样点数(270 帧 → ~216k 候选,再降采样)

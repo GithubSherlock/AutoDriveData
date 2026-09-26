@@ -21,11 +21,11 @@ import time
 import numpy as np
 import pytest
 
-from autodrivedata.geometry import carla_rotation_matrix
 from autodrivedata.slam.accum import voxel_downsample
 from autodrivedata.slam.core import icp_odometry
 from autodrivedata.slam.live_slam import LiveSlam, SlamWorker, ego_from_lidar0, relative_transform
 from autodrivedata.slam.slam_eval import LIDAR_LEVER, M_FLIP, lever_matrix, lidar_pose_to_ego
+from autodrivedata.utils.geometry import carla_rotation_matrix
 
 
 def _synthetic_sequence(n: int = 8, seed: int = 3) -> tuple[list[np.ndarray], list[np.ndarray]]:

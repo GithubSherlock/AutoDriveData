@@ -69,8 +69,8 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import SENSOR_OFFSET, spawn_ego, sync_mode
+from autodrivedata.utils.paths import project_path
 
 
 def _rot_from_rpy(rpy: tuple[float, float, float]) -> np.ndarray:

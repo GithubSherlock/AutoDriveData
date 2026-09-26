@@ -21,7 +21,7 @@ from auto3dlabel.data.nuscenes import (  # noqa: E402
     samples_of_scene,
 )
 
-from autodrivedata.export import nuscenes as ne  # noqa: E402
+from autodrivedata.gt.export import nuscenes as ne  # noqa: E402
 
 
 def _build_dataroot(tmp_path) -> None:

@@ -13,15 +13,15 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
-from autodrivedata.traffic_light import (
+from autodrivedata.gt.traffic_light import (
     TrafficLightFrame,
     TrafficLightState,
     in_front,
     normalize_state,
 )
+from autodrivedata.utils import fonts
 
 
 class _WalkerCtrl(Protocol):

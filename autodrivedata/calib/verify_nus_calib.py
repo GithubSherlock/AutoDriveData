@@ -63,12 +63,10 @@ from typing import Any, cast
 
 import numpy as np
 
-from autodrivedata import geometry as g  # noqa: E402
-
 # 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
 from autodrivedata.calib import calib_probe as cp
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG  # noqa: E402
-from autodrivedata.export.nuscenes import (  # noqa: E402
+from autodrivedata.gt.export.nuscenes import (  # noqa: E402
     NUS_CAMERAS,
     NUS_LIDAR_CALIB,
     NUS_RADAR_CHANNELS,
@@ -78,8 +76,9 @@ from autodrivedata.export.nuscenes import (  # noqa: E402
     camera_fov,
     camera_k,
 )
-from autodrivedata.geometry import quat_normalize, quat_to_matrix  # noqa: E402
-from autodrivedata.paths import project_path  # noqa: E402
+from autodrivedata.utils import geometry as g  # noqa: E402
+from autodrivedata.utils.geometry import quat_normalize, quat_to_matrix  # noqa: E402
+from autodrivedata.utils.paths import project_path  # noqa: E402
 
 # 本次运行的 rig(由 `main` 从 `--rig` 写入)。模块级常量而非层层传参:①②⑤⑥ 的
 # 声明表选择散在四个函数里,穿参会让"某处忘了换表"变成静默口径分叉(§P-M.7 的教训)。

@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata import gt
 from autodrivedata.calib.core import CameraIntrinsics
+from autodrivedata.gt import core as gt
 
 K = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
 CAM_LOC = (0.0, 0.0, 1.65)

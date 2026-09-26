@@ -20,9 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.perception.cluster import cluster_boxes, dbscan
 from autodrivedata.perception.ground import ransac_plane
+from autodrivedata.utils.paths import project_path
 
 
 def parse_range(spec: str) -> list[int]:

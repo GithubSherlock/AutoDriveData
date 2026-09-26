@@ -39,7 +39,7 @@ from autodrivedata.calib.probe_calib import (
     decode_instance,
     place_cone_along,
 )
-from autodrivedata.export.nuscenes import camera_fov, camera_k
+from autodrivedata.gt.export.nuscenes import camera_fov, camera_k
 from autodrivedata.sim.carla_common import loc, rad
 from autodrivedata.sim.live_common import rig_spec
 
@@ -310,6 +310,6 @@ def instance_probe(world: carla.World, ego: carla.Vehicle, rig: str) -> dict[str
 
 def coverage_table_rig(rig: str) -> dict[str, Any]:
     """rig 名 → 方位覆盖表(纯几何;标定与 FoV 都从该 rig 的声明表取)。"""
-    from autodrivedata.export.nuscenes import camera_calibs
+    from autodrivedata.gt.export.nuscenes import camera_calibs
 
     return coverage_table(camera_calibs(rig), camera_fov(rig))

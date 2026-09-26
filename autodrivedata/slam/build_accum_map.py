@@ -20,8 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.paths import project_path
 from autodrivedata.slam.accum import accumulate_global, colorize, voxel_downsample, write_ply
+from autodrivedata.utils.paths import project_path
 
 
 def parse_range(spec: str) -> list[int]:

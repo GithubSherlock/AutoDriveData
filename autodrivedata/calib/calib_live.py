@@ -43,8 +43,8 @@ import numpy as np
 from autodrivedata.calib import calib_probe as cp
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import CONVENTION_CORNER
-from autodrivedata.geometry import carla_rotation_matrix
 from autodrivedata.slam.accum import voxel_downsample
+from autodrivedata.utils.geometry import carla_rotation_matrix
 
 # ---------------------------------------------------------------- 实时预算(实测标定,见模块头注)
 # 体素边长 / 邻域平面半径 / 距离上限 / 平面拟合点数上限

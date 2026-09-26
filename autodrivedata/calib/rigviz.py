@@ -25,9 +25,9 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from autodrivedata import fonts
 from autodrivedata.calib.camera_rig import nus_camera_rig
-from autodrivedata.geometry import NUS_EGO_ORIGIN_X, quat_normalize, quat_to_matrix
+from autodrivedata.utils import fonts
+from autodrivedata.utils.geometry import NUS_EGO_ORIGIN_X, quat_normalize, quat_to_matrix
 
 # 车体实测包围盒(vehicle.audi.a2):半长 / 半宽(米)。与 `camera_rig` 头注的
 # "车身最后点 x=−1.8527" 同源 —— 那里是后挂点余量的依据,这里是画轮廓的依据。

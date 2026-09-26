@@ -48,7 +48,7 @@ from autodrivedata.map.mapvec_schema import (
     make_instance,
     out_of_window,
 )
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 
 def _dump_preds(

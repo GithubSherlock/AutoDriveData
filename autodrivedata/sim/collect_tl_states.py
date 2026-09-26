@@ -26,7 +26,7 @@ import carla
 from PIL import Image
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.paths import project_path
+from autodrivedata.gt.traffic_light import phase_at
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     SENSOR_OFFSET,
@@ -37,7 +37,7 @@ from autodrivedata.sim.carla_common import (
     sync_mode,
     traffic_light_frame,
 )
-from autodrivedata.traffic_light import phase_at
+from autodrivedata.utils.paths import project_path
 
 DELTA = 0.1  # 同步模式固定步长(sync_mode 默认)
 SPEED_DEFAULT = 8.0

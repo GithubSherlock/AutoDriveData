@@ -26,9 +26,9 @@ from typing import cast
 
 import carla
 
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import loc, spawn_ego_at, sync_mode
 from autodrivedata.sim.scenarios import SCENES, merged_weather
+from autodrivedata.utils.paths import project_path
 
 
 def main() -> None:

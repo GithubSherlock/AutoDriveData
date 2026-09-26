@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata import geometry as g
+from autodrivedata.utils import geometry as g
 
 CAM0 = (0.0, 0.0, 0.0)  # pitch, yaw, roll(弧度)
 

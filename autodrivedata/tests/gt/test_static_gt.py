@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from autodrivedata.static_gt import (
+from autodrivedata.gt.static_gt import (
     LaneSegment,
     StaticFrame,
     StaticSignal,

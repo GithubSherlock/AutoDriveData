@@ -53,8 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.export.kitti import read_pose
-from autodrivedata.paths import project_path
+from autodrivedata.gt.export.kitti import read_pose
 from autodrivedata.slam.accum import voxel_downsample
 from autodrivedata.slam.core import (
     GRID_CELL,
@@ -64,6 +63,7 @@ from autodrivedata.slam.core import (
     icp_odometry,
     nearest_batch,
 )
+from autodrivedata.utils.paths import project_path
 
 # CARLA(ego,y 右)→ KITTI(LiDAR,y 左)手性共轭:见 autodrivedata/calib.carla_lidar_to_velodyne
 M_FLIP = np.diag([1.0, -1.0, 1.0, 1.0])

@@ -14,8 +14,8 @@ auto3dlabel = pytest.importorskip("auto3dlabel.schema.calib")
 from auto3dlabel.export.kitti_label import line_from_box3d  # noqa: E402
 from auto3dlabel.schema.box3d import Box3D  # noqa: E402
 
-from autodrivedata import gt  # noqa: E402
 from autodrivedata.calib.core import CameraIntrinsics  # noqa: E402
+from autodrivedata.gt import core as gt  # noqa: E402
 
 K = CameraIntrinsics(width=1242, height=375, fov_h_deg=90.0)
 CAM_LOC = (0.0, 0.0, 1.65)

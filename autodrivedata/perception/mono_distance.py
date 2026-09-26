@@ -40,10 +40,10 @@ from typing import Any, cast
 import numpy as np
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.geometry import box_2d_from_3d, mono_depth_from_box
-from autodrivedata.paths import project_path
 from autodrivedata.perception import attribution as attr
 from autodrivedata.perception.mono_depth import box_to_ground_distance
+from autodrivedata.utils.geometry import box_2d_from_3d, mono_depth_from_box
+from autodrivedata.utils.paths import project_path
 
 # ultralytics 懒加载(yolo 分支才需要):避免基线(纯 numpy)路径触 heavy deps/torch。
 _YOLO_IMPORT_ERR: Exception | None = None

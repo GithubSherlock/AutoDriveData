@@ -42,7 +42,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import (
     draw_traffic_lights,
     loc,
@@ -73,6 +72,7 @@ from autodrivedata.sim.live_common import (
     surround_calibs,
 )
 from autodrivedata.sim.scenarios import SCENES, merged_weather
+from autodrivedata.utils.paths import project_path
 
 VIEWS = ("follow", "top", "grid6")
 

@@ -13,8 +13,8 @@ auto3dlabel = pytest.importorskip("auto3dlabel.schema.calib")
 
 from auto3dlabel.schema.calib import KittiCalib  # noqa: E402
 
-from autodrivedata import geometry as g  # noqa: E402
 from autodrivedata.calib import core as calib  # noqa: E402
+from autodrivedata.utils import geometry as g  # noqa: E402
 
 CAM0 = (0.0, 0.0, 0.0)
 

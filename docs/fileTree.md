@@ -11,6 +11,14 @@
 > - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
 >   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
 >   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
+> - **`autodrivedata/gt/`** —— GT 层(4 模块 + `export/` 子包),测试在 `autodrivedata/tests/gt/`。
+>   **`gt.py` 已改名 `gt/core.py`**;`export/` 从包根**移入** `gt/`(故
+>   `from autodrivedata.export import ...` → **`from autodrivedata.gt.export import ...`**)。
+> - **`autodrivedata/utils/`** —— 通用工具(3 模块):`geometry.py` `paths.py` `fonts.py`,
+>   测试在 `autodrivedata/tests/utils/`。故 `from autodrivedata.paths import ...` →
+>   **`from autodrivedata.utils.paths import ...`**(`paths` 原被 42 处引用,是全仓最多的模块)。
+>   准入判据:**无项目领域语义、无 carla/torch 依赖**;超过 6 个文件即视为 junk drawer 需重新裁决。
+> - **`autodrivedata/tests/test_layer_guard.py`** —— 包级层守卫,**留在 `tests/` 根**(不属于任何能力面)。
 > - **`autodrivedata/perception/`** —— 感知层(17 模块),测试在 `autodrivedata/tests/perception/`。
 >   **不 import carla**(许 torch/ultralytics)。需要 CARLA 的传感器探针在 `sim/`
 >   (`probe_imu` / `probe_radar_l3`)。
@@ -274,7 +282,7 @@ AutoDriveData/
 
 ## 7 `outputs/` — 产物目录(唯一落点,**不展开子文件**)
 
-> 全部写盘路径经 `autodrivedata/paths.project_path()`(相对路径 = 相对项目根,不随 cwd 漂移)。
+> 全部写盘路径经 `autodrivedata/utils/paths.project_path()`(相对路径 = 相对项目根,不随 cwd 漂移)。
 > 下列目录**均【未入库】**,克隆后不存在,由对应脚本重新生成。
 
 | 目录 | 装什么 | 产出者 |

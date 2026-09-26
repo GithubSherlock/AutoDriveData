@@ -31,7 +31,7 @@ from autodrivedata.map.mapvec import (
     to_maptr_annotation,
     vecs_load,
 )
-from autodrivedata.paths import project_path
+from autodrivedata.utils.paths import project_path
 
 
 def roots_and_prefixes(surround: str | None, segs_dir: str | None) -> list[tuple[Path, str]]:

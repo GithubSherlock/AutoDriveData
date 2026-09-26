@@ -37,9 +37,9 @@ import carla
 import numpy as np
 
 from autodrivedata.calib.depth_codec import decode_depth
-from autodrivedata.paths import project_path
 from autodrivedata.sim.carla_common import CAM_ATTRS, sync_mode
 from autodrivedata.sim.collect_rig import ring_cam_pose
+from autodrivedata.utils.paths import project_path
 
 
 def _depth_img_to_meter(dep: carla.Image) -> np.ndarray:

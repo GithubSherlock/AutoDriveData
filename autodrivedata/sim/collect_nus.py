@@ -52,9 +52,9 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata import geometry as g
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
-from autodrivedata.export.nuscenes import (
+from autodrivedata.gt.core import ActorBox, box_center_world, box_heading_world, classify_nus
+from autodrivedata.gt.export.nuscenes import (
     NUS_CAMERA_CALIBS,
     NUS_CAMERA_FOV,
     NUS_CAMERAS,
@@ -72,8 +72,6 @@ from autodrivedata.export.nuscenes import (
     radar_yaw_offset_carla,
     write_mini_dataset,
 )
-from autodrivedata.gt import ActorBox, box_center_world, box_heading_world, classify_nus
-from autodrivedata.paths import project_path
 from autodrivedata.perception.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
 from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
@@ -83,6 +81,8 @@ from autodrivedata.sim.carla_common import (
     spawn_npcs,
     sync_mode,
 )
+from autodrivedata.utils import geometry as g
+from autodrivedata.utils.paths import project_path
 
 # 相机蓝图属性:分辨率 + **逐通道 fov**。`fov` 是**水平** FOV,官方 K 反推值见
 # `NUS_CAMERA_FOV`;六路共用 90° 会让五路"应该是 64.3°"的相机被渲染成 90°(声明≠渲染)。

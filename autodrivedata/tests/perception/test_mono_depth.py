@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.geometry import ground_intersection, mono_depth_from_box
 from autodrivedata.perception.mono_depth import box_to_ground_distance, ground_plane_distance
+from autodrivedata.utils.geometry import ground_intersection, mono_depth_from_box
 
 _K = CameraIntrinsics(1242, 375, 90)
 
@@ -47,7 +47,7 @@ class TestGroundIntersection:
         assert g[0] == pytest.approx(11.3426, rel=1e-3)
         assert g[1] == pytest.approx(0.0, abs=1e-6)
         # 往返一致:交点经 world_to_cam 回到相机系,应位于图像中心射线(相机系 x≈0,y≈0)
-        from autodrivedata.geometry import world_to_cam
+        from autodrivedata.utils.geometry import world_to_cam
 
         c = world_to_cam(
             np.asarray([[g[0], g[1], 0.0]]),

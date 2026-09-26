@@ -29,9 +29,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.export.kitti import pose_path, read_pose
-from autodrivedata.paths import project_path
+from autodrivedata.gt.export.kitti import pose_path, read_pose
 from autodrivedata.slam.slam_eval import LIDAR_LEVER, M_FLIP, eval_trajectory, lidar_pose_to_ego
+from autodrivedata.utils.paths import project_path
 
 
 def load_gt(root: Path, frames: list[int]) -> list[np.ndarray]:
