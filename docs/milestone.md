@@ -101,7 +101,7 @@ CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实
 
 ## 参数扫描 + 失效归因(2026-09-09)✅
 
-- 交付:`autodrivedata/attribution.py`(纯值:逐帧匹配 + 分箱 + 逐帧接近速度自证)+ `bin/eval_attr.py`(多跑 × 距离/框高/TTC 网格 + 漏检画像 + `--json`)+ 28 单测;与 eval_2d_ab 共用同一个 `box_iou2d`
+- 交付:`autodrivedata/attribution.py`(纯值:逐帧匹配 + 分箱 + 逐帧接近速度自证)+ `autodrivedata/perception/eval_attr.py`(多跑 × 距离/框高/TTC 网格 + 漏检画像 + `--json`)+ 28 单测;与 eval_2d_ab 共用同一个 `box_iou2d`
 - 数据:day_clear 4/8/12 m/s(同 56m 里程)+ 4 个 P1 数据集 → `outputs/attr_all.json`
 - **尺度主导**:<32px 一律 0.15–0.47、≥32px 一律 0.78–1.00;断崖 ≈21–24px(30–40m);漏检框内亮度与命中几乎相同 → 不是"暗",是"小"
 - **CARLA 无运动模糊**(平台边界):4/8/12 m/s 同距离箱梯度能量 35.6/35.2/34.8,池化检出率 0.914/0.886/0.909 → 速度不改变图像质量,退化只能人工注入

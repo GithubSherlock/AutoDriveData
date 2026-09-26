@@ -34,7 +34,7 @@
 
 ## ✅ 语义 BEV(教程 05+06)
 
-**交付**:`bin/sem_bev.py` 语义 BEV 管线(纯值,不 import carla)。
+**交付**:`autodrivedata/perception/sem_bev.py` 语义 BEV 管线(纯值,不 import carla)。
 
 - 模型:YOLOPv2(TorchScript 三合一:检测 + 车道线 + 可行驶区)+ YOLO11s-seg(实例掩膜)
 - 投影:掩膜像素沿相机射线与地平面求交 → ego 局部系 → BEV 面板
@@ -49,7 +49,7 @@
 
 ## ✅ 单目测距(教程 08)
 
-**交付**:`bin/mono_distance.py` 单目测距评估(检测框 → 距离,与 KITTI GT 真距对照)。
+**交付**:`autodrivedata/perception/mono_distance.py` 单目测距评估(检测框 → 距离,与 KITTI GT 真距对照)。
 
 - 方法:迭代深度法(尺寸假设 z=H·fy/框高,H=1.6m)+ 地平面投影法(`ground_intersection`)
 - 检测框口径:**GT 3D 框角点投影框**(`geometry.box_2d_from_3d`,与采集器 `box_to_gt_line`
@@ -91,8 +91,8 @@
 
 ## ✅ 地面提取 / 聚类障碍物(教程 12/13)
 
-**交付**:`autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 地面拟合);
-`autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(欧氏聚类)。
+**交付**:`autodrivedata/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 地面拟合);
+`autodrivedata/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(欧氏聚类)。
 
 - 地面:RANSAC 平面拟合 + 内点掩码;聚类:DBSCAN 风格邻域密度连通
 - 输出 `outputs/ground/`、`outputs/cluster/`(150 帧)

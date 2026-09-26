@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.semantic import CARLA_SEMANTIC_ALBEDO, semantic_intensity, semantic_to_velodyne_bin
+from autodrivedata.perception.semantic import (
+    CARLA_SEMANTIC_ALBEDO,
+    semantic_intensity,
+    semantic_to_velodyne_bin,
+)
 
 
 class TestSemanticIntensity:

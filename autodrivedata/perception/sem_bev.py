@@ -23,7 +23,7 @@ BEV。实现:对每个掩膜像素,沿相机射线与地面 z = ego_z - 0.5m 求
 离线批处理(CPU/GPU 均可),输出逐帧图 + 一页对照 PDF。
 
 用法:
-  PYTHONPATH=$PWD python bin/sem_bev.py --frames 0-20 [--gpu]
+  PYTHONPATH=$PWD python -m autodrivedata.perception.sem_bev --frames 0-20 [--gpu]
 """
 
 from __future__ import annotations

@@ -11,6 +11,9 @@
 > - **`autodrivedata/calib/`** —— 标定层(14 模块),测试在 `autodrivedata/tests/calib/`。
 >   **`calib.py` 已改名 `calib/core.py`**(`calib/calib.py` 会自反)。
 >   调用点从 `from autodrivedata.calib import X` 改为 **`from autodrivedata.calib.core import X`**。
+> - **`autodrivedata/perception/`** —— 感知层(17 模块),测试在 `autodrivedata/tests/perception/`。
+>   **不 import carla**(许 torch/ultralytics)。需要 CARLA 的传感器探针在 `sim/`
+>   (`probe_imu` / `probe_radar_l3`)。
 > - **`autodrivedata/slam/`** —— SLAM 层(10 模块 + `slam_cpp.cpp`),测试在 `autodrivedata/tests/slam/`。
 >   **`slam.py` 已改名 `slam/core.py`**(与 `calib/core.py` 同款,避免 `slam.slam`)。
 > - **`autodrivedata/map/`** —— 地图层(29 模块),测试在 `autodrivedata/tests/map/`。
@@ -64,7 +67,7 @@ AutoDriveData/
 ├── lightning_logs/              # 【未入库】HiVT 训练日志与 ckpt(PyTorch Lightning 默认输出)
 ├── auto3dlabel/weights/         # 【未入库】3D 检测微调权重(AutoLabel 侧消费)
 ├── hdMapGitHub/                 # 【未入库】上游开源仓库克隆(HiVT/MapTR/MapQR,保持 pristine)
-├── models/                      # 【未入库】模型权重落点(yolo11s-seg.pt;bin/sem_bev.py 消费)
+├── models/                      # 【未入库】模型权重落点(yolo11s-seg.pt;autodrivedata/perception/sem_bev.py 消费)
 │
 ├── build/                       # 【未入库】构建残留(setuptools 产物,可删)
 └── .vscode/ .claude/ .pytest_cache/ .ruff_cache/ .ipynb_checkpoints/   # 【未入库】本地工具配置与缓存

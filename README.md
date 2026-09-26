@@ -72,8 +72,8 @@ python -m autodrivedata.sim.live_studio --speed 8 --npcs
 python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt --slam --speed 8
 
 # 5. 评估:2D A/B + 失效归因
-python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
-python bin/eval_attr.py --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
+python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
+python -m autodrivedata.perception.eval_attr --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
                         --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
 # 6. MapTR:逐帧推理 + chamfer AP + 逐帧契约落盘

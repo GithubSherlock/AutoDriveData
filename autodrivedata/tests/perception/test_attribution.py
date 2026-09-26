@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from autodrivedata import attribution as attr
+from autodrivedata.perception import attribution as attr
 
 
 def gt_line(

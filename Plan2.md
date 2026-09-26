@@ -24,18 +24,18 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | # | 教程能力 | 本仓库对应 | 状态 |
 |---|---|---|---|
 | 01 | ROS py2.7↔py3.10 跨环境通信 | 不适用(本仓 CARLA 直连同 tick,无需 ROS) | 非本仓范式 |
-| 02 | YOLOv8 实时检测 | `bin/eval_2d_ab.py`(YOLO11s 2D AP)+ `attribution.py` | 已有(离线评估) |
+| 02 | YOLOv8 实时检测 | `autodrivedata/perception/eval_2d_ab.py`(YOLO11s 2D AP)+ `attribution.py` | 已有(离线评估) |
 | 03 | 4 相机安装 + 标定网格 | `collect_surround.py` + `SENSOR_MOUNTS`(**6 相机超集**);纯函数下沉 `autodrivedata/collect_rig.py`(`ring_cam_pose` / `stereo_rig_offsets`) | 已有 |
 | 04 | 4 相机标定 + BEV 环视拼接(单应/IPM) | `calib.py` + `mapviz.py` 有标定/矢量投影;`sem_bev.py` 走 ground_intersection 射线投影;**无像素级 IPM 拼接** | 缺口(见 §8) |
-| 05 | 实时图像语义分割(SegFormer / YOLOPv2) | `bin/sem_bev.py`(YOLOPv2 检测+车道线+可行驶;YOLO11s-seg 实例掩膜) | ✅ |
-| 06 | BEV + 语义分割融合 | `bin/sem_bev.py` 像素级语义 BEV(ground_intersection 投影 + 世界→ego 旋转) | ✅ |
+| 05 | 实时图像语义分割(SegFormer / YOLOPv2) | `autodrivedata/perception/sem_bev.py`(YOLOPv2 检测+车道线+可行驶;YOLO11s-seg 实例掩膜) | ✅ |
+| 06 | BEV + 语义分割融合 | `autodrivedata/perception/sem_bev.py` 像素级语义 BEV(ground_intersection 投影 + 世界→ego 旋转) | ✅ |
 | 07 | 相机+LiDAR 融合,点云→图像 | `calib.world_to_img` / `tr_velo_to_cam` + `geometry.py` 完整投影链(含单测) | 已有 |
-| 08 | 单目测距(4 法) | `bin/mono_distance.py` + `autodrivedata/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
+| 08 | 单目测距(4 法) | `autodrivedata/perception/mono_distance.py` + `autodrivedata/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
 | 09 | 双目测距(视差) | `autodrivedata/sim/collect_stereo.py` 双目 rig + `autodrivedata/stereo.py`(SGBM/NCC/三角测量) | ✅ |
 | 10 | 上帝视角可视化(OpenDRIVE+NPC) | `view_stream.py --view top` + `opendrive.py` + `mapviz` | 已有 |
 | 11 | LiDAR+语义建点云地图 | `autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
-| 12 | 点云地面提取 | `autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合) | ✅ |
-| 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(欧氏聚类) | ✅ |
+| 12 | 点云地面提取 | `autodrivedata/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合) | ✅ |
+| 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(欧氏聚类) | ✅ |
 | 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `autodrivedata/slam/slam_odometry.py` + `autodrivedata/slam/slam_backend.py` + `autodrivedata/slam/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
 | 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `autodrivedata/calib/calib_multilidar.py` | ✅ |
 | 16 | 3DGS 重建 | `autodrivedata/sim/collect_3dgs.py`(环绕采集)+ `bin/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
@@ -110,13 +110,13 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 > 的扩充),下方各节的"N passed"未逐条回填。
 
 ### P2-A 语义 BEV(教程 05+06)——✅ 链路已通
-- `bin/sem_bev.py`:YOLOPv2(检测+车道线+可行驶)+ YOLO11s-seg(实例掩膜)→ 像素级 BEV 投影
+- `autodrivedata/perception/sem_bev.py`:YOLOPv2(检测+车道线+可行驶)+ YOLO11s-seg(实例掩膜)→ 像素级 BEV 投影
 - 修 3 个坑:jit.load→torch.load(weights_only=False)、ego_pose 列表访问、投影坐标帧(世界→ego 局部旋转)
 - 输出 `outputs/sem_bev/bev_{000000..000020}.png` + `panel_*.png`(21 帧样例),三色均值 da≈6754 / ll≈2560 / obj≈8146 px
 - **验收通过**:像素级语义 BEV 图可生成,与 MapTR 矢量 BEV 面板对照成立
 
 ### P-D 单目测距(教程 08)——✅ 链路已通 + 评估修复
-- `bin/mono_distance.py` + 两个纯值模块:`geometry.mono_depth_from_box`(迭代深度法 z=H·fy/框高,H=1.6m)
+- `autodrivedata/perception/mono_distance.py` + 两个纯值模块:`geometry.mono_depth_from_box`(迭代深度法 z=H·fy/框高,H=1.6m)
   + `autodrivedata/mono_depth.py:box_to_ground_distance`(地平面投影法)+ `geometry.box_2d_from_3d`(GT 3D 框角点投影框基线)
 - **修复**:label 2D 列 59/97 是零宽退化框 → 检测框改走 GT 3D 框投影(与采集器 `box_to_gt_line` 同投影口径)="2D 检测框 = GT 3D 投影框"诚实基线
 - **实测**(147 框):全距 mean 8.56% / median 7.8%;**10-20m 带 mean 8.47%、70% 框 <10%** 达标;7-10m 贴脸区系统低估(侧向角点拉大框高)如实排除;地平面投影法相机无俯仰不适用(None)
@@ -239,9 +239,9 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 ### P-I 累积语义建图 / 地面提取 / 聚类(教程 11+12+13)——✅ 链路闭环
 - 累积:`autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
   `outputs/accum_map/map.ply`(150 帧);`tests/test_accum.py` 11 passed。累积显著抑制单帧伪影
-- 地面:`autodrivedata/ground.py` + `bin/extract_ground.py`(RANSAC 平面拟合 + 内点掩码)→
+- 地面:`autodrivedata/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合 + 内点掩码)→
   `outputs/ground/`;`tests/test_ground.py` 8 passed
-- 聚类:`autodrivedata/cluster.py` + `bin/cluster_obstacles.py`(DBSCAN 风格邻域密度连通)→
+- 聚类:`autodrivedata/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(DBSCAN 风格邻域密度连通)→
   `outputs/cluster/`(150 帧,均值 117.97 簇/帧);`tests/test_cluster.py` 4 passed
 - 注:上一会话"聚类任务失败"是误报——产物齐全,仅末行 bash 因 /tmp 配额满报错
 
@@ -1581,7 +1581,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
 > **注**:本节 2026-09-19 自 Plan.md §5.17 迁入(Plan.md 侧只留指针)。教程能力线的后续
 > 规划(教程 04 IPM 缺口、教程 14 阶段 2、P2-A 分割 GT 等)见本文件 §3/§8。
 
-- **P-D 单目测距**(教程 08):`bin/mono_distance.py` + `geometry.mono_depth_from_box`(z=H·fy/框高,H=1.6m)
+- **P-D 单目测距**(教程 08):`autodrivedata/perception/mono_distance.py` + `geometry.mono_depth_from_box`(z=H·fy/框高,H=1.6m)
   + `geometry.box_2d_from_3d`(GT 3D 框 8 角点 → p2 投影 → 前端 u/v min/max,与采集器同投影口径)
   - 修复:label 2D 列 59/97 是零宽退化框 → 检测框改走 GT 3D 投影框("已知位姿投影框"诚实基线)
   - **基线实测**(147 框):全距 mean 8.56%/median 7.8%;**10-20m 带 mean 8.47%、70% 框 <10%** 达标;
@@ -1639,7 +1639,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
 
 - **`kitti_day_clear` 保留、`kitti_sunset_glare` 删掉,这对不对称是刻意的**:
   两者是同一批 150 帧老数据,但 `kitti_day_clear` 仍被 §5 与 `autodrivedata/slam/slam_diff_test.py` 引用。
-  代价:`bin/eval_2d_ab.py` 的老口径配对**已不存在** → 已把该脚本默认值改为 A/B 新对并加注。
+  代价:`autodrivedata/perception/eval_2d_ab.py` 的老口径配对**已不存在** → 已把该脚本默认值改为 A/B 新对并加注。
 - **`kitti_sweep_day_clear_8` 保留**:CLAUDE.md / README / `eval_attr.py` 三处命令示例都用 `_8`,
   删了要同步改三处文档,不值。
 - **12 帧天气探针只清一半**:`rain_night` / `dense_fog` 已有 70 帧 A/B 版 → 冗余(C 层,**未跑**);

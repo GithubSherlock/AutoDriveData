@@ -9,7 +9,7 @@
 TTC 箱是安全余量语义(同一箱在不同速度对应不同距离,检出率不可跨速度对比)。
 
 用法(base env,数据已落盘):
-  python bin/eval_attr.py \
+  python -m autodrivedata.perception.eval_attr \
       --run day8=outputs/kitti_ab_day_clear:8.0 \
       --run day8b=outputs/kitti_sweep_day_clear_8:8.0 \
       --run rain8=outputs/kitti_ab_rain_night:8.0
@@ -36,7 +36,8 @@ from PIL import Image
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from autodrivedata.attribution import (
+from autodrivedata.paths import project_path
+from autodrivedata.perception.attribution import (
     DISTANCE_EDGES,
     HEIGHT_EDGES,
     TTC_EDGES,
@@ -50,7 +51,6 @@ from autodrivedata.attribution import (
     norm_cls,
     ttc_s,
 )
-from autodrivedata.paths import project_path
 
 DELTA_S = 0.1  # 同步模式固定步长(同 carla_common.sync_mode / 各采集器)
 

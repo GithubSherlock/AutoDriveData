@@ -28,7 +28,7 @@ import numpy as np
 from autodrivedata.export.kitti import frame_paths, write_pose
 from autodrivedata.geometry import carla_lidar_to_velodyne, carla_rotation_matrix
 from autodrivedata.paths import project_path
-from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.perception.semantic import semantic_to_velodyne_bin
 from autodrivedata.sim.carla_common import LIDAR_ATTRS, SENSOR_OFFSET, loc, rad, spawn_ego, sync_mode
 
 

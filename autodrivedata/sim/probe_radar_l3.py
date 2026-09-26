@@ -1,7 +1,7 @@
 """L3 物理合理性探针:对照真实大陆 ars408 规格验证 CARLA 雷达点分布(一次性)。
 
 需 CARLA 服务器 + 专用 carla 用户(tools/carla_server.sh)。用法:
-    PYTHONPATH=$PWD/bin python bin/probe_radar_l3.py [--channels 1] [--frames 10]
+    PYTHONPATH=$PWD/bin python -m autodrivedata.sim.probe_radar_l3 [--channels 1] [--frames 10]
 
 对照表(官方大陆 ars408 规格):
     水平 FOV 77°(±38.5°)、垂直 FOV 14.2°(±7.1°)、range 250m、~3300 pps。
@@ -24,7 +24,7 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata.radar import detections_to_nus18, mask_in_ars408_vfov, mask_radar_points
+from autodrivedata.perception.radar import detections_to_nus18, mask_in_ars408_vfov, mask_radar_points
 
 # ars408 规格(工业参照,用于对照表与判定)
 SPEC = {

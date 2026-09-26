@@ -1,7 +1,7 @@
 """KITTI root 的 GT vs AutoLabel 伪标签比对报表(比对层 CLI)。
 
 用法(base 或 autolabel env 皆可):
-  python bin/eval_kitti.py --root outputs/kitti_scene \
+  python -m autodrivedata.perception.eval_kitti --root outputs/kitti_scene \
       --pred /root/autodl-tmp/Documents/Projects/AutoLabel/outputs/kitti3d \
       [--frames 3] [--iou 0.5] [--classes Car Pedestrian Cyclist]
 
@@ -17,7 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
-from autodrivedata.compare import (
+from autodrivedata.perception.compare import (
     Box7,
     box3d_iou,
     evaluate_frames,

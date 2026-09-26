@@ -442,7 +442,7 @@ def ground_intersection(
     world_cam = (loc, rot_rad)(mapviz.cam_pose 口径:位置米 / 姿态弧度)。
     像素 (u, v) → 归一化相机系方向 (x/z, y/z) → 世界系射线 → 与 z=ground_z
     平面求交,返回世界系 (x, y)。射线上行 / 相机后 / 与平面平行时返回 None。
-    从 bin/sem_bev.py 上移,单一投影实现与采集/实时流共用。
+    从 autodrivedata/perception/sem_bev.py 上移,单一投影实现与采集/实时流共用。
     """
     loc, rot = world_cam
     fx, fy, cx, cy = intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy

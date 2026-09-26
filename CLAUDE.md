@@ -16,7 +16,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 - **地图池扩展 ✅**(§5.7d):AdditionalMaps 14.8G 已装,Town11/12/13/15 入池(17 图)。**新图采集约束:Town11/12 禁采集**(spawn camera segfault)、Town13 TM 车流降级 0 NPC、可用 Town13/15;默认图仍 Town10HD_Opt(重启即恢复)
 - **可视化实时流 ✅**(§5.8):[autodrivedata/sim/view_stream.py](autodrivedata/sim/view_stream.py) 自建 MJPEG(3 视角 + GT 框/灯色 overlay,只绑 127.0.0.1 走 SSH 隧道);carlaviz/RViz2 出局(非 UE 渲染 + 版本/依赖不成立);`world_to_img` 上移 [autodrivedata/calib.py](autodrivedata/calib.py) 供采集器与实时流共用
 - **灯色动态 GT ✅**(§5.9):[autodrivedata/traffic_light.py](autodrivedata/traffic_light.py)(纯值:状态归一/前向判据/相位查表/JSON 往返)+ [autodrivedata/sim/collect_tl_states.py](autodrivedata/sim/collect_tl_states.py)(记录模式 / `--cycle 6,2,6` 受控切灯 → 确定性变灯序列),落盘 `training/traffic_light/{fid}.json`。工业口径:灯态 = 独立时序层,Off/Unknown **不猜**;受控 90 帧状态变化点 = 帧 0/60/80 与计划逐帧吻合。**边界:不做视觉回归**——镜片 0.2m 在 f=621 下 30m 处仅约 4px,且黄色灯箱外壳同色相
-- **P1 参数扫描 + 失效归因 ✅**(§5.10):[autodrivedata/attribution.py](autodrivedata/attribution.py) 纯值(逐帧匹配/分箱/逐帧速度自证)+ [bin/eval_attr.py](bin/eval_attr.py)(多跑 × 距离/框高/TTC 网格 + 漏检画像),与 AP 共用同一 `box_iou2d`。三结论:**尺度主导**(<32px 0.15–0.47 / ≥32px 0.78–1.00,断崖 ≈21–24px)、**CARLA 无运动模糊**(4/8/12 m/s 梯度能量 35.6/35.2/34.8,检出率 0.914/0.886/0.909 → 速度不改图像,退化只能人工注入)、**天气只前移断崖**(雨夜 40-50m 零检出→30-40m 0.32,雾最晚 0.91)
+- **P1 参数扫描 + 失效归因 ✅**(§5.10):[autodrivedata/attribution.py](autodrivedata/attribution.py) 纯值(逐帧匹配/分箱/逐帧速度自证)+ [autodrivedata/perception/eval_attr.py](autodrivedata/perception/eval_attr.py)(多跑 × 距离/框高/TTC 网格 + 漏检画像),与 AP 共用同一 `box_iou2d`。三结论:**尺度主导**(<32px 0.15–0.47 / ≥32px 0.78–1.00,断崖 ≈21–24px)、**CARLA 无运动模糊**(4/8/12 m/s 梯度能量 35.6/35.2/34.8,检出率 0.914/0.886/0.909 → 速度不改图像,退化只能人工注入)、**天气只前移断崖**(雨夜 40-50m 零检出→30-40m 0.32,雾最晚 0.91)
 - **MapTR 矢量管道 ✅**(§5.11):A 阶段矢量库(opendrive/mapvec + A6 oracle 0.00cm)→ B 阶段环视采集/组装/投影验收 → C 阶段**参考自实现**(`maptr_impl/`:GKT + 分层 query,单帧过拟合锚定正确性)→ D 阶段 chamfer AP。训练数据 200 帧(Town10HD_Opt@spawn0)
   - **第二轮 ep512 结果口径分化**:留出集 @0.2 **0.0674**(vs ep256 0.0510,+32%)、@0.3 0.0904、@0.4 0.1280(后两档持平略降)→ 保守操作点仍获益、高阈值已饱和;训练对照 0.2603 → **泛化间隙 3.9×**(ep256 时 2.1×)→ 下轮收益靠**扩数据**而非继续长训。权重 `outputs/maptr_ep512.pt`
   - **实时 overlay ✅**(§5.11f):`view_stream.py --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev`(rig 走 `live_common.rig_spec` 两处定义;推理用实挂相机世界位姿);实况数值验证 overlay 品红 25553 px vs raw 0、地平线以上 0/18496、FPS 1.1–1.4
@@ -131,17 +131,17 @@ python -m autodrivedata.map.eval_maptr --infos outputs/surround_train/map_infos.
   --root outputs/surround_train --ckpt outputs/maptr_ep512.pt --start 200 --out-frames outputs/surround_pred
 
 # 2D A/B 评估(A=day_clear 基线与 B 帧级配对)
-python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
+python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare
 
 # 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像)
-python bin/eval_attr.py --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
+python -m autodrivedata.perception.eval_attr --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
 # 3D LiDAR 检测(autolabel env;**cwd 必须在 AutoLabel 根**,config 相对路径)
 cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti root> \
   /root/miniconda3/envs/autolabel/bin/auto3dlabel run 000000-000069 "检测汽车" \
   --det-model pointpillars_kitti --batch --no-viz --out-dir <abs out>
-python bin/eval_kitti.py --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对
+python -m autodrivedata.perception.eval_kitti --root outputs/kitti_ab_x --pred outputs/kitti3d_ab_x   # 3D 比对
 
 # nuScenes 迷你集(全传感器「渲染 = 声明」同源;重采后跑验收)
 python -m autodrivedata.sim.collect_nus --frames 2                     # 重采(需 CARLA 在跑)

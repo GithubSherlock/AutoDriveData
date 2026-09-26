@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.multilidar import convergence_metrics, point_to_plane_icp
+from autodrivedata.perception.multilidar import convergence_metrics, point_to_plane_icp
 
 
 def _plane_cloud(n: int = 120, noise: float = 0.01):

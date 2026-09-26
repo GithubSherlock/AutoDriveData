@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.compare import (
+from autodrivedata.perception.compare import (
     Box7,
     FrameStats,
     ap11,

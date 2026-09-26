@@ -29,7 +29,7 @@ def ground_plane_distance(
 
     输入为世界系坐标:相机**在地平面的垂足**(cam_ground_x/y)与交点(ground_x/y)。
     先把世界系差向量旋到 ego 局部系(x 前向 / y 左向),取 x 分量——与
-    mapviz BEV 面板同一套"世界 → ego 局部"旋转(见 bin/sem_bev.py 注释)。
+    mapviz BEV 面板同一套"世界 → ego 局部"旋转(见 autodrivedata/perception/sem_bev.py 注释)。
     """
     dx = float(ground_x) - float(cam_ground_x)
     dy = float(ground_y) - float(cam_ground_y)

@@ -74,7 +74,7 @@ from autodrivedata.export.nuscenes import (
 )
 from autodrivedata.gt import ActorBox, box_center_world, box_heading_world, classify_nus
 from autodrivedata.paths import project_path
-from autodrivedata.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
+from autodrivedata.perception.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
 from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
     loc,

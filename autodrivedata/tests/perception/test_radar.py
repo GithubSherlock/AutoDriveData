@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autodrivedata.radar import (
+from autodrivedata.perception.radar import (
     AMBIG_VALID,
     ARS408_VFOV_HALF_DEG,
     INVALID_STATE_VALID,

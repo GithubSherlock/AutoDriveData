@@ -61,7 +61,7 @@ class TestProjectRoot:
 class TestWeightPaths:
     """权重路径回归钉(Plan_fileTree.md §5.1)。
 
-    实际故障:`bin/sem_bev.py` 写 `project_path("yolo11s-seg.pt")`(行内注释也说「权重放项目根」),
+    实际故障:`autodrivedata/perception/sem_bev.py` 写 `project_path("yolo11s-seg.pt")`(行内注释也说「权重放项目根」),
     而文件实际在 `models/` —— **代码 / 文档 / 文件位置三处同口径地错**,谁都不报错,
     跑起来只是 ultralytics 静默联网重下(不可复现 + 污染工作区)。
 

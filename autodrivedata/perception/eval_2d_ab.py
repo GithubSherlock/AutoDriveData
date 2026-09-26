@@ -1,7 +1,7 @@
 """P1-3 逆光 A/B:冻结 YOLO11s(KITTI 微调)在 A/B 两 KITTI root 的 2D AP 对比。
 
 用法(base env):
-  python bin/eval_2d_ab.py --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare \
+  python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clear --root-b outputs/kitti_ab_sunset_glare \
       [--limit 150] [--conf 0.25] [--iou 0.5]
 
 注:老 150 帧对(kitti_day_clear / kitti_sunset_glare)中的 kitti_sunset_glare 已于
@@ -26,7 +26,7 @@ from PIL import Image
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from autodrivedata.attribution import box_iou2d
+from autodrivedata.perception.attribution import box_iou2d
 
 GT_CLASSES = ("Car", "Pedestrian", "Cyclist")
 COCO_FALLBACK = {

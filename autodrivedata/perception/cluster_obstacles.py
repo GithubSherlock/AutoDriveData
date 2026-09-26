@@ -1,8 +1,8 @@
 """聚类障碍物检测(教程 13):地面分割后 → DBSCAN 聚类 → 3D bbox 输出。
 
 用法:
-  python bin/cluster_obstacles.py --root outputs/kitti_drive --frames 0-149
-  python bin/cluster_obstacles.py --root outputs/kitti_drive --frames 0-19 --distance-scale 0.02
+  python -m autodrivedata.perception.cluster_obstacles --root outputs/kitti_drive --frames 0-149
+  python -m autodrivedata.perception.cluster_obstacles --root outputs/kitti_drive --frames 0-19 --distance-scale 0.02
 
 输出:
   outputs/cluster/boxes.json   # 逐帧簇列表(label/center/extent_half/n_points/min_dist)
@@ -20,9 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.cluster import cluster_boxes, dbscan
-from autodrivedata.ground import ransac_plane
 from autodrivedata.paths import project_path
+from autodrivedata.perception.cluster import cluster_boxes, dbscan
+from autodrivedata.perception.ground import ransac_plane
 
 
 def parse_range(spec: str) -> list[int]:

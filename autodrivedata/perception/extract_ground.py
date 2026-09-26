@@ -1,8 +1,8 @@
 """地面提取(教程 12):kitti_drive 逐帧 velodyne → 地面/非地面分离 + 统计。
 
 用法:
-  python bin/extract_ground.py --root outputs/kitti_drive --frames 0-149
-  python bin/extract_ground.py --root outputs/kitti_drive --frames 0-19 --method ransac
+  python -m autodrivedata.perception.extract_ground --root outputs/kitti_drive --frames 0-149
+  python -m autodrivedata.perception.extract_ground --root outputs/kitti_drive --frames 0-19 --method ransac
 
 输出:
   outputs/ground/{fid}_ground.bin   # 地面点(KITTI velodyne 约定,可入后续处理)
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from autodrivedata.ground import grid_ground, ground_stats, ransac_plane
 from autodrivedata.paths import project_path
+from autodrivedata.perception.ground import grid_ground, ground_stats, ransac_plane
 
 
 def parse_range(spec: str) -> list[int]:

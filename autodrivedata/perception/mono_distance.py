@@ -24,9 +24,9 @@ GT 真距 = label_2 3D 位置的相机系 z(第 **13** 列,米);KITTI 列序 11/
 系统低估,如实排除);20m+ 如实报告(尺度歧义主导)。
 
 用法:
-  PYTHONPATH=$PWD python bin/mono_distance.py [--root outputs/kitti_ab_day_clear] [--max-frames 70]
+  PYTHONPATH=$PWD python -m autodrivedata.perception.mono_distance [--root outputs/kitti_ab_day_clear] [--max-frames 70]
   # 生产口径(YOLO 检测框;需 CUDA)
-  PYTHONPATH=$PWD python bin/mono_distance.py --root outputs/kitti_ab_day_clear --max-frames 70 \
+  PYTHONPATH=$PWD python -m autodrivedata.perception.mono_distance --root outputs/kitti_ab_day_clear --max-frames 70 \
     --detector yolo --json outputs/mono_distance/results_yolo.json
 """
 
@@ -39,11 +39,11 @@ from typing import Any, cast
 
 import numpy as np
 
-from autodrivedata import attribution as attr
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.geometry import box_2d_from_3d, mono_depth_from_box
-from autodrivedata.mono_depth import box_to_ground_distance
 from autodrivedata.paths import project_path
+from autodrivedata.perception import attribution as attr
+from autodrivedata.perception.mono_depth import box_to_ground_distance
 
 # ultralytics 懒加载(yolo 分支才需要):避免基线(纯 numpy)路径触 heavy deps/torch。
 _YOLO_IMPORT_ERR: Exception | None = None

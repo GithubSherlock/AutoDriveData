@@ -10,7 +10,7 @@ import pytest
 
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.geometry import ground_intersection, mono_depth_from_box
-from autodrivedata.mono_depth import box_to_ground_distance, ground_plane_distance
+from autodrivedata.perception.mono_depth import box_to_ground_distance, ground_plane_distance
 
 _K = CameraIntrinsics(1242, 375, 90)
 

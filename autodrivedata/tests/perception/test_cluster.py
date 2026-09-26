@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from autodrivedata.cluster import cluster_boxes, dbscan
+from autodrivedata.perception.cluster import cluster_boxes, dbscan
 
 
 def _two_clusters() -> np.ndarray:

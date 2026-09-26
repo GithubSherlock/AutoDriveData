@@ -180,7 +180,7 @@ def _plane_cloud(n: int = 200, z: float = 0.0) -> np.ndarray:
 class TestEstimateTransformGn:
     def test_matches_multilidar_estimate_on_plane(self):
         """λ=1e-4 正则化解与 multilidar._estimate_transform(lstsq)在平面夹具上差 <1e-4。"""
-        from autodrivedata.multilidar import _estimate_transform
+        from autodrivedata.perception.multilidar import _estimate_transform
 
         src = _plane_cloud(150)
         ref = _plane_cloud(150)

@@ -58,11 +58,12 @@ autodrivedata/
 │   ├── slam_eval.py live_slam.py accum.py
 │   ├── slam_odometry.py slam_backend.py slam_diff_test.py eval_slam.py
 │   └── build_accum_map.py probe_scan_to_map.py slam_cpp.cpp
-├── perception/           18  检测 / 单双目 / 雷达 / 语义 / 点云
+├── perception/           17  检测 / 单双目 / 雷达 / 语义 / 点云(不 import carla)
 │   ├── mono_depth.py stereo.py multilidar.py radar.py semantic.py
-│   ├── probe_radar_l3.py compare.py attribution.py ground.py cluster.py
+│   ├── compare.py attribution.py ground.py cluster.py
 │   ├── mono_distance.py sem_bev.py eval_2d_ab.py eval_attr.py eval_kitti.py
 │   └── finetune_synth.py extract_ground.py cluster_obstacles.py
+│   ↑ **`probe_radar_l3.py` 已改归 `sim/`**(它 import carla,与 `probe_imu` 同类;见阶段 6 记录)
 ├── gt/                    6   GT 生成
 │   ├── gt.py static_gt.py traffic_light.py
 │   └── export/{__init__.py, kitti.py, nuscenes.py}
@@ -438,6 +439,31 @@ URL 带来的流名经 `html.escape` 再进 HTML。
 > | 7 | **方法体内的惰性 import**(逃过 `--collect-only`) | 阶段 4 |
 > | 8 | **同名多义**(包名 / 输出目录 / env 名) | 阶段 4 的 `maptr_official` |
 > | 9 | **`import <包>.<模块> as 别名`** | 阶段 5 漏 1 处(`import autodrivedata.live_slam as ls`) |
+> | 10 | **同一条目里同一路径出现两次**(`[X](X)` 型 markdown 链接) | 阶段 6:替换脚本每条规则只换**第一处** |
+
+#### ★ 阶段 6 执行记录(已完成 2026-09-26)
+
+**搬迁**:**17** 模块 → `autodrivedata/perception/` + 9 测试 → `autodrivedata/tests/perception/`;
+**`probe_radar_l3.py` 改去 `sim/`**(见下)。引用重写 **68 行 / 35 文件**。
+
+**结果**:`913 收集项 = 911 passed + 2 条件跳过`,**0 失败**;ruff 干净。
+产物路径零误伤(`kitti_ab_` 20、`kitti_sweep` 13、`sem_bev` 23、`mono_distance` 16、`accum_map` 13
+均与 HEAD 逐字一致)。
+
+**★ 两个发现**:
+
+1. **计划内部矛盾:`probe_radar_l3` 是 CARLA 探针,却被计划放进 `perception/`(该规则禁 carla)。**
+   实测该模块 `import carla` 且需要 CARLA 服务器(启动 client、spawn 雷达 actor)。
+   **处置**:按既有先例改放 `sim/` —— `probe_imu.py`(CARLA IMU 能否支撑 FAST-LIO2)阶段 2 已进 `sim/`,
+   二者同类(都是**验证 CARLA 平台某种传感器/能力是否可用**),而 `probe_calib` / `probe_rig_mount`
+   进 `calib/` 是因为它们是**标定**域。
+   **保住的收益**:`perception/` 维持「不 import carla」这一真实信息(那 17 个模块确实不需要 CARLA,
+   可在无服务器的机器上跑),不必为了让一个文件住进去而把整条规则放宽成 `_ANY`。
+2. **替换脚本的真 bug:每条规则只替换了第一处。** 症状:`CLAUDE.md` 里
+   `[autodrivedata/perception/eval_attr.py](bin/eval_attr.py)` —— **显示文本改了、链接目标没改**。
+   根因是 `out.find(old)` 取一次就赋值,没有遍历全部出现位置。
+   ⇒ **清单加第 10 行**:`[X](X)` 这类同条目内重复出现,必须逐次替换。
+   (本次全仓只有 CLAUDE.md 一处,已修并复核清零。)
 
 #### ★ 阶段 5 执行记录(已完成 2026-09-26)
 

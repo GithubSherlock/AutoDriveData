@@ -22,7 +22,7 @@ from autodrivedata.calib.core import CameraIntrinsics, KittiCalibOut, tr_velo_to
 from autodrivedata.export.kitti import write_frame
 from autodrivedata.gt import ActorBox, box_to_gt_line
 from autodrivedata.paths import project_path
-from autodrivedata.semantic import semantic_to_velodyne_bin
+from autodrivedata.perception.semantic import semantic_to_velodyne_bin
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,

@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from autodrivedata.calib.core import CameraIntrinsics
-from autodrivedata.stereo import (
+from autodrivedata.perception.stereo import (
     depth_from_disparity,
     depth_to_pointcloud,
     normalize_disparity,
@@ -73,7 +73,7 @@ class TestTriangulate:
 class TestDisparity:
     def test_sgm_recovers_plane(self):
         try:
-            from autodrivedata.stereo import disparity_sgm
+            from autodrivedata.perception.stereo import disparity_sgm
         except Exception:
             return  # 无 opencv 跳过
         L, R, d_true = _plane_pair(size=128)
@@ -90,7 +90,7 @@ class TestDisparity:
         assert abs(med - d_true) <= 3.0
 
     def test_ncc_ok(self):
-        from autodrivedata.stereo import disparity_ncc
+        from autodrivedata.perception.stereo import disparity_ncc
 
         L, R, d_true = _plane_pair(size=96, z=8.0)  # 更近 → 更大视差(31px)
         disp = disparity_ncc(L, R, max_disp=64, block=7)
