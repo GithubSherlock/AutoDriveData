@@ -223,16 +223,27 @@ def _extract_lane_marks(m: OpenDriveMap, out: list[MapVec], nxt: list[int]) -> N
                     )
 
 
-def _object_world_pts(road: Road, obj, local: tuple[float, float, float]) -> tuple[float, float, float]:
-    """cornerLocal (u, v, z) → 世界系(绕 object hdg 旋转,沿 s/t 平移)。"""
+def _object_world_pts(
+    road: Road, obj, local: tuple[float, float, float]
+) -> tuple[tuple[float, float, float], float]:
+    """cornerLocal (u, v, z) → (世界系点, 越界距离)。
+
+    绕 object hdg 旋转后沿 s/t 平移。**object 轮廓会合法地跨过路段端点**(斑马线/停车线
+    摆在路段起止处,轮廓溢到相邻路段)—— 实测最多 2.44 m(Town06)。故这里走
+    `road_to_xy(..., strict=False)` 的**有界外推**:clamp 会把轮廓压回端点、多边形肉眼
+    可见变形;raise 会让整张图提不出来(Town03/04/05/06 当前就是这样,8/20 张图跑不了)。
+
+    第二个返回值 = 该角的 s 超出 `[0, length]` 的幅度(0 = 没越界),供调用方**计数上报**。
+    """
     import math
 
     u, v, z = local
     ch, sh = math.cos(obj.hdg), math.sin(obj.hdg)
     s = obj.s + u * ch - v * sh
     t = obj.t + u * sh + v * ch
-    x, y, z0 = road_to_xy(road, s, t)
-    return x, y, z0 + z + obj.z_offset
+    over = max(-s, s - road.length, 0.0)
+    x, y, z0 = road_to_xy(road, s, t, strict=False)
+    return (x, y, z0 + z + obj.z_offset), over
 
 
 def _extract_objects(m: OpenDriveMap, out: list[MapVec], nxt: list[int]) -> None:
@@ -240,34 +251,47 @@ def _extract_objects(m: OpenDriveMap, out: list[MapVec], nxt: list[int]) -> None
     for road in m.roads.values():
         for obj in road.objects:
             pts: list[tuple[float, float, float]] = []
+            over = 0.0
             if obj.type == "crosswalk" and obj.outline:
-                pts = [_object_world_pts(road, obj, c) for c in obj.outline]
+                got = [_object_world_pts(road, obj, c) for c in obj.outline]
+                over = max(o for _, o in got)
+                pts = [p for p, _ in got]
                 if len(pts) >= 4:
                     pts = pts[:4]
                     pts.append(pts[0])  # 闭合
             elif "StopLine" in obj.name:
                 if len(obj.outline) >= 2:
-                    pts = [
+                    got = [
                         _object_world_pts(road, obj, obj.outline[0]),
                         _object_world_pts(road, obj, obj.outline[-1]),
                     ]
+                    over = max(o for _, o in got)
+                    pts = [p for p, _ in got]
                 else:
                     import math
 
                     ch, sh = math.cos(obj.hdg), math.sin(obj.hdg)
+                    s_a = obj.s - obj.length / 2 * ch
+                    s_b = obj.s + obj.length / 2 * ch
+                    over = max(-s_a, s_a - road.length, -s_b, s_b - road.length, 0.0)
                     pts = [
-                        road_to_xy(road, obj.s - obj.length / 2 * ch, obj.t - obj.length / 2 * sh),
-                        road_to_xy(road, obj.s + obj.length / 2 * ch, obj.t + obj.length / 2 * sh),
+                        road_to_xy(road, s_a, obj.t - obj.length / 2 * sh, strict=False),
+                        road_to_xy(road, s_b, obj.t + obj.length / 2 * sh, strict=False),
                     ]
             else:
                 continue
             nxt[0] += 1
             cls = "ped_crossing" if obj.type == "crosswalk" else "stop_line"
+            attrs = [("road_id", str(road.id)), ("s", f"{obj.s:.2f}"), ("t", f"{obj.t:.2f}")]
+            if over > 1e-9:
+                # **越界必须可见**:外推是近似(用本路段几何延拓),不静默 —— 值就是越界幅度,
+                # 供质检挑出这些实例。未越界的实例**不加此键** ⇒ 12 张本来就好的图产出逐位不变。
+                attrs.append(("s_extrapolated", f"{over:.3f}"))
             out.append(
                 MapVec(
                     cls=cls,
                     points=tuple(pts),
-                    attrs=(("road_id", str(road.id)), ("s", f"{obj.s:.2f}"), ("t", f"{obj.t:.2f}")),
+                    attrs=tuple(attrs),
                     id=f"{cls}_{nxt[0]:05d}",
                     src=f"road {road.id} object {obj.id}",
                 )
@@ -559,6 +583,11 @@ def vecs_load(text: str) -> tuple[str, str, tuple[MapVec, ...]]:
 
 # MapTRv2 训练消费的四类(vec_classes);stop_line/traffic_light 是工程补充,不进训练口径
 MAPTR_CLASSES = ("divider", "ped_crossing", "boundary", "centerline")
+
+# 地图矢量的**对外格式名**(唯一落点):`opendrive` = 本模块自己的 JSON 口径(默认);
+# 另两种见 `lanelet2.py` / `apollo.py`。`export_mapvec` 与 `mapvec_schema` 共用这一份,
+# 避免两处各写一份格式清单而漂移。
+MAP_FORMATS = ("opendrive", "lanelet2", "apollo")
 
 
 def to_ego_frame(vecs: tuple[MapVec, ...], x: float, y: float, yaw_deg: float) -> tuple[MapVec, ...]:

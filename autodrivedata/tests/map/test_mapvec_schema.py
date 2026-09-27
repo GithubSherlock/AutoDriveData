@@ -47,6 +47,11 @@ class TestContractSurface:
         assert inspect.signature(MapTR.__init__).parameters["num_pts"].default == mvs.NUM_POINTS
 
     def test_top_level_keys_are_exact(self):
+        """顶层字段集钉死 —— 增删字段必须**显式改这条**,不能悄悄漂。
+
+        2026-09-27 增 `map_format`(HD 地图三格式):它是**可选加字段**,
+        `frame_from_dict` 对缺失该键的旧文件取缺省 ⇒ **不 bump 契约版本号**。
+        """
         assert set(mvs.frame_to_dict(_rec())) == {
             "schema",
             "frame",
@@ -57,9 +62,19 @@ class TestContractSurface:
             "num_points",
             "score_thr",
             "ckpt",
+            "map_format",
             "preds",
             "gts",
         }
+
+    def test_map_format_is_optional_and_backward_compatible(self):
+        """旧文件(无 `map_format`)必须照收;非法值必须拒收。"""
+        d = mvs.frame_to_dict(_rec())
+        d.pop("map_format")
+        assert mvs.frame_from_dict(d).map_format == "opendrive"  # 缺省而非报错
+        d["map_format"] = "shapefile"
+        with pytest.raises(ValueError, match="map_format"):
+            mvs.frame_from_dict(d)
 
     def test_instance_keys_and_gt_has_no_score(self):
         d = mvs.frame_to_dict(_rec())

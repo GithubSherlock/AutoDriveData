@@ -711,13 +711,14 @@ def load_maptr(ckpt: str, device: str | None = None) -> tuple[MapTR, torch.devic
     """
     import torch
 
-    from autodrivedata.map.maptr.model import MapTR
+    from autodrivedata.map.maptr.variants import load_map_model
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = MapTR().to(dev)
-    model.load_state_dict(torch.load(ckpt, map_location=dev))
+    # 结构由 checkpoint 自带 —— 实时槽与离线 eval 必须建出**同一个**模型,
+    # 否则"studio 里看着对、eval 报 AP 低"这类现象无从归因
+    model, meta = load_map_model(ckpt, dev)
     model.eval()
-    print(f"[maptr] {ckpt} @ {dev}(num_vec={model.num_vec})")
+    print(f"[maptr] {ckpt} @ {dev}(变体 {meta['name']},num_vec={model.num_vec})")
     return model, dev
 
 

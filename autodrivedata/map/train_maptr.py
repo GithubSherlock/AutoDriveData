@@ -44,6 +44,7 @@ from autodrivedata.map.maptr.dataset import (
 from autodrivedata.map.maptr.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from autodrivedata.map.maptr.head import maptr_loss, match_assign
 from autodrivedata.map.maptr.model import MapTR, load_map_weights
+from autodrivedata.map.maptr.variants import resolve_variant, save_map_checkpoint, variant_names
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -189,6 +190,38 @@ def main() -> None:
     ap.add_argument(
         "--save-every", type=int, default=0, help="每 N epochs 覆盖存盘 --out(0=仅结束存;长训防中断)"
     )
+    ap.add_argument(
+        "--variant",
+        choices=variant_names(),
+        default=None,
+        help="一键选架构:mapqr = 散聚 query + 高度核 BEV 编码器(等价于同时打下面两个开关)。"
+        "与细粒度开关互斥 —— 要做只开一半的消融就别给 --variant",
+    )
+    ap.add_argument(
+        "--scatter-gather",
+        action="store_true",
+        help="head 换 MapQR 的 scatter-and-gather 解码器(拼接聚合 + 可学习采样);需从头训练",
+    )
+    ap.add_argument(
+        "--bev-encoder",
+        choices=("none", "height_kernel"),
+        default="none",
+        help="GKT 之后的 BEV 细化;height_kernel = MapQR 的 HeightKernelAttention。需从头训练",
+    )
+    ap.add_argument("--bev-encoder-layers", type=int, default=3, help="BEV 细化层数(官方 3)")
+    ap.add_argument(
+        "--bev-encoder-heads",
+        type=int,
+        default=8,
+        help="BEV 细化的注意力头数;高度锚点数由它派生(官方隐式约束 D == heads)",
+    )
+    ap.add_argument(
+        "--bev-chunk",
+        type=int,
+        default=0,
+        help="BEV 交叉注意力按 query 维分块。**实测分块不降反升**(见 Plan2 §P-M.14),默认 0;"
+        "要压显存请调 --bev-encoder-layers(实测每层 ≈ +3.6 GiB @bs2)",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out", required=True, help="checkpoint 输出路径")
@@ -244,8 +277,16 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
         + " ".join(f"{cls}={len(first[i])}" for i, cls in enumerate(("divider", "ped", "boundary", "center")))
     )
 
+    # 聚合开关(--variant)与细粒度开关在此合流;同时给会报错(见 variants.resolve_variant)
+    flags = resolve_variant(args.variant, scatter_gather=args.scatter_gather, bev_encoder=args.bev_encoder)
     model = MapTR(
-        num_vec=args.num_vec, pretrained=not args.no_pretrain, temporal_window=args.temporal_window
+        num_vec=args.num_vec,
+        pretrained=not args.no_pretrain,
+        temporal_window=args.temporal_window,
+        bev_encoder_layers=args.bev_encoder_layers,
+        bev_encoder_heads=args.bev_encoder_heads,
+        bev_chunk=args.bev_chunk,
+        **flags,
     ).to(dev)
     if args.init_ckpt:
         missing = load_map_weights(model, args.init_ckpt, dev)
@@ -253,7 +294,15 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
         if missing:
             print(f"[model] 融合层 {len(missing)} 个权重缺失 ⇒ 从零初始化(单帧权重热启动)")
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] MapTR(num_vec={args.num_vec}) @ {dev} | {n_params / 1e6:.1f}M 参数")
+    variant = []
+    if flags["scatter_gather"]:
+        variant.append("scatter_gather")
+    if flags["bev_encoder"] != "none":
+        variant.append(f"bev_encoder={flags['bev_encoder']}×{args.bev_encoder_layers}")
+    print(
+        f"[model] MapTR(num_vec={args.num_vec}) @ {dev} | {n_params / 1e6:.1f}M 参数"
+        f" | 变体: {', '.join(variant) if variant else '基线(默认)'}"
+    )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     # 优化器状态侧车:续训时 Adam 力矩不重置(重启尖峰的根因是力矩清零后
@@ -284,6 +333,14 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     rl.highlight("epochs", args.epochs)
     rl.highlight("seed", args.seed)
     rl.highlight("temporal_window", args.temporal_window)
+    # 变体开关必须与结论数字同处记录 —— 否则日志里的 AP 归不到具体结构上
+    rl.highlight("variant", args.variant or "custom(细粒度开关)")
+    rl.highlight("scatter_gather", flags["scatter_gather"])
+    rl.highlight("bev_encoder", flags["bev_encoder"])
+    if flags["bev_encoder"] != "none":
+        rl.highlight("bev_encoder_layers", args.bev_encoder_layers)
+        rl.highlight("bev_encoder_heads", args.bev_encoder_heads)
+        rl.highlight("bev_chunk", args.bev_chunk)
     hist: list[float] = []
     for epoch in range(1, args.epochs + 1):
         # 阶梯衰减:每 --lr-halve epochs 减半(0 = 不衰减;长训必须关,
@@ -316,7 +373,7 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
         )
         if args.save_every and epoch % args.save_every == 0:
             Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), args.out)
+            save_map_checkpoint(model, args.out)
             _save_opt_sidecar(opt, args, epoch)
             print(f"[ckpt] epoch {epoch}: 覆盖存盘 {args.out}")
         if epoch % args.log_every == 0 or epoch == args.epochs:
@@ -328,7 +385,7 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     final = float(np.mean(hist[-20:]))
     print(f"[done] 最后 20 步平均 total = {final:.4f}")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.out)
+    save_map_checkpoint(model, args.out)
     _save_opt_sidecar(opt, args, args.epochs)
     print(f"[save] {args.out}")
     rl.highlight("final_loss", round(final, 4))

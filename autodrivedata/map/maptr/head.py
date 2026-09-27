@@ -1,17 +1,24 @@
-"""MapTR 分层 query head(参考自实现)——实例级 query + 点级 query + 置换等价匹配。
+"""MapTR head —— 分层 query 外壳(实例级 query + 置换等价匹配 + 损失)。
 
-忠实移植官方 MapTR 核心数学(§5.11d):
-- 分层 query:每类 num_vec 个实例查询 + 每实例 num_pts 个点查询(点查询 =
-  实例查询线性投影 + 可学习点位置嵌入,与官方 point_embedding 同构);
-- 解码器逐层:实例级自注意力 → 点级 BEV 几何采样(参考点 = 上层预测点,双线性
-  采样,官方 deformable 交叉注意力的 topk=1 简化)→ 点特征均值回聚实例 → FFN;
-- 置换等价匹配:按类匈牙利 + 双向 GT 增强(正/反向各匹配一次取更优,MapTRv2
-  §3.2 口径),代价 = 分类 −logit + 5·点级 L1;
-- 损失:focal 分类(含背景)+ 点级 L1(仅匹配对,权重 5 = 官方 pts_loss_coef)。
+**两套解码器按文件分开**(2026-09-27),本文件只做**装配**与共用部分:
 
-工程简化(§5.11d 自实现口径):
-1. 只取末层输出计算损失(官方逐层 aux);
-2. 点回归预测绝对坐标(官方预测相对参考点偏移,数学等价——初始参考点可学习)。
+| 文件 | 内容 |
+|---|---|
+| [`decoder.py`](decoder.py) | `MapTRDecoderLayer` + 构件 `MLP` / `FFN` —— **默认线**(MapTRv2 口径) |
+| [`decoder_mapqr.py`](decoder_mapqr.py) | `MapQRDecoderLayer` —— **MapQR scatter-and-gather 口径** |
+| 本文件 | `MapTRHead`(按 `scatter_gather` 开关选解码器)+ `match_assign` + `maptr_loss` |
+
+两支**输出契约相同**(每层签名一致),故 `MapTRHead` 只换 `layers` 的构件类型,
+下游(`train_maptr` / `eval_maptr` / 逐帧契约 `mapvec_pred/1`)对选哪一支无感。
+默认 `scatter_gather=False` ⇒ 与加变体之前**逐位一致**;开 MapQR 支须**从头训练**
+(参数名集合不同,`load_map_weights` 会把旧权重拦下)。
+
+**共用部分**(两支同构,与选哪支无关):每类 `num_vec` 个实例查询、可学习初始锚线
+`anchor`、实例级分类头 `cls_branch`;匹配 = 按类匈牙利 + 双向 GT 增强(MapTRv2 §3.2),
+代价 = 分类 −logit + 5·点级 L1;损失 = focal 分类(含背景)+ 点级 L1(仅匹配对)。
+
+工程简化(§5.11d 自实现口径):① 只取末层输出计算损失(官方逐层 aux);
+② 点回归预测**绝对坐标**(官方预测相对参考点偏移,数学等价——初始参考点可学习)。
 
 类序与 MAPTR_CLASSES 一致:(divider, ped_crossing, boundary, centerline);
 logits 类别 0 = 背景,1..num_classes = 上序。
@@ -26,6 +33,8 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torchvision.ops import sigmoid_focal_loss
 
+from autodrivedata.map.maptr.decoder import MapTRDecoderLayer
+from autodrivedata.map.maptr.decoder_mapqr import MapQRDecoderLayer
 from autodrivedata.map.maptr.gkt import BEV_DEFAULT
 
 # 官方 MapTR 口径:点损失系数 pts_loss_coef=5(匹配代价与损失共用)
@@ -35,93 +44,12 @@ PTS_COST_WEIGHT = 5.0
 _PAD_COST = 1e6
 
 
-class MLP(nn.Module):
-    """两段 MLP(in → hidden → out,ReLU 激活)。"""
-
-    def __init__(self, in_dim: int, hidden: int, out_dim: int) -> None:
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(in_dim, hidden), nn.ReLU(inplace=True), nn.Linear(hidden, out_dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class FFN(nn.Module):
-    """前馈网络(官方 ffn_ratio=4 口径,残差由调用方加)。"""
-
-    def __init__(self, embed_dims: int = 256) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(embed_dims, embed_dims * 4),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dims * 4, embed_dims),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class MapTRDecoderLayer(nn.Module):
-    """一层解码器:实例自注意力 → 点级 BEV 采样 → 点回归 → 实例回聚。"""
-
-    def __init__(self, embed_dims: int = 256, n_heads: int = 8, bev_dims: int = 256) -> None:
-        super().__init__()
-        self.ins_attn = nn.MultiheadAttention(embed_dims, n_heads, batch_first=False)
-        self.ins_ffn = FFN(embed_dims)
-        self.pt_proj = nn.Linear(embed_dims, embed_dims)  # 实例特征 → 点查询基
-        self.bev_proj = nn.Linear(bev_dims, embed_dims)  # BEV 采样特征 → 点查询空间
-        self.agg_proj = nn.Linear(embed_dims, embed_dims)  # 点特征均值 → 实例残差
-        self.reg_branch = MLP(embed_dims, embed_dims, 2)  # 点特征 → (dx, dy) 米
-
-    def forward(
-        self,
-        q_ins: torch.Tensor,
-        ref_pts: torch.Tensor,
-        bev: torch.Tensor,
-        point_embed: torch.Tensor,
-        bev_range: tuple[float, float, float, float],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """q_ins (Nq, B, C);ref_pts (B, Nq, P, 2) 米;bev (B, C_bev, H, W)。
-
-        返回 (新 q_ins (Nq, B, C), 新 ref_pts (B, Nq, P, 2))。
-        """
-        q2, _ = self.ins_attn(q_ins, q_ins, q_ins)
-        q_ins = self.ins_ffn(q_ins + q2) + q_ins + q2
-        # 点查询:实例查询投影 + 可学习点位置嵌入(官方分层 query 同构)
-        q_pt = self.pt_proj(q_ins).unsqueeze(2) + point_embed[None, None]  # (Nq, B, P, C)
-        sampled = self._sample_bev(bev, ref_pts, bev_range)  # (Nq, B, P, C_bev)
-        q_pt = q_pt + self.bev_proj(sampled)
-        # 点回归(绝对坐标)
-        d = self.reg_branch(q_pt)  # (Nq, B, P, 2)
-        new_ref = ref_pts.permute(1, 0, 2, 3) + d
-        new_ref = new_ref.permute(1, 0, 2, 3)
-        # 点特征均值回聚实例
-        q_ins = q_ins + self.agg_proj(q_pt.mean(dim=2))
-        return q_ins, new_ref
-
-    def _sample_bev(
-        self, bev: torch.Tensor, ref_pts: torch.Tensor, bev_range: tuple[float, float, float, float]
-    ) -> torch.Tensor:
-        """参考点(米)→ BEV 双线性采样(官方 deformable 交叉注意力的 topk=1 简化)。
-
-        bev (B, C, H, W) → (Nq, B, P, C)。BEV 网格覆盖 bev_range(xmin,ymin,xmax,ymax),
-        与 GKT 的 BEVParams.pc_range 同口径;越界参考点 padding 0。
-        输入不 expand(Nq·P 个点打平成 grid 的 H_out 维)——若把 BEV expand 成
-        (B·Nq, C, H, W) 会物化 4GB 临时块(3080 Ti 12G 会 OOM)。
-        """
-        b, c = bev.shape[:2]
-        nq, p = ref_pts.shape[1], ref_pts.shape[2]
-        xmin, ymin, xmax, ymax = bev_range
-        gx = ref_pts[..., 0] / ((xmax - xmin) / 2)  # x ∈ [xmin, xmax] → [−1, 1]
-        gy = ref_pts[..., 1] / ((ymax - ymin) / 2)
-        grid = torch.stack([gx, gy], dim=-1).view(b, nq * p, 1, 2)  # (B, Nq·P, 1, 2)
-        out = F.grid_sample(bev, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
-        # out (B, C, Nq·P, 1) → (Nq, B, P, C)
-        return out.squeeze(-1).view(b, c, nq, p).permute(2, 0, 3, 1)
-
-
 class MapTRHead(nn.Module):
-    """MapTR head:输入 BEV 特征,输出实例分类 + 每实例 num_pts 个折线点。"""
+    """MapTR head:输入 BEV 特征,输出实例分类 + 每实例 num_pts 个折线点。
+
+    `scatter_gather=True` 时换成 MapQR 的 scatter-and-gather 解码器(见
+    `MapQRDecoderLayer`);**输出契约与默认分支完全一致**。
+    """
 
     def __init__(
         self,
@@ -131,19 +59,35 @@ class MapTRHead(nn.Module):
         num_pts: int = 20,
         num_layers: int = 6,
         bev_dims: int = 256,
+        scatter_gather: bool = False,
+        n_attn_heads: int = 8,
+        num_points: int = 4,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.num_vec = num_vec
         self.num_pts = num_pts
         self.num_queries = num_classes * num_vec
+        self.scatter_gather = scatter_gather
         self.instance_embed = nn.Embedding(self.num_queries, embed_dims)  # 实例查询(每类一组)
-        self.point_embed = nn.Embedding(num_pts, embed_dims)  # 点位置嵌入(官方同构,全层共享)
         self.anchor = nn.Parameter(torch.zeros(self.num_queries, num_pts, 2))  # 初始参考点(可学习锚线)
         self.cls_branch = nn.Linear(embed_dims, num_classes + 1)
-        self.layers = nn.ModuleList(
-            [MapTRDecoderLayer(embed_dims, bev_dims=bev_dims) for _ in range(num_layers)]
-        )
+        if scatter_gather:
+            # 点查询位置先验改用参考点正弦嵌入(官方 instance 口径),可学习点嵌入不再需要
+            self.point_embed = None
+            self.layers = nn.ModuleList(
+                [
+                    MapQRDecoderLayer(
+                        embed_dims, bev_dims=bev_dims, num_pts=num_pts, n_attn_heads=n_attn_heads
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
+        else:
+            self.point_embed = nn.Embedding(num_pts, embed_dims)  # 点位置嵌入(官方同构,全层共享)
+            self.layers = nn.ModuleList(
+                [MapTRDecoderLayer(embed_dims, bev_dims=bev_dims) for _ in range(num_layers)]
+            )
         # 锚线初始化:每类 num_vec 个锚中心在 BEV 内均匀散布(10 列网格),点沿 x 轴
         # 铺开(线状先验)。num_vec ≠ 50 时取网格前 num_vec 个(单测用小配置)
         with torch.no_grad():
@@ -165,8 +109,9 @@ class MapTRHead(nn.Module):
         b = bev.shape[0]
         q_ins = self.instance_embed.weight.unsqueeze(1).expand(-1, b, -1)  # (Nq, B, C)
         ref = self.anchor.unsqueeze(0).expand(b, -1, -1, -1)  # (B, Nq, P, 2)
+        point_embed = None if self.point_embed is None else self.point_embed.weight
         for layer in self.layers:
-            q_ins, ref = layer(q_ins, ref, bev, self.point_embed.weight, BEV_DEFAULT.pc_range)
+            q_ins, ref = layer(q_ins, ref, bev, point_embed, BEV_DEFAULT.pc_range)
         logits = self.cls_branch(q_ins.permute(1, 0, 2))  # (B, Nq, C+1)
         return {"pred_logits": logits, "pred_points": ref}
 

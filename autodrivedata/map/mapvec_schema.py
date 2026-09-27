@@ -19,6 +19,7 @@
 | `num_points` | 每条折线点数(20;pred 与 GT 同) |
 | `score_thr` | 产出该 pred 的实例得分阈值(sigmoid 后)。**绝对数字必须带阈值**——chamfer AP 无 recall 项,阈值动一下能差 2.6×(见 eval_maptr 口径警告) |
 | `ckpt` | 权重路径(溯源) |
+| `map_format` | **可选**字段:这份 GT 的地图由哪种格式导出(`MAP_FORMATS` 之一),缺省 `"opendrive"` |
 | `preds` | 实例数组 `[{class, points: [[x, y] × num_points], score}]`,按类序排列 |
 | `gts` | 同结构、无 `score`(GT 无置信度;由 `clip_to_bev` 裁进窗口) |
 
@@ -37,7 +38,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .mapvec import BEV_RANGE, MAPTR_CLASSES
+from .mapvec import BEV_RANGE, MAP_FORMATS, MAPTR_CLASSES
 
 SCHEMA_ID = "mapvec_pred/1"
 COORD = "ego"
@@ -63,6 +64,9 @@ class MapVecFramePred:
     ckpt: str
     preds: tuple[MapVecInstance, ...]
     gts: tuple[MapVecInstance, ...]
+    # GT 的地图来源格式。**可选且不校验存在性**(旧文件没有此键 ⇒ 取缺省),
+    # 故**不 bump 契约版本号**:加可选字段对既有 reader 是向后兼容的
+    map_format: str = "opendrive"
 
 
 # ---------- 构造与校验 ----------
@@ -91,6 +95,8 @@ def validate_frame(rec: MapVecFramePred) -> None:
     errors: list[str] = []
     if not rec.token:
         errors.append("token 为空")
+    if rec.map_format not in MAP_FORMATS:
+        errors.append(f"map_format 未知 {rec.map_format!r}(应为 {list(MAP_FORMATS)} 之一)")
     if not 0.0 <= rec.score_thr <= 1.0:
         errors.append(f"score_thr 越界 {rec.score_thr}")
     for i, inst in enumerate(rec.preds):
@@ -143,6 +149,7 @@ def frame_to_dict(rec: MapVecFramePred) -> dict:
         "num_points": NUM_POINTS,
         "score_thr": rec.score_thr,
         "ckpt": rec.ckpt,
+        "map_format": rec.map_format,
         "preds": [inst_to_dict(i) for i in rec.preds],
         "gts": [inst_to_dict(i) for i in rec.gts],
     }
@@ -164,6 +171,7 @@ def frame_from_dict(d: dict) -> MapVecFramePred:
         score_thr=float(d["score_thr"]),
         ckpt=str(d["ckpt"]),
         preds=tuple(inst_from_dict(x) for x in d["preds"]),
+        map_format=str(d.get("map_format", "opendrive")),  # 缺省 ⇒ 旧文件照收
         gts=tuple(inst_from_dict(x) for x in d["gts"]),
     )
     validate_frame(rec)

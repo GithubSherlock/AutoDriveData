@@ -3,8 +3,10 @@
 读阶段 1 的 `traj_raw.json`(链式 T_0→k),在关键帧上:
 1. 每 KEYFRAME_EVERY 帧取一个关键帧,建 ScanContext 描述子;
 2. 回环候选 = 描述子距离 < SC_SIM_THRESH ∧ 关键帧号差 ≥ min_gap;
-3. 候选逐个用**双 yaw 初值 ICP**(0°/180°,ScanContext 对 yaw 有 180° 歧义)验证,
+3. 候选先过**几何先验闸**(LOOP_PRIOR_MAX_M)与**廉价筛**(LOOP_SCREEN_*,抽稀云 1 次迭代),
+   再用**双 yaw 初值 ICP**(0°/180°,ScanContext 对 yaw 有 180° 歧义)验证,
    过门(overlap ≥ LOOP_GATE_OVERLAP ∧ rmse < LOOP_GATE_RMSE ∧ converged)才成为回环边;
+   两条闸只用来**拒**,接受判据不受它们影响(口径与实测依据见常量注释);
 4. 位姿图 = 里程计边(相邻关键帧)+ 回环边 → G-N LM 优化。
 
 输出:
@@ -51,6 +53,41 @@ from autodrivedata.slam.core import (
 )
 from autodrivedata.utils.paths import project_path
 
+# 回环候选的**几何先验闸**(米):前端轨迹给出的两关键帧距离超过它就**不进 ICP**。
+#
+# **为什么必须有这道闸**:ICP 的成本随失配**爆炸**而非线性增长 —— 实测(12.8k 点云,
+# 同一份点云平移后配准):对齐 0.16 s / 10 m **6.8 s** / 40 m **92.7 s** / 100 m 142.6 s。
+# 失配云不重叠 ⇒ 迭代跑满且对应搜索退化。而描述子阈值(0.10)只保证"场景像",
+# 远处对照样进来(top-5 里常占多数)⇒ 不加闸时 351 个候选 = **小时级**(实测 30 min
+# 只跑完不到 25/81 个关键帧)。这条成本路径此前从未被走到:旧阈值在体素口径下恒 0 候选。
+#
+# **5.0 是量出来的,不是拍的**(802 帧闭环数据、351 个 SC 候选、真值取 `training/pose/`):
+#   真回环(GT <2 m,76 个)的前端距离 = **3.05–4.15 m(中位 4.02)** ← 前端在重访处的累积误差
+#   闸 2.0 m:放行 0,真对**误杀 76**;  闸 3.0 m:放行 64,真对**误杀 76**
+#   闸 5.0 m:放行 196,真对**误杀 0**,远对(GT >15 m)漏进 0   ← 选它
+#   闸 20.0 m:放行 333,真对误杀 0,远对漏进 1,但白跑 137 次分钟级 ICP
+# ⇒ 闸必须**大于真对的最大前端距离(4.15 m)**且**远低于近邻带**;5.0 对两端都留了余量。
+#
+# **口径**:只用它**拒**候选,不用它接受任何东西(接受仍由 SC + ICP 双门决定)。
+LOOP_PRIOR_MAX_M = 5.0
+
+# **进 ICP 前的廉价筛**(抽稀查询云 + 只跑 1 次迭代)。overlap = "查询点里有近邻的比例",
+# 抽稀是它的**无偏估计**,故可在 1/8 的点上量。
+#
+# 实测(同一批 76 个真回环):抽稀 1/8 筛值 min **0.187** / p10 0.241 / 中位 0.354 ⇒ 0.10 闸
+# **0 误杀**(余量 1.9×);而 180° 错分支的筛值恒 **0.01–0.03** ⇒ 一次迭代就出局。
+#
+# **它省的是什么**:整条链路的成本主项不是"迭代次数",是**失配云上的第一次迭代** ——
+# 无近邻 ⇒ `nearest_batch` 的网格早停失效(全层全点),实测 82–125 s/次;而对齐云 0.16 s。
+# 套上筛之后错分支 0.2 s 出局(比 82–125 s 省 2–3 个数量级),真分支只多花 0.2 s。
+#
+# **口径**:筛只用来**跳过某个 yaw 分支**,不参与接受判据(接受仍是 SC + 全量 ICP 双门)。
+# **三条已试过、都不行的廉价代理**(勿重走):SC 描述子距离(真对 0.034–0.092 vs 中段
+# 0.014–0.099,中段最小值比真对还小)、2 m 粗格占格重叠(真对 0.086–0.180 vs 远对
+# 0.001–0.191,区间重叠)、全量云首迭代 overlap(虽能分开,但一次 1.5–18 s,省不了钱)。
+LOOP_SCREEN_STRIDE = 8
+LOOP_SCREEN_OVERLAP = 0.10
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -76,22 +113,45 @@ def main() -> None:
     for i in kf_idx:
         p = root / "training" / "velodyne" / f"{frames[i]:06d}.bin"
         pts = np.fromfile(p, dtype=np.float32).reshape(-1, 4)
+        # ★ 描述子吃**原始点云**,体素云只喂 ICP —— 两个消费者的降采样需求相反:
+        #   ScanContext 是**计数直方图**(0.5 m 体素把每格打到 ~10 点、非空格 56%,
+        #   Poisson 噪声 ~30% 直接淹掉信号)。实测 802 帧闭环数据、同一地点(帧 300↔700,
+        #   GT 距 0.20 m):全点云距 0.039 / 体素后 0.314,而"同一帧不同降采样实现"之间
+        #   就有 0.51 ⇒ 真值对全 > SC_SIM_THRESH ⇒ **候选 0**(静默:不报错,只是永不闭环)。
+        #   回归钉:tests/slam/test_slam.py 的 AST 判据。
         kf_clouds.append(voxel_downsample(pts, 0.5))
-        descs.append(desc_scan_context(kf_clouds[-1]))
+        descs.append(desc_scan_context(pts))
     descs_arr = np.stack(descs)
     print(f"[kf] {len(kf_idx)} 关键帧(每 {args.every} 帧)| 描述子 {descs_arr.shape}")
 
     # --- 回环候选 + 双 yaw ICP 验证 ---
+    # 进度可见(这个循环在闭环数据上是**分钟级到半小时级**的黑盒:351 候选 × 双 yaw,
+    # 且坏候选要跑满 ICP_MAX_ITER —— 与收敛候选的成本差一个量级,静默等待无法判断死活)。
+    t_loop = time.time()
+    n_cand = n_ok = n_prior = n_screened = n_short = 0
     loops: list[dict] = []
     for n, i in enumerate(kf_idx):
+        if n % 25 == 0 and n:
+            print(
+                f"  [loop] {n}/{len(kf_idx)} 关键帧 | SC 候选 {n_cand}(先验拒 {n_prior}"
+                f" / 筛出局 {n_screened} / 短路 {n_short})过门 {n_ok} | 耗时 {time.time() - t_loop:.0f}s"
+            )
         cands = sc_candidates(
             descs_arr, descs_arr[n], n, top_n=SC_TOP_N, min_gap=args.min_gap, thresh=SC_SIM_THRESH
         )
+        n_cand += len(cands)
         for c, shift, dist in cands:
             j = kf_idx[c]
+            # ★ 几何先验闸(见 LOOP_PRIOR_MAX_M):前端位姿已说两者隔很远 ⇒ 不进 ICP。
+            # 必须在 ICP **之前**:失配候选的 ICP 成本是收敛候选的几十到上千倍。
+            prior_m = float(np.linalg.norm(poses[i][:3, 3] - poses[j][:3, 3]))
+            if prior_m > LOOP_PRIOR_MAX_M:
+                n_prior += 1
+                continue
             # 双 yaw 初值:ScanContext 列滚动不变 → 对 180° 旋转有歧义。shift 是描述子
             # 最佳列滚动量(= yaw 的粗估,60 扇 → 6°/扇),仅记录不参与几何(几何由 ICP 定)
             best = None
+            branches: list[dict] = []
             for yaw in (0.0, np.pi):
                 c_, s_ = np.cos(yaw), np.sin(yaw)
                 rot = np.eye(4)
@@ -102,17 +162,44 @@ def main() -> None:
                 guess_map = np.linalg.inv(poses[i]) @ poses[j] @ rot
                 # seed 契约 = **位姿增量**(icp_odometry 内部取逆换成点映射),故传其逆。
                 # **不能用 init_T 当迭代初值**:init_T 只参与出口合成,不影响 ICP 解。
-                res = icp_odometry(
-                    kf_clouds[c][:, :3], kf_clouds[n][:, :3], np.eye(4), seed=np.linalg.inv(guess_map)
+                seed = np.linalg.inv(guess_map)
+                # ① 廉价筛(见 LOOP_SCREEN_*):抽稀查询云 + 1 次迭代,挡在贵路径之前
+                scr = icp_odometry(
+                    kf_clouds[c][::LOOP_SCREEN_STRIDE, :3],
+                    kf_clouds[n][:, :3],
+                    np.eye(4),
+                    seed=seed,
+                    max_iter=1,
                 )
+                if scr["overlap"] < LOOP_SCREEN_OVERLAP:
+                    branches.append({"yaw_deg": float(np.degrees(yaw)), "skip": "screened"})
+                    continue
+                # ② 全量 ICP(接受判据只用它)
+                res = icp_odometry(kf_clouds[c][:, :3], kf_clouds[n][:, :3], np.eye(4), seed=seed)
+                res["yaw"] = float(np.degrees(yaw))
+                res["screen_overlap"] = float(scr["overlap"])
+                branches.append(res)
                 if best is None or res["rmse_final"] < best["rmse_final"]:
                     best = res
-                    best["yaw"] = float(np.degrees(yaw))
+                # ③ **短路**:yaw=0 那支已过门 ⇒ 反极分支不再跑。依据:一份点云不可能同时与 0°
+                # 和 180° 对齐(实测过门候选的反极支 overlap ≤0.03 / rmse ≥2.4),而反极支是
+                # 分钟级开销。**接受判据没动**:反极支仍在"第一支没过门"时才跑(覆盖反向重访)。
+                if yaw == 0.0 and (
+                    res["overlap"] >= LOOP_GATE_OVERLAP
+                    and res["rmse_final"] < LOOP_GATE_RMSE
+                    and (res["converged"] or not LOOP_GATE_CONVERGED)
+                ):
+                    n_short += 1
+                    break
+            if best is None:  # 两支都被筛掉 ⇒ 这个候选不进 loops(只计数)
+                n_screened += 1
+                continue
             ok = (
                 best["overlap"] >= LOOP_GATE_OVERLAP
                 and best["rmse_final"] < LOOP_GATE_RMSE
                 and (best["converged"] or not LOOP_GATE_CONVERGED)
             )
+            n_ok += int(ok)
             loops.append(
                 {
                     "kf_i": n,
@@ -121,6 +208,9 @@ def main() -> None:
                     "frame_j": frames[j],
                     "sc_dist": round(dist, 5),
                     "sc_shift": int(shift),
+                    "prior_m": round(prior_m, 3),
+                    "screen_overlap": round(best["screen_overlap"], 4),
+                    "skipped_branches": [b_["skip"] for b_ in branches if "skip" in b_],
                     "yaw_deg": best["yaw"],
                     "icp_overlap": round(best["overlap"], 4),
                     "icp_rmse": round(best["rmse_final"], 5),
@@ -132,7 +222,10 @@ def main() -> None:
                 }
             )
     accepted = [e for e in loops if e["accepted"]]
-    print(f"[loop] 候选 {len(loops)} | 过门 {len(accepted)}")
+    print(
+        f"[loop] SC 候选 {n_cand} → 先验拒 {n_prior} / 筛出局 {n_screened} → 全量 ICP {len(loops)}"
+        f" → 过门 {len(accepted)}"
+    )
 
     # --- 位姿图:里程计边 + 回环边 ---
     edges: list[Edge] = []
@@ -162,14 +255,24 @@ def main() -> None:
         "n_frames": len(frames),
         "n_keyframes": len(kf_idx),
         "keyframe_every": args.every,
-        "n_loop_candidates": len(loops),
+        "n_loop_candidates": len(loops),  # 进过全量 ICP 的候选(先验闸 ∧ 筛之后)
+        "n_candidates_sc": n_cand,  # 描述子阈值给出的候选(先验闸之前)
+        "n_prior_rejected": n_prior,  # 被几何先验拒掉、未进 ICP 的
+        "n_screened_out": n_screened,  # 两支 yaw 都被廉价筛出局、未进全量 ICP 的
+        "n_short_circuit": n_short,  # yaw=0 支已过门 ⇒ 反极支未跑(次数)
+        "loop_prior_max_m": LOOP_PRIOR_MAX_M,
+        "loop_screen_stride": LOOP_SCREEN_STRIDE,
+        "loop_screen_overlap": LOOP_SCREEN_OVERLAP,
         "n_loops": len(accepted),
         "closure_pre": ce_pre,
         "closure_post": ce_post,
         "wall_s": round(time.time() - t0, 2),
         "note": (
             "开放路径下 closure_* 是首末位姿距离(= 路径长度量级),非漂移率;"
-            "n_loops=0 是直线段数据的合法结果(不造回环)"
+            "n_loops=0 是直线段数据的合法结果(不造回环)。"
+            "闭环路径上 closure_* 才是真漂移指标。"
+            f"n_candidates_sc → n_loop_candidates 的差由 LOOP_PRIOR_MAX_M={LOOP_PRIOR_MAX_M}m "
+            "几何先验 + 廉价筛(LOOP_SCREEN_*,见注释;它只跳过 yaw 分支,不改接受判据)共同砍掉。"
         ),
     }
     (out / "traj_pgo.json").write_text(
@@ -192,7 +295,15 @@ def main() -> None:
     )
     (out / "loops.json").write_text(
         json.dumps(
-            {"n_candidates": len(loops), "n_accepted": len(accepted), "loops": loops},
+            {
+                "n_candidates": len(loops),
+                "n_candidates_sc": n_cand,
+                "n_prior_rejected": n_prior,
+                "n_screened_out": n_screened,
+                "n_short_circuit": n_short,
+                "n_accepted": len(accepted),
+                "loops": loops,
+            },
             indent=2,
             ensure_ascii=False,
         )

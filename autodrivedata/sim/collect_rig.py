@@ -1,6 +1,7 @@
 """采集器纯值位姿/挂点计算(零 carla,唯一落点)。
 
-把 `bin/` 采集器里可单测的纯几何抽到这里,bin 脚本只做 carla 编排:
+把采集器里可单测的纯几何抽到这里,`collect_*.py` 只做 carla 编排
+(同一路子后来也用在 `route.py`:纯值下沉,采集器只编排):
 - `ring_cam_pose`:3DGS 360° 环绕相机每帧位姿(collect_3dgs 用)
 - `stereo_rig_offsets`:双目 rig 左右相机挂点相对 ego 的偏移(collect_stereo 用)
 
@@ -8,7 +9,9 @@
 - 与 `carla_common.SENSOR_OFFSET = (1.2, 0.0, 1.65)` 一致(相机挂点 x 前 1.2m、z 高 1.65m)
 - 环绕 yaw 口径:相机朝向 world 系 atan2(dy, dx)(从环绕中心指向相机),与
   collect_3dgs 原逻辑一致;度输出(CARLA Rotation 用度)
-- 全部函数无 carla 依赖,AST 纪律由 tests/test_paths.py 守护
+- 全部函数无 carla 依赖,AST 纪律由 `tests/test_layer_guard.py` 守护
+  (2026-09-26 重构后这条包的纯度守卫统一收敛到那里;此前写的 `tests/test_paths.py`
+  已不存在 —— 旧引用一度是死链)
 """
 
 from __future__ import annotations

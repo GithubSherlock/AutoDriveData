@@ -118,7 +118,9 @@ def scan_package_layers(pkg_root: Path, injected: dict[str, str] | None = None) 
         sources = {
             f: f.read_text(encoding="utf-8")
             for f in sorted(pkg_root.rglob("*.py"))
-            if "__pycache__" not in f.parts
+            # 跳过工具产物:含 `.ipynb_checkpoints/` —— Jupyter 会**复制**一份 .py 进去,
+            # 那份副本不是本包源码,拿它判层归属会因"在 Jupyter 里打开过"而假红
+            if not any(p == "__pycache__" or p.startswith(".") for p in f.parts)
         }
 
     for path, src in sources.items():

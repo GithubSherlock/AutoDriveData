@@ -95,12 +95,23 @@ class TestDocCommandsResolve:
 # 是**单位/图例注记**,不是路径;不加这道过滤会当场多出 9 条假阳性(实测)。
 _PATH_EXT = (".py", ".md", ".png", ".json", ".sh", ".cpp", ".txt", ".mp4", ".pt")
 
+# 编辑器/工具产物目录:`__pycache__` 与 Jupyter 的 `.ipynb_checkpoints`。
+# **必须跳过**:`.ipynb_checkpoints/` 会复制一份 .py 进去,而副本里的相对链接
+# (相对**副本**所在目录解析)必然失效 —— 于是"在 Jupyter 里打开过某个新文件"
+# 就会把本守卫点红,而代码一个字没错。判据:路径任一段以 `.` 开头即视为产物。
+_TOOL_ARTIFACT_DIRS = {"__pycache__"}
+
+
+def _is_tool_artifact(path) -> bool:
+    """路径落在编辑器/工具产物目录里(`__pycache__` / 任意 `.` 开头的目录)。"""
+    return any(part in _TOOL_ARTIFACT_DIRS or part.startswith(".") for part in path.parts)
+
 
 def _docstring_links() -> list[tuple[str, int, str]]:
     """包内 `.py` 里形如 `](...)` 且目标带文件后缀的相对链接 → [(相对路径, 行号, 目标)]。"""
     hits: list[tuple[str, int, str]] = []
     for py in sorted((ROOT / "autodrivedata").rglob("*.py")):
-        if "__pycache__" in py.parts:
+        if _is_tool_artifact(py):
             continue
         rel = py.relative_to(ROOT).as_posix()
         for lineno, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):

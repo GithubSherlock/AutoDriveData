@@ -18,6 +18,7 @@
   python -m autodrivedata.map.eval_maptr --infos outputs/surround_train/map_infos.json \
       --root outputs/surround_train --ckpt outputs/maptr_ep512.pt \
       --start 200 --out-frames outputs/surround_pred      # → outputs/surround_pred/{token}.json
+      --start 200 --out-frames outputs/surround_pred --map-format lanelet2   # 另落 {token}.osm
 
 **AP 口径的唯一落点**:`evaluate()` 是纯函数形态的实现,`main()` 只是它的 argparse 壳。
 `train_maptr --eval-*` 训练尾部的自动评估**调用同一个 `evaluate()`** ——
@@ -36,6 +37,7 @@ import numpy as np
 import torch
 
 from autodrivedata.map.chamfer_ap import chamfer_ap_per_class, chamfer_cost_matrix
+from autodrivedata.map.export_mapvec import MAP_SUFFIX, dump_map_text
 from autodrivedata.map.maptr.chamfer_gpu import chamfer_cost_matrix_cuda
 from autodrivedata.map.maptr.dataset import (
     MAPTR_CLASSES,
@@ -44,7 +46,8 @@ from autodrivedata.map.maptr.dataset import (
     parse_segs,
     select_frames,
 )
-from autodrivedata.map.maptr.model import MapTR, load_map_weights
+from autodrivedata.map.maptr.variants import load_map_model, read_map_meta
+from autodrivedata.map.mapvec import MAP_FORMATS
 from autodrivedata.map.mapvec_schema import (
     MapVecFramePred,
     MapVecInstance,
@@ -106,6 +109,18 @@ def _dump_preds(
     plt.close(fig)
 
 
+def _dump_frame_map(gts, fmt: str, base: Path, ckpt: str) -> None:
+    """逐帧裁剪地图 → 该格式;元素 = **该帧的 GT 折线**(2D 包成 `MapVec(z=0)`)。
+
+    与 `{token}.json` 同窗、同坐标系(都是 ego 系米),故下游不必自己再裁一次。
+    """
+    from autodrivedata.map.mapvec import MapVec
+
+    vecs = tuple(MapVec(g.cls, tuple((x, y, 0.0) for x, y in g.points), (), "", ckpt) for g in gts)
+    with open(f"{base}{MAP_SUFFIX[fmt]}", "w", encoding="utf-8") as f:
+        f.write(dump_map_text(vecs, fmt))
+
+
 def evaluate(
     *,
     infos: str,
@@ -119,10 +134,11 @@ def evaluate(
     score_thr: float = 0.2,
     sweep: str | None = None,
     match: str = "auto",
-    temporal_window: int = 1,
+    temporal_window: int | None = None,  # None = 用 checkpoint 自带的,缺省 1
     device: str | None = None,
     out_pred: str | None = None,
     out_frames: str | None = None,
+    map_format: str = "opendrive",  # 逐帧地图的落盘格式(见 mapvec.MAP_FORMATS)
     rl: runlog.RunLogger | None = None,
     highlight_prefix: str = "",
 ) -> dict:
@@ -168,15 +184,23 @@ def evaluate(
         raise SystemExit("筛选后没有任何帧 —— 检查 --seg / --exclude-seg / --keep-in-seg")
     n = min(frames or len(sel), len(sel))
     frame_list = sel[start : start + n]
-    ds = MapTRDataset(meta, root, frames=frame_list, window=temporal_window)
+    # 变体与窗口都从 checkpoint 自带的结构说明里读(旧裸权重 → 基线 / 窗口 1);
+    # **必须先解析再建数据集** —— 窗口同时决定 dataset 的取帧与模型结构,两处不一致
+    # 会让时序权重按单帧喂进去(键不匹配会报错,但报在模型侧,看着像权重坏了)
+    meta_ck = read_map_meta(ckpt, dev)
+    window = (
+        temporal_window
+        if temporal_window is not None
+        else int(meta_ck["model_kwargs"].get("temporal_window", 1))
+    )
+    ds = MapTRDataset(meta, root, frames=frame_list, window=window)
     if ds.dropped:
-        print(f"[data] 窗口 {temporal_window} 丢弃 {len(ds.dropped)} 帧(前驱不在本切分内)")
+        print(f"[data] 窗口 {window} 丢弃 {len(ds.dropped)} 帧(前驱不在本切分内)")
     print(f"[data] {len(ds)} 帧 × {len(ds.cam_names)} 相机")
 
-    model = MapTR(temporal_window=temporal_window).to(dev)
-    load_map_weights(model, ckpt, dev)
+    model, _meta_used = load_map_model(ckpt, dev, temporal_window=window)
     model.eval()
-    print(f"[model] {ckpt} 载入完成(窗口 {temporal_window})")
+    print(f"[model] {ckpt} 载入完成(变体 {meta_ck['name']},窗口 {window})")
 
     sweep_list = [float(x) for x in sweep.split(",")] if sweep else []
     floor = min([score_thr, *sweep_list])  # 单次推理收全部 >floor 的实例,阈值纯后处理
@@ -222,8 +246,11 @@ def evaluate(
                         for c in range(len(MAPTR_CLASSES))
                         for g in item["gt"][c]
                     ),
+                    map_format=map_format,
                 )
                 dump_frame(rec, out_frames)
+                if map_format != "opendrive":
+                    _dump_frame_map(rec.gts, map_format, Path(out_frames) / rec.token, ckpt)
                 n_frame_files += 1
                 oow_pred += out_of_window(rec)
                 oow_gt += gt_out_of_window(rec)
@@ -319,8 +346,8 @@ def main() -> None:
     ap.add_argument(
         "--temporal-window",
         type=int,
-        default=1,
-        help="时序窗口 K:必须与训练时一致(1 = 单帧);K>1 时每样本取本帧 + 前 K−1 帧",
+        default=None,
+        help="时序窗口 K:不给 = 用 checkpoint 自带的(旧裸权重 → 1);K>1 时每样本取本帧 + 前 K−1 帧",
     )
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用;GPU 被占用时可 --device cpu)")
     ap.add_argument("--out-pred", default=None, help="预测落盘基路径:写 <path>.json + <path>.png(BEV 目检)")
@@ -328,6 +355,12 @@ def main() -> None:
         "--out-frames",
         default=None,
         help="逐帧预测落盘目录:<DIR>/{token}.json(mapvec_pred/1 契约,GT 同文件携带;供 AutoLabel 消费)",
+    )
+    ap.add_argument(
+        "--map-format",
+        choices=MAP_FORMATS,
+        default="opendrive",
+        help="逐帧地图的落盘格式(需同时给 --out-frames);默认 opendrive = 只出契约 JSON",
     )
     ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
@@ -349,6 +382,7 @@ def main() -> None:
             device=args.device,
             out_pred=args.out_pred,
             out_frames=args.out_frames,
+            map_format=args.map_format,
             rl=rl,
         )
 

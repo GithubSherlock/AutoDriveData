@@ -24,7 +24,7 @@ import torch
 from PIL import Image, ImageDraw
 
 from autodrivedata.map.maptr.dataset import MAPTR_CLASSES, MapTRDataset
-from autodrivedata.map.maptr.model import MapTR
+from autodrivedata.map.maptr.variants import load_map_model
 from autodrivedata.map.mapviz import (
     GT_COLOR,
     PRED_COLOR,
@@ -77,10 +77,10 @@ def main() -> None:
         ds = MapTRDataset(infos, args.root, frames=frames)
         print(f"[data] {len(frames)} 帧 × {len(ds.cam_names)} 相机,设备 {dev}")
 
-        model = MapTR().to(dev)
-        model.load_state_dict(torch.load(args.ckpt, map_location=dev))
+        # 结构由 checkpoint 自带(变体/参数);显式指定会拿错结构,故不给开关
+        model, meta = load_map_model(args.ckpt, dev)
         model.eval()
-        print(f"[model] {args.ckpt} 载入完成")
+        print(f"[model] {args.ckpt} 载入完成(变体 {meta['name']})")
 
         out_dir = project_path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

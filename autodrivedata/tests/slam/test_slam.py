@@ -6,6 +6,9 @@ ScanContext/位姿图 语义。全纯 numpy,零 carla / 零 torch。
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -291,6 +294,104 @@ class TestIcpOdometry:
 # ---------------------------------------------------------------------------
 # ScanContext
 # ---------------------------------------------------------------------------
+class TestScanContextDescriptorInput:
+    """★ 回归(real bug):描述子必须吃**原始点云**,不许吃体素降采样云。
+
+    背景:描述子是**计数直方图**,降采样直接破坏它的计数统计;而 ICP 要的正是稀疏云。
+    同一份 `voxel_downsample(pts, 0.5)` 曾同时喂给两个消费者 ⇒ 口径错配。实测(802 帧
+    两圈闭环数据,帧 300↔700 是 GT 距 0.20 m 的同一地点):全点云描述子距 **0.039**,
+    体素降采样后 **0.314**,而"同一帧、不同降采样实现"之间就有 **0.51** ⇒ 真值对全部
+    > SC_SIM_THRESH ⇒ **候选 0**。这个失败是**静默的**(不报错,只是永远不闭环),
+    所以判据必须是机械的:AST 扫全包,`desc_scan_context(...)` 的实参不许溯源到
+    `voxel_downsample(...)`。同族先例:`tests/test_layer_guard.py`(import 纪律也用 AST 钉)。
+    """
+
+    PKG = Path(__file__).resolve().parents[2]  # autodrivedata/
+
+    #: 真正被修掉的那一行(实测形态:`voxel_downsample` 结果进列表,描述子取 `[-1]`)
+    BUGGY = """
+def f(pts):
+    kf_clouds.append(voxel_downsample(pts, 0.5))
+    descs.append(desc_scan_context(kf_clouds[-1]))
+"""
+    BUGGY_VIA_NAME = """
+def f(pts):
+    down = voxel_downsample(pts, 0.5)
+    return desc_scan_context(down)
+"""
+    FIXED = """
+def f(pts):
+    kf_clouds.append(voxel_downsample(pts, 0.5))
+    descs.append(desc_scan_context(pts))
+"""
+
+    @staticmethod
+    def _called_name(node: ast.AST) -> str | None:
+        """取调用表达式的函数名(支持 `f(...)` 与 `mod.f(...)`)。"""
+        if not isinstance(node, ast.Call):
+            return None
+        f = node.func
+        if isinstance(f, ast.Name):
+            return f.id
+        if isinstance(f, ast.Attribute):
+            return f.attr
+        return None
+
+    def _offenders(self, source: str) -> list[int]:
+        """源文本 → 违规的 `desc_scan_context` 调用行号(AST,不执行代码)。
+
+        污点两路,都是实测形态:
+        ① `x = voxel_downsample(...)` 之后把 `x` 传进去;
+        ② `lst.append(voxel_downsample(...))` 之后把 `lst[-1]` 传进去 —— ★ 本 bug 的形态。
+        第一版只认 `Name`,在 ② 上**漏判**(把 bug 放回去测试仍绿):不咬的判据比没有判据更糟。
+        """
+        tree = ast.parse(source)
+        bad: list[int] = []
+        fns = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for fn in fns:
+            names: set[str] = set()
+            lists: set[str] = set()
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and self._called_name(node.value) == "voxel_downsample":
+                    names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr == "append" and isinstance(node.func.value, ast.Name):
+                        if any(self._called_name(a) == "voxel_downsample" for a in node.args):
+                            lists.add(node.func.value.id)
+            for node in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+                if self._called_name(node) != "desc_scan_context":
+                    continue
+                for arg in node.args:
+                    sub = list(ast.walk(arg))
+                    hit = any(self._called_name(c) == "voxel_downsample" for c in sub)
+                    hit |= any(isinstance(c, ast.Name) and c.id in names for c in sub)
+                    hit |= any(
+                        isinstance(c, ast.Subscript) and isinstance(c.value, ast.Name) and c.value.id in lists
+                        for c in sub
+                    )
+                    if hit:
+                        bad.append(node.lineno)
+        return bad
+
+    def test_guard_bites_the_snippets_it_must(self):
+        """★ 判据自带咬合自证(第一版就漏了 `[-1]` 形态,把 bug 放回去测试仍绿)。"""
+        assert self._offenders(self.BUGGY), "实测 bug 形态必须被判出"
+        assert self._offenders(self.BUGGY_VIA_NAME), "经变量传参也算"
+        assert not self._offenders(self.FIXED), "修好的一行不许误报"
+
+    def test_no_descriptor_is_built_from_a_downsampled_cloud(self):
+        offenders: list[str] = []
+        for path in sorted(self.PKG.rglob("*.py")):
+            if "tests" in path.parts:
+                continue
+            for line in self._offenders(path.read_text(encoding="utf-8")):
+                offenders.append(f"{path.relative_to(self.PKG)}:{line}")
+        assert not offenders, (
+            "描述子吃到了体素降采样云(计数直方图会被降采样噪声淹掉 ⇒ 回环候选恒为 0):\n  "
+            + "\n  ".join(offenders)
+        )
+
+
 class TestScanContext:
     def _ring_cloud(self, radius: float, n: int = 400) -> np.ndarray:
         """半径 radius 圆环点云(点都在该环上,描述子应为单环带宽 1)。"""

@@ -24,6 +24,9 @@ import numpy as np
 
 _EPS = 1e-9
 
+# `strict=False` 的外推上限(米):超过就报错,不硬撑。见 `_geo_at`
+_EXTRAPOLATE_MAX = 10.0
+
 # 各 kind 的 params 顺序
 # line: ()                       arc: (curvature,)
 # spiral: (curv_start, curv_end)
@@ -213,36 +216,55 @@ def geo_local(geo: Geometry, ds: float) -> tuple[float, float, float]:
     raise ValueError(f"未知几何类型 {kind!r}")
 
 
-def _geo_at(road: Road, s: float) -> tuple[Geometry, float]:
-    """s 所属几何与段内偏移;越界 raise(调用方采样应保持在 [0, length] 内)。"""
-    if s < -_EPS or s > road.length + _EPS:
-        raise ValueError(f"road {road.id}: s={s} 超出 [0, {road.length}]")
+def _geo_at(road: Road, s: float, strict: bool = True) -> tuple[Geometry, float]:
+    """s 所属几何与段内偏移。
+
+    `strict=True`(默认):`s ∉ [0, length]` **直接 raise** —— 这是**抓调用方 bug** 的守卫,
+    不是物理约束(几何公式 `geo_local` 对任意 `ds` 都有定义)。
+
+    `strict=False`:**有界外推**。用途只有一个:`mapvec._object_world_pts` —— object
+    (斑马线/停车线)摆在路段起止处时,**轮廓合法地溢到相邻路段**,实测越界 ≤ 2.44 m
+    (Town03 1.20 / Town04 1.88 / Town05 0.98 / Town06 2.44,两方向都有)。那时
+    raise 会让整张图提不出来;clamp 会把轮廓压回端点、斑马线多边形肉眼可见变形。
+    外推超过 `_EXTRAPOLATE_MAX` 仍 raise(硬撑没意义,宁可不给错数)。
+    """
+    over = max(-s, s - road.length, 0.0)
+    if over > _EPS:
+        if strict:
+            raise ValueError(f"road {road.id}: s={s} 超出 [0, {road.length}]")
+        if over > _EXTRAPOLATE_MAX:
+            raise ValueError(
+                f"road {road.id}: s={s} 超出 [0, {road.length}] 达 {over:.3f} m,"
+                f"超过外推上限 {_EXTRAPOLATE_MAX} m"
+            )
     geo = road.geometries[0]
     for g in road.geometries:
         if g.s <= s + _EPS:
             geo = g
         else:
             break
-    return geo, max(s - geo.s, 0.0)
+    ds = s - geo.s
+    # strict 下保持原语义(ds 不为负);非 strict 允许负 ds,交给 geo_local 外推
+    return geo, ds if not strict else max(ds, 0.0)
 
 
-def road_xy(road: Road, s: float) -> tuple[float, float]:
+def road_xy(road: Road, s: float, strict: bool = True) -> tuple[float, float]:
     """planView 平面坐标 (x, y)。"""
-    geo, ds = _geo_at(road, s)
+    geo, ds = _geo_at(road, s, strict)
     u, v, _ = geo_local(geo, ds)
     ch, sh = math.cos(geo.hdg), math.sin(geo.hdg)
     return geo.x + u * ch - v * sh, geo.y + u * sh + v * ch
 
 
-def road_heading(road: Road, s: float) -> float:
-    geo, ds = _geo_at(road, s)
+def road_heading(road: Road, s: float, strict: bool = True) -> float:
+    geo, ds = _geo_at(road, s, strict)
     _, _, dh = geo_local(geo, ds)
     return geo.hdg + dh
 
 
-def road_z(road: Road, s: float) -> float:
+def road_z(road: Road, s: float, strict: bool = True) -> float:
     """elevationProfile 高程(不含 superelevation 倾角)。"""
-    _geo_at(road, s)
+    _geo_at(road, s, strict)
     elev = road.elevations[0]
     for e in road.elevations:
         if e.s <= s + _EPS:
@@ -252,11 +274,11 @@ def road_z(road: Road, s: float) -> float:
     return _polyval((elev.a, elev.b, elev.c, elev.d), s - elev.s)
 
 
-def road_to_xy(road: Road, s: float, t: float) -> tuple[float, float, float]:
-    """s-t → 世界 (x, y, z);t 正 = 行驶向左侧,可外推。"""
-    x, y = road_xy(road, s)
-    h = road_heading(road, s)
-    return x - t * math.sin(h), y + t * math.cos(h), road_z(road, s)
+def road_to_xy(road: Road, s: float, t: float, strict: bool = True) -> tuple[float, float, float]:
+    """s-t → 世界 (x, y, z);t 正 = 行驶向左侧,可外推。`strict` 见 `_geo_at`。"""
+    x, y = road_xy(road, s, strict)
+    h = road_heading(road, s, strict)
+    return x - t * math.sin(h), y + t * math.cos(h), road_z(road, s, strict)
 
 
 def lane_offset_at(road: Road, s: float) -> float:

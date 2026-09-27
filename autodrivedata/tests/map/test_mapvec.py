@@ -20,7 +20,7 @@ from autodrivedata.map.mapvec import (
     vecs_dump,
     vecs_load,
 )
-from autodrivedata.map.opendrive import parse_xodr_text
+from autodrivedata.map.opendrive import parse_xodr_text, road_to_xy, road_xy
 
 # 双向四车道 + sidewalk/curb + center 双黄线 + crosswalk + StopLine + signal
 _XODR = """<?xml version="1.0"?>
@@ -301,3 +301,75 @@ def test_town10_counts() -> None:
     for v in vecs:
         if v.cls not in ("traffic_light",):
             assert len(v.points) >= 2
+
+
+# ---------------- object 轮廓越界(2026-09-27 修:Town03/04/05/06 曾整张提不出来)----------------
+
+# 斑马线摆在**路段末端**:轮廓角 u=+3 ⇒ s = 19.5 + 3 = 22.5 > length 20,越界 2.5 m。
+# 这是**合法数据**(轮廓溢到相邻路段),不是坏数据 —— 实测 Town06 最大越界 2.437 m。
+_OVERSHOOT_XODR = """<?xml version="1.0"?>
+<OpenDRIVE>
+<header revMajor="1" revMinor="4" name="t"/>
+<road name="r0" length="20" id="1" junction="-1">
+  <link/>
+  <planView><geometry s="0" x="0" y="0" hdg="0" length="20"><line/></geometry></planView>
+  <elevationProfile><elevation s="0" a="0" b="0" c="0" d="0"/></elevationProfile>
+  <lanes>
+    <laneSection s="0">
+      <left><lane id="1" type="driving" level="false"><width sOffset="0" a="3.5" b="0" c="0" d="0"/></lane></left>
+      <center><lane id="0" type="none" level="false"><width sOffset="0" a="0" b="0" c="0" d="0"/></lane></center>
+      <right><lane id="-1" type="driving" level="false"><width sOffset="0" a="3.5" b="0" c="0" d="0"/></lane></right>
+    </laneSection>
+  </lanes>
+  <objects>
+    <object id="1" name="" type="crosswalk" s="19.5" t="0" zOffset="0" hdg="0" width="4" length="6">
+      <outline>
+        <cornerLocal u="3" v="0" z="0"/><cornerLocal u="-3" v="0" z="0"/>
+        <cornerLocal u="-3" v="4" z="0"/><cornerLocal u="3" v="4" z="0"/>
+      </outline>
+    </object>
+  </objects>
+</road>
+</OpenDRIVE>
+"""
+
+
+def test_object_overshoot_extrapolates_and_is_reported() -> None:
+    """★ 越界 object **不再让整张图提不出来**,且越界幅度**记进 attrs**(不静默)。
+
+    修前 `_geo_at` 对 `s ∉ [0, length]` 直接 raise ⇒ Town03/04/05/06 四张图(8/20 含 _Opt)
+    整个 `extract_mapvec` 失败。
+    """
+    vecs = extract_mapvec(parse_xodr_text(_OVERSHOOT_XODR))
+    ped = [v for v in vecs if v.cls == "ped_crossing"]
+    assert len(ped) == 1
+    marks = dict(ped[0].attrs)
+    assert "s_extrapolated" in marks, "越界必须被记录,否则没人知道这条是外推来的"
+    assert float(marks["s_extrapolated"]) == pytest.approx(2.5, abs=1e-6)
+    # 外推点必须落在合理邻域(不外推爆炸):最远角 s=22.5,世界 x 应 ≈ 22.5
+    assert max(p[0] for p in ped[0].points) == pytest.approx(22.5, abs=0.5)
+
+
+def test_in_range_objects_carry_no_extrapolation_attr(vecs: tuple[MapVec, ...]) -> None:
+    """★ 未越界的实例**不加** `s_extrapolated` ⇒ 本来就好的图产出**逐位不变**。
+
+    这条是"默认路径不变"的机械保证:一旦给所有 object 都写上这个键,
+    12 张正常图的 JSON 就会全部变样。
+    """
+    assert all("s_extrapolated" not in dict(v.attrs) for v in vecs)
+
+
+def test_geo_at_strict_semantics_unchanged() -> None:
+    """`strict=True`(默认)**保持原语义**:越界照旧 raise —— 那是抓调用方 bug 的守卫。
+
+    非严格档才外推,且**超过上限仍 raise**(硬撑没意义,宁可不给错数)。
+    """
+    road = parse_xodr_text(_XODR).roads[7]
+    with pytest.raises(ValueError, match="超出"):
+        road_xy(road, -1.0)
+    with pytest.raises(ValueError, match="超出"):
+        road_xy(road, road.length + 1.0)
+    road_xy(road, -1.0, strict=False)  # 外推档:不抛
+    road_xy(road, road.length + 1.0, strict=False)
+    with pytest.raises(ValueError, match="外推上限"):
+        road_to_xy(road, -50.0, 0.0, strict=False)

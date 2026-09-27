@@ -18,6 +18,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 | 灯色动态 GT | 灯态 = **独立时序层**,Off/Unknown **不猜**;**不做视觉回归**(镜片 30m 处仅 ~4px) | Plan.md §5.9 |
 | 失效归因 | **尺度主导**(<32px 0.15–0.47 vs ≥32px 0.78–1.00,断崖 ≈21–24px);CARLA **无运动模糊**(退化只能人工注入);天气只**前移断崖** | Plan.md §5.10 |
 | MapTR 矢量管道 | 参考自实现打通。chamfer AP @`--score-thr 0.2`:**0.3043** 帧级留出 / **0.1114** 路线级留出 | [Plan2.md](Plan2.md) §P-M.12 |
+| **MapQR 移植** | 两个变体(散聚 query / 高度核 BEV 编码器)已实现、**默认关**;阶段 0 通过(单测 + 冒烟 + 显存实测),**消融未跑**;官方权重 404 ⇒ 只能自训,绝对值不可比官方 | [Plan2.md](Plan2.md) §P-M.14 |
 | 8 路实时 studio | 拼图**每格原生像素不缩放**;在线 SLAM **默认同步执行**(worker 被 GIL 饿死,eff 0.04–0.24 vs 同步 0.90–1.00) | Plan2.md §P-L |
 | 环视标定 | **像素约定 = CORNER**;ego 原点 = **后轴**(`NUS_EGO_ORIGIN_X = −1.2563`);ego 姿态 = **全 6DoF** | Plan2.md §P-M.10/.11 |
 | 全传感器「声明 ≠ 渲染」 | 渲染位姿与声明位姿**由同一份常量导出**;十条判据两代 rig 全过 | Plan2.md §P-M.7 |
@@ -56,15 +57,15 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 ```
 autodrivedata/          ★ 主包 —— 按能力面分层,包根只有 __init__.py
-├── sim/          22  CARLA 仿真交互层(唯一大面积 import carla 的地方)+ 全部采集器
+├── sim/          24  CARLA 仿真交互层(唯一大面积 import carla 的地方)+ 全部采集器+ 闭环路线纯值
 ├── calib/        14  标定:原语(core.py = 原 calib.py)/ rig 表 / 自证探针 / 实时监看 / 配置图
-├── map/          29  地图矢量 + MapTR(含 maptr/ = 原 maptr_impl/、maptr_official/ = 已终止线)
-├── slam/         11  两段式激光 SLAM(core.py = 原 slam.py)+ 精度评估 + slam_cpp.cpp
+├── map/          35  地图矢量 + MapTR(含 maptr/ = 原 maptr_impl/、maptr_official/ = 已终止线)
+├── slam/         10  两段式激光 SLAM(core.py = 原 slam.py)+ 精度评估 + slam_cpp.cpp
 ├── perception/   17  检测 / 单双目 / 雷达 / 语义 / 点云(**不 import carla**)
-├── gt/            6  动态目标 + 静态目标 + 灯态时序层 + export/ 落盘
+├── gt/            5  动态目标 + 静态目标 + 灯态时序层 + export/ 落盘
 ├── traj/  gs/     3  轨迹组装转换 / 3DGS 训练
 ├── utils/         4  通用件:geometry.py paths.py fonts.py runlog.py(**无领域语义、无 carla/torch**)
-└── tests/        48  与能力目录镜像(包级守卫 test_layer_guard.py 在根)
+└── tests/        54  与能力目录镜像(包级守卫 test_layer_guard.py 在根)
 
 tools/                 开放性工具(判据:不含本项目领域知识):carla_server.sh + gpu_fix/
 docs/(含 fileTree.md / refactor-2026-09.md)  README.md  Plan.md(冻结)  Plan2.md(新计划制定地)
@@ -88,6 +89,20 @@ python -m autodrivedata.sim.collect_ab_route --scene sunset_glare --frames 70   
 # 静态 GT(landmark + 车道线,含 overlay 目检图)
 python -m autodrivedata.sim.collect_static_gt --frames 40
 
+# SLAM 序列采集(闭环模式:路网找环 + 纯追踪跑两圈 ⇒ 让同一处真被走两次,后端回环才有数据)
+#   ★ 先 --dry-run:报环长/速度上限/帧预算(--speed 0 = 自动取 min(8, 环的上限))
+python -m autodrivedata.sim.collect_slam --route loop --dry-run --map Town10HD_Opt
+python -m autodrivedata.sim.collect_slam --route loop --laps 2 --map Town10HD_Opt --out outputs/kitti_loop
+#   闸门:一圈帧数 = 环长/(速度×tick) 必须 ≥ 250(SC_MIN_GAP_NODES × KEYFRAME_EVERY),
+#   否则两次到访帧差不够、回环候选必然为空 —— 环短就得开慢,或换 --spawn-index
+
+# 回环链路端到端(前端 → 后端 → 评估;后端在 802 帧闭环数据上是**小时级**,
+#   成本主项 = 失配候选的 ICP,见 Plan2 §P-H.3.3;判据与边界见 §P-H.3)
+python -m autodrivedata.slam.slam_odometry --root outputs/kitti_loop --frames 0-801 --out outputs/slam_loop
+python -m autodrivedata.slam.slam_backend  --traj outputs/slam_loop/traj_raw.json --root outputs/kitti_loop --out outputs/slam_loop
+python -m autodrivedata.slam.eval_slam --traj outputs/slam_loop/traj_raw.json --gt outputs/kitti_loop --out outputs/slam_loop/eval_pre.json
+python -m autodrivedata.slam.eval_slam --traj outputs/slam_loop/traj_pgo.json  --gt outputs/kitti_loop --out outputs/slam_loop/eval_post.json
+
 # 灯色动态 GT(记录模式默认不动灯;--cycle 绿,黄,红 秒数 = 受控切灯)
 python -m autodrivedata.sim.collect_tl_states --frames 40 --speed 8
 python -m autodrivedata.sim.collect_tl_states --frames 90 --speed 8 --cycle 6,2,6
@@ -108,6 +123,10 @@ python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_v2_singleF.pt
 python -m autodrivedata.sim.live_studio --npcs --speed 6 --duration 100 --fps 10 --no-keyboard \
   --maptr-ckpt outputs/maptr_v2_singleF.pt --slam --video outputs/videos/studio_8view.mp4 --video-fps 0.5
 python -m autodrivedata.map.viz_maptr_pred --start 250 --frames 6   # 离线:预测回投 6 相机拼图 + BEV
+# 地图矢量三格式(默认 opendrive = 现有 json;两个开关**互斥**,可 --from 读回当 GT 源)
+python -m autodrivedata.map.export_mapvec --map Town10HD_Opt --lanelet2
+python -m autodrivedata.map.export_mapvec --map Town10HD_Opt --apollo   # ⚠️ divider/boundary/centerline 借 lane 承载
+
 # 逐帧契约落盘(供 AutoLabel 消费;GT 同文件携带,见 autodrivedata/map/mapvec_schema.py)
 python -m autodrivedata.map.eval_maptr --infos outputs/surround_v2/map_infos.json \
   --root outputs/surround_v2 --ckpt outputs/maptr_v2_singleF.pt --start 200 --out-frames outputs/surround_pred
@@ -118,6 +137,15 @@ python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clea
 # 失效归因(逐帧匹配 → 距离/框高/TTC 分箱 + 漏检画像)
 python -m autodrivedata.perception.eval_attr --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
+
+# 变体选择:一键 --variant mapqr(= 散聚 query + 高度核 BEV 编码器),或细粒度开关做消融
+python -m autodrivedata.map.train_maptr --infos outputs/surround_v2/map_infos.json \
+  --root outputs/surround_v2 --variant mapqr --out outputs/maptr_mapqr.pt
+#   两者互斥(同时给报错);eval/viz/studio **不必也不能**再指定变体 —— 权重自带结构说明
+
+# 跨图拼接(⚠️ 官方 Town 无真值相对位姿,placement 是人为摆位;合并图对训练无用)
+python -m autodrivedata.map.export_mapvec --out outputs/stitched \
+  --stitch "Town10HD_Opt=0,0,0,0;Town01=2000,0,0,0"    # 或 placements.json
 
 # 3D LiDAR 检测(autolabel env;**cwd 必须在 AutoLabel 根**,config 相对路径)
 cd /root/autodl-tmp/Documents/Projects/AutoLabel && KITTI_OBJECT_ROOT=<abs kitti root> \
@@ -144,8 +172,10 @@ python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pytest 之外的路径前缀**
-                                 # 基线:945 passed + 6 跳过 + 0 失败(--collect-only 报 948;
+                                 # 基线:上一版 1024 passed + 6 跳过 + 0 失败(--collect-only 报 1027;
                                  #   差额 3 = 模块级 `importorskip` 的三个模块,收集期不计入)
+                                 # **2026-09-27**:--collect-only 报 **1074**(加闭环路线/MapQR 用例后 +47),
+                                 #   passed 数**未在全量上复测**(全局红线不许主动跑全量)⇒ 提交前跑一次落实
                                  # 基线数**只写在这一处**;加/删用例后回来改这一行,别在多处复述
 ```
 
@@ -174,6 +204,13 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **停训练必须连 DataLoader worker 一起收**:worker 在 CUDA 初始化**之后** fork、**继承 CUDA 上下文**,父进程被杀后变 PPID=1 孤儿**继续占显存**。**判据:`nvidia-smi` 归零才算停干净,不是"父进程没了"**
 - **纯 Python 主循环里别指望 worker 线程**:主线程每 tick 的 overlay / `compose_grid` / HUD 全是**字节码**,持 GIL 不放 ⇒ 同一对点云 ICP 在 worker 线程 eff **0.04–0.24** vs 主线程同步 **0.90–1.00**。**判据看 `time.thread_time()/wall`(eff),不是 wall 单值**;同理**有界队列有界的是深度不是"状态间隙"** —— ICP 成本随间隙超线性,丢帧会变成正反馈,**必须按帧号差止损**(`SlamWorker.max_gap`)
 - 提交:Conventional Commits;**提交信息不附 AI 署名**(不加 `Co-Authored-By: Claude` 等 trailer);改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 **Plan2.md**(教程能力线另同步 docs/milestone2.md);**Plan.md 已冻结**
+- **MapQR 变体有两处「不报错的错」,改这块先跑 `tests/map/test_{deform_attn,bevenc}.py`**:
+  ① 官方整套数学吃**归一化 `[0,1]`**,本项目坐标是**米** —— 米直接进 `sine_pos_embed` **不抛异常**,
+  只让正弦频率**别名**、位置嵌入退化成噪声,**症状是「训不动」而不是报错**;
+  ② BEV 锚点投影必须把 **ego→world** 折进 4×4(`p_c = C2K·R_sᵀ·(p_ego − t_s)`),
+  漏掉它**只有在 ego 位姿非恒等时才错** —— 恒等位姿下两版**数值上恰好同解**,
+  玩具夹具因此看不出来(本项目同类坑:"yaw≈0 的相机看着正常")。两条都有回归钉。
+- **`--bev-chunk` 不是省显存的手段**:实测分块**不降反升**(23.6 → 29.5 GiB),要压显存调**层数**(每层 ≈ +3.6 GiB @bs2)。见 Plan2 §P-M.14
 - **格式口径已定死**:`[tool.ruff]` 在 pyproject(line-length 110 / select E,F,I,UP,B / ignore E501,E741),`ruff format` 是唯一 formatter;批量纯格式提交要追加到 `.git-blame-ignore-revs`
 
 > **搬目录/改结构时注意** —— 本轮重构实测出 **11 类引用形态**,照单扫一遍再动手(清单与各类实例见

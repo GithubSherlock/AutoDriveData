@@ -36,14 +36,14 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 | 05 | 实时图像语义分割(SegFormer / YOLOPv2) | `autodrivedata/perception/sem_bev.py`(YOLOPv2 检测+车道线+可行驶;YOLO11s-seg 实例掩膜) | ✅ |
 | 06 | BEV + 语义分割融合 | `autodrivedata/perception/sem_bev.py` 像素级语义 BEV(ground_intersection 投影 + 世界→ego 旋转) | ✅ |
 | 07 | 相机+LiDAR 融合,点云→图像 | `calib.world_to_img` / `tr_velo_to_cam` + `geometry.py` 完整投影链(含单测) | 已有 |
-| 08 | 单目测距(4 法) | `autodrivedata/perception/mono_distance.py` + `autodrivedata/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
-| 09 | 双目测距(视差) | `autodrivedata/sim/collect_stereo.py` 双目 rig + `autodrivedata/stereo.py`(SGBM/NCC/三角测量) | ✅ |
+| 08 | 单目测距(4 法) | `autodrivedata/perception/mono_distance.py` + `autodrivedata/perception/mono_depth.py` / `geometry.mono_depth_from_box`(迭代深度法)+ `box_2d_from_3d`(GT 3D 投影框基线) | ✅ |
+| 09 | 双目测距(视差) | `autodrivedata/sim/collect_stereo.py` 双目 rig + `autodrivedata/perception/stereo.py`(SGBM/NCC/三角测量) | ✅ |
 | 10 | 上帝视角可视化(OpenDRIVE+NPC) | `view_stream.py --view top` + `opendrive.py` + `mapviz` | 已有 |
-| 11 | LiDAR+语义建点云地图 | `autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
-| 12 | 点云地面提取 | `autodrivedata/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合) | ✅ |
-| 13 | 点云障碍物检测(聚类) | `autodrivedata/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(欧氏聚类) | ✅ |
-| 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `autodrivedata/slam/slam_odometry.py` + `autodrivedata/slam/slam_backend.py` + `autodrivedata/slam/slam_cpp.cpp`(阶段 2 位对齐对拍) | ✅(阶段 1+2) |
-| 15 | 多激光雷达标定 | `autodrivedata/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `autodrivedata/calib/calib_multilidar.py` | ✅ |
+| 11 | LiDAR+语义建点云地图 | `autodrivedata/slam/accum.py` + `autodrivedata/slam/build_accum_map.py`(多帧累积,时序证据加权) | ✅ |
+| 12 | 点云地面提取 | `autodrivedata/perception/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合) | ✅ |
+| 13 | 点云障碍物检测(聚类) | `autodrivedata/perception/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(欧氏聚类) | ✅ |
+| 14 | FAST-LIO2 + SC-PGO SLAM | `autodrivedata/slam/core.py`(纯 numpy 两段式降档:帧间点面 ICP 前端 + ScanContext 回环/PGO 后端)+ `autodrivedata/slam/slam_odometry.py` + `autodrivedata/slam/slam_backend.py` + `autodrivedata/slam/slam_cpp.cpp`(阶段 2 位对齐对拍)+ `autodrivedata/sim/route.py`(回环路线的纯值侧) | ✅(阶段 1+2)⚠️ **口径 = 「教程能力闭环」,不是「ROS 栈跑通」** —— 无 ROS / 无 C++ 后端 / 无 IMU 融合,是**降档**(依据见 P-H.2);**回环分支已在真数据上端到端验证**(P-H.3.4:闭环序列 802 帧、114 条回环边、闭合误差 12.386→**10.808** m 对 GT 10.994 m、`ate_aligned` **1.4127→0.1352 m**;真回环召回 49/76) |
+| 15 | 多激光雷达标定 | `autodrivedata/perception/multilidar.py`(point-to-plane ICP + overlap/plausible 判据)+ `autodrivedata/calib/calib_multilidar.py` | ✅ |
 | 16 | 3DGS 重建 | `autodrivedata/sim/collect_3dgs.py`(环绕采集)+ `autodrivedata/gs/train_3dgs_mini.py`(gsplat 训练) | ✅(链路) |
 
 图例:✅ = 链路已交付(详见 §7);「已有」= 补全前本仓已具备;「缺口」= 见 §8 遗留缺口。
@@ -123,19 +123,19 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 
 ### P-D 单目测距(教程 08)——✅ 链路已通 + 评估修复
 - `autodrivedata/perception/mono_distance.py` + 两个纯值模块:`geometry.mono_depth_from_box`(迭代深度法 z=H·fy/框高,H=1.6m)
-  + `autodrivedata/mono_depth.py:box_to_ground_distance`(地平面投影法)+ `geometry.box_2d_from_3d`(GT 3D 框角点投影框基线)
+  + `autodrivedata/perception/mono_depth.py:box_to_ground_distance`(地平面投影法)+ `geometry.box_2d_from_3d`(GT 3D 框角点投影框基线)
 - **修复**:label 2D 列 59/97 是零宽退化框 → 检测框改走 GT 3D 框投影(与采集器 `box_to_gt_line` 同投影口径)="2D 检测框 = GT 3D 投影框"诚实基线
 - **实测**(147 框):全距 mean 8.56% / median 7.8%;**10-20m 带 mean 8.47%、70% 框 <10%** 达标;7-10m 贴脸区系统低估(侧向角点拉大框高)如实排除;地平面投影法相机无俯仰不适用(None)
 - 输出 `outputs/mono_distance/results.json`;单测 tests/test_mono_depth.py 10 passed
 
 ### P-E 多雷达标定(教程 15)——✅ 链路已通 + 判据修复
-- `autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy,零 carla/零 open3d)+ `autodrivedata/calib/calib_multilidar.py`(注入已知误差 → 判据)+ tests/test_multilidar.py 4 passed
+- `autodrivedata/perception/multilidar.py`(point-to-plane ICP,纯 numpy,零 carla/零 open3d)+ `autodrivedata/calib/calib_multilidar.py`(注入已知误差 → 判据)+ autodrivedata/tests/perception/test_multilidar.py 4 passed
 - **修复**:收敛 = converged(增量阈值)∧ rmse_final<0.05m ∧ **overlap≥0.6** ∧ **plausible(t<5m、r<30°)**
 - **实测**:small(0.1rad/0.1m)**converged**(overlap 0.991、iter 5、恢复 t 0.15m/r 5.7°);large(1.2rad/2m)**not_converged**(overlap 仍 0.991,recovered t 10.26m/r 68.8° 被 plausible 否决)→ RMSE 对平面场景天然低,overlap+合理性双闸分开真伪标定
 - 输出 `outputs/multilidar/icp_result.json`
 
 ### P-F 双目测距(教程 09)——✅ 链路已通
-- `autodrivedata/sim/collect_stereo.py` CARLA 双目 rig(基线 0.4m,同朝向 yaw=0、y 轴 ±0.2m)+ `autodrivedata/stereo.py` 纯值链路(z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 `reprojection_loss`)+ tests/test_stereo.py(手算锚点 10 passed)
+- `autodrivedata/sim/collect_stereo.py` CARLA 双目 rig(基线 0.4m,同朝向 yaw=0、y 轴 ±0.2m)+ `autodrivedata/perception/stereo.py` 纯值链路(z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 `reprojection_loss`)+ autodrivedata/tests/perception/test_stereo.py(手算锚点 10 passed)
 - **实测**:定速 5.98 m/s(逐帧自证);SGM 近物点云 z≈5.5m ↔ GT 深度同值(三角测量链与真值深度对得上);depth_check.png 目检图已生成
 - 输出 `outputs/stereo/`(calib.json + left/right/depth 40 帧 + depth_pc 点云)
 
@@ -147,13 +147,17 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - **调优(2026-09-18,多俯仰)**:`collect_3dgs.py --pitches "0,-15,-30"`(分 pitch 目录 images/p{p}/ + poses_{p}.json + pitches.json)+ `train_3dgs_mini.py` 跨 pitch 平铺 / `--scale` / `_DEPTH_LOWER`。120k 点 × 270 帧:psnr_all **17.9→18.32**(3000 iters),val 帧0 **13.56→10.45** 不升反降(多俯仰分走观测,留出单水平视角被稀释);消融与单环对照复现 val~10。多俯仰价值 = 补顶面/近地隐面(psnr_all ↑),代价 = 留出帧视角外推变难。产物 `gaussians_mp3_120k_v2.ply` / `train_result_mp3_120k_v2.json`
 
 ### P-H 激光 SLAM(教程 14,纯 numpy 两段式降档)——✅ 阶段 1+2 链路闭环
-- `autodrivedata/slam.py`:**纯 numpy 核心环**(零 carla/零 torch/零 ROS),并作为阶段 2 C++ 移植的 oracle
+> ⚠️ **`FAST-LIO2` / `SC-PGO` 是对标名词,不是文件名**(按名字搜会搜空)——本线
+> **无 ROS / 无 C++ 后端 / 无 IMU 融合**,是纯 numpy 降档,依据是 P-H.2 的两条实测否定。
+> 且「✅ 闭环」指的是**两段式链路**跑通;**回环分支在真数据上端到端未验证**(P-H.3)。
+
+- `autodrivedata/slam/core.py`(原 `slam.py`):**纯 numpy 核心环**(零 carla/零 torch/零 ROS),并作为阶段 2 C++ 移植的 oracle
   - 前端 = **帧间点面 ICP**(替代 FAST-LIO2 的 ikd-tree scan-to-map;帧间重叠 ~90% 时等效)+ 恒速先验初始化 + λ 正则化法方程
   - 后端 = **ScanContext 回环**(点计数描述子,列滚动不变)+ **位姿图 G-N**(节点 ≤200,纯 numpy,无 g2o)
 - `autodrivedata/slam/slam_odometry.py`(S1.3 前端):逐帧 velodyne → 链式位姿 `T_0→k`,落 `outputs/slam/{traj_raw,icp_stats}.json`
 - **位对齐纪律**(阶段 2 对拍前提):全 double、网格哈希 tie-break 钉字典序、体素重心按扫描序累加、
   λ 正则化解代替 lstsq/SVD —— numpy/C++ 对拍只允许 ~1e-12 求解舍入偏差
-- 单测 `tests/test_slam.py` **27 passed**(手算锚点:exp/log 往返、多分辨率近邻、rad0 早停回归、批量 nearest vs 标量逐位一致、
+- 单测 `autodrivedata/tests/slam/test_slam.py` **27 passed**(手算锚点:exp/log 往返、多分辨率近邻、rad0 早停回归、批量 nearest vs 标量逐位一致、
   恒速先验链、SC 描述子旋转不变、SC 默认 min_gap 回归、PGO 纠偏、直线序列零漂移)
 - **阶段 1 验收(2026-09-19 端到端实测,输入 `outputs/kitti_drive/training/velodyne/` 150 帧)**:
   `autodrivedata/slam/slam_odometry.py --root outputs/kitti_drive --frames 0-149 --out outputs/slam` →
@@ -187,8 +191,8 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 
 - **位姿约定 bug(94×)**——`icp_odometry` 原出口是 `T_delta @ init_T`,把**点映射当位姿左乘**:
   纯平移时看着像在累加,一转弯就发散。实测同一 400 帧序列 **ATE 17.53 m → 修正后 0.187 m**。
-  正解 = `T = init_T @ inv(T_delta)`(推导与 src/ref 方向记忆法见 `autodrivedata/slam.py::icp_odometry`
-  docstring + `tests/test_slam.py::TestIcpOdometry::test_chain_of_turning_motion_matches_ground_truth`)。
+  正解 = `T = init_T @ inv(T_delta)`(推导与 src/ref 方向记忆法见 `autodrivedata/slam/core.py::icp_odometry`
+  docstring + `autodrivedata/tests/slam/test_slam.py::TestIcpOdometry::test_chain_of_turning_motion_matches_ground_truth`)。
   **教训:ICP 解出的 `T_delta` 是点映射(src→ref),不是位姿;方向由哪个帧当 src 决定,别按形状记。**
 - **坐标系换算**——LiDAR 系位姿 → ego 系:CARLA(ego,y 右)与 KITTI(LiDAR,y 左)手性差 = 共轭 `M·T·M`
   (`M = diag(1,−1,1,1)`);LiDAR 挂点 `(1.2, 0, 1.65)` ⇒ `ego_pose = M·T_lidar·M @ inv(L)`。
@@ -242,12 +246,199 @@ GPU 可用(autodrivedata env,cuda=True)、CARLA 可起,下面 §3 执行项与 �
 - **副产品**:`autodrivedata/slam/eval_slam.py`(ATE/RPE,含双坐标换算)+ `autodrivedata/slam_eval.py`(纯值)
   + `autodrivedata/sim/collect_slam.py`(带 GT 位姿的采集)+ `tests/test_slam_eval.py`。
 
+#### P-H.3 回环链路端到端 —— 路线侧修复(路网找环 + 纯追踪跑圈)(2026-09-27)
+
+**问题**(不是新发现的缺陷,是 P-H.1 已如实标注的状态):后端(ScanContext 回环 + PGO)
+**在真数据上一次都没触发过** —— 两段已测序列(`kitti_drive` 150 帧、`kitti_slam` 400 帧)
+都是「候选 0 / 接受 0」。回环链路当时只有**合成单测**证据 + **两次"正确地不动作"**的证据,
+**没有端到端真数据证据**。
+
+**根因**(本次实测,决定方案):`outputs/kitti_slam` 400 帧的真值轨迹是**马蹄形** ——
+右侧下行 → 沿底边横穿 → 左侧上行,**两条平行街相距 68 m**。而 `SC_MAX_RANGE = 40 m`
+的 range-view 描述子**看不到对面那条街**。逐帧自证:
+
+| 量 | 实测 |
+|---|---|
+| 自接近(关键帧差 ≥25 = 帧差 ≥250)最小距离 | **58.70 m** |
+| 间距 < 40 / 30 / 20 / 10 / 5 / 3 m 的帧对数 | **0 / 0 / 0 / 0 / 0 / 0** |
+| 车停下的帧 | **第 320 帧**(后 80 帧原地不动) |
+
+⇒ **「多采帧数」是无效解**(只是多录静止帧)。要触发回环只能换**控制方式**:让同一处真的被走两次。
+
+**裁决**(用户 2026-09-27):「车道图找环 + 纯追踪跑两圈」。另两个备选是直线往返(便宜)与
+合成倒序序列(零成本),**都否掉**:这个方案**确定性可复现 ⇒ 能变成长期回归夹具**,
+且覆盖**任意朝向的重访**(最接近真实场景);而往复/倒序只能覆盖"原路反向"这一种,
+朝向差恰好 180°,正落在 ScanContext 列滚动不变的**盲点区**(要靠 `slam_backend` 的双 yaw 初值 ICP 才救得回来)。
+
+**实现**:`autodrivedata/sim/route.py`(纯值,零 carla)+ `collect_slam.py --route loop`(采集器只做编排)。
+
+| 构件 | 职责 | 钉住的东西 |
+|---|---|---|
+| `find_cycle(start, successors)` | BFS 求从起点可达的**最短有向环**;吃 `successors` 回调 ⇒ 图算法与 CARLA 解耦,可在合成图上单测 | `min_len=4` 拒退化环(`A→B→A` 是**掉头**不是环);`max_nodes` 兜住无限链;取**最短**而非"第一个发现的"(BFS 出队的深度序不保证回边长度单调) |
+| `make_successors(step)` | CARLA `wp.next()` → 节点键 `(road_id, lane_id, round(s/step))`;**只吃 duck-typed `WaypointLike`** | ★ **`s` 必须进键** —— 只留 `(road_id, lane_id)` 时一条长路只有一个节点、后继键等于自己 ⇒ 自环被 `min_len` 拒 ⇒ **静默地永远找不到环**;合成 Waypoint 上钉「4 段 × 30 m ⇒ 40 节点环、单圈几何 **120.0 m**」(= 39×3 + 收尾那 3 m,同时钉住"闭环长度要把末点回首点那段算进去") |
+| `pure_pursuit` | 前视点 + 航向误差比例控制 + 定速(超速只刹车,**不叠油门**) | ★ **进度单调**(前视点索引不许回退 —— 否则车在起点附近来回蹭,而那**看着像在开**:有速度、有转向,只在轨迹形状上暴露);★ **打舵符号**(目标在右 ⇒ `steer` 为正;符号反了车朝反方向冲出去,两圈跑完才知道) |
+| `lap_budget` / `speed_ceiling` | **★ 采集前的第一道闸** | 一圈帧数 = `环长/(速度 × tick)` 必须 ≥ `SC_MIN_GAP_NODES × KEYFRAME_EVERY` = **250** ⇒ 换算成**速度上限**:200 m 的环 8.0 m/s、**120 m 的环只有 4.8**。开快了不是"少采几帧",而是两次到访**连候选都进不去** |
+
+**为什么这道闸门必须在采集前**:一次闭环采集 ≈ **25–35 min**(采集 2–3 / 前端 ~12 / 后端 5–10)。
+不先算,采完才发现帧差不够 = 白押一轮 GPU。`--dry-run` 只找环 + 报预算,**不落数据**。
+
+**闸门顺序**(`plan_loop_route`,任一不过即 `RuntimeError` 并带可执行建议):
+① **几何闭合** —— `route_closure` 首末缺口 ≤ `max(2.5·step, 5%·环长)`。容差**必须按采样步长给**:
+节点键是分桶量化的,收尾那段天然带一个 `step` 的残差,按 1 m 给会**假红**;
+② 单圈长度 ≤ 600 m(BFS 给的已是最短环,仍这么长就该换起点);③ 速度上限。
+采集时另有**逐帧跟线自证**:偏离路线 > 8 m 连续 40 帧即**中止且不落盘**
+(跟丢线的序列对回环验证没有价值,静默落盘只会得到一份"看着完整、实则无重访"的数据)。
+
+**验证协议(判据先写死,跑完不许改)**:
+
+| 序 | 判据 | 可信度 | 结果 |
+|---|---|---|---|
+| 1 | **几何自证(完全不依赖 SLAM)**:用 GT 位姿直接算「第二圈第 k 帧 ↔ 第一圈对应帧」的距离 ≈ 0 ⇒ 数据里**真有重访** | 最高 | ✅ 帧差 ≥400 时 97.5% <2 m(中位 0.216 m),真重访帧差 ≈404 |
+| 2 | `loops.json`:`n_candidates > 0` **且** `n_accepted > 0` | 高 | ✅ 196 / **114**;但**真回环只占 49**(召回 49/76,见 .4 的构成表) |
+| 3 | `slam_summary.json`:`closure_pre` **第一次成为真漂移指标** —— 路径真闭合后首末距离不再等于路径长度,P-H.1 明确标注的「开放路径口径缺陷」在这条序列上消失 | 中 | ✅ 对 GT 10.994 m:pre 12.386(+1.392)→ post 10.808(−0.186) |
+| 4 | `eval_slam` 前后对比:**ATE 不劣化** | 中 | ✅ `ate_aligned` 1.4127 → **0.1352 m**;代价是 d10 旋转 0.24°→0.47° |
+
+> ⚠️ **边界(不写会被读成注水结论)**:**CARLA 不漂移** —— 前端 400 帧 ATE 仅 **0.1877 m**(P-H.1),
+> 累积漂移本来就小,**PGO 的"收益"在这类数据上天然很小**。判据**不能**是"ATE 大幅下降",
+> 而是「回环链路**真的触发**」+「PGO 收到回环边后**不劣化**」+「回环边残差 / 闭合误差」。
+> `n_loops=0` 若再现,**要给为什么**(帧差不够?ICP 过不了门?),**不许改门限硬凑**。
+
+**实现与离线验证**:`autodrivedata/tests/sim/test_route.py` **45 passed**(含合成 Waypoint 的适配层回归)。
+
+##### P-H.3.1 采集实测(2026-09-27,`outputs/kitti_loop`)
+
+`collect_slam --route loop --laps 2 --speed 8`(dry-run 报环 86 节点 / 269.36 m / 建议帧预算 891):
+
+| 量 | 实测 |
+|---|---|
+| 采出帧数 / 圈数 | **802 帧** / `laps_done=2` |
+| 逐帧跟线偏差(进度索引口径) | mean **1.253** / p95 2.214 / **max 2.620 m**(中止阈 8 m,未触发) |
+| 总里程 / step | **511.65 m** / 中位 **0.647 m/帧** ⇒ **实际 6.47 m/s**(目标 8.0,**0.81×**:纯追踪到不了目标速度) |
+| 末帧距起点 | 10.34 m(在一个前视距离内 ⇒ 圈数计数与"差 10 m 没停回起点"是自洽的) |
+
+##### P-H.3.2 判据 1 —— 数据里真有重访(GT 口径,完全不依赖 SLAM)
+
+| 约束 | <2 m 重访占比 | 最近重访距离 中位 / max |
+|---|---|---|
+| 帧差 ≥ 250(=25 关键帧) | 71.0% | 0.260 m / 78.649 m |
+| 帧差 ≥ 400(=40 关键帧) | **97.5%** | 0.216 m / 8.409 m |
+
+**真重访帧差 ≈ 404**(= 40 关键帧 > `SC_MIN_GAP_NODES=25`);帧 410–415(s=259 m)回到起点 2 m 内
+⇒ **单圈实际驱动里程 ≈ 259 m**(比纯值侧的 269.36 m 短 3.8%,纯追踪切弯);帧 800 距帧 396 **0.016 m**。
+71% 那一行被**第一圈帧**稀释(它们按构造不存在 250 帧外的重访),不是数据缺陷。
+
+> ⚠️ **这条判据我算错过两次,记在这里免得再犯**(两次都是"拿前端轨迹当真值"的变体):
+> 第一次把 `traj_raw.json` 的 `T`(**前端估计**)同时当 prior 和真值 ⇒ 得到"真回环 **0 个**"的假象;
+> 第二次把约束写成 `P[:n-gap]`,于是"最近邻"永远落在 `i-1`(相隔 1 帧)上 ⇒ 得到"**100%**、中位 **0.000 m**"的假象。
+> **真值只认 `training/pose/`;约束必须是 `j ≤ i-gap`。** 两次都因数字"太好"而回头查才逮到。
+
+##### P-H.3.3 成本诊断 —— 回环验证的真实开销与三条走不通的廉价代理
+
+后端此前**跑不完**(实测 30 min 只跑完 <25/81 个关键帧)。根因不是迭代次数,是**失配云上的第一次迭代**:
+
+| ICP 情形 | 单次耗时 |
+|---|---|
+| 对齐(同一份点云) | 0.16 s |
+| 平移 10 / 40 / 100 m | 6.8 / **92.7** / 142.6 s |
+| 真回环(yaw=0,9–12 次迭代才收敛) | 3–10 s |
+| 真回环的**反极分支**(yaw=π,永不收敛) | **82–125 s** |
+
+失配云无近邻 ⇒ `nearest_batch` 的网格早停失效(全层全点);而 SC 给的是 top-5、其中只有一部分是真回环
+⇒ 351 个候选 × 双 yaw 全落在这条成本曲线上。
+
+**三条廉价代理,全试过、全不行**(勿重走):
+
+| 代理 | 真回环 vs 干扰 | 结论 |
+|---|---|---|
+| SC 描述子距离 | 真对 0.034–0.092 vs 中段 0.014–0.099 | 中段**最小值比真对还小** ⇒ 分不开(SC 量的是"场景像"而非"位置近") |
+| 2 m 粗格占格重叠 | 真对 0.086–0.180 vs 远对 0.001–0.191 | 区间重叠;且 425 ms/候选,一点都不便宜 |
+| 全量云首迭代 overlap | 真对 0.226–0.555 vs 反极支 0.01–0.03 | **能分开**,但一次 1.5–18 s ⇒ 省不了钱 |
+
+**最后落地的三条闸(都只用来看/拒,不进接受判据)**:
+
+| 常量 | 值 | 依据(实测) |
+|---|---|---|
+| `LOOP_PRIOR_MAX_M` | **5.0**(原 20.0) | 真对的**前端**距离 **3.05–4.15 m**(中位 4.02 = 关键帧相位量化 ≤0.5×6.5 m + 一圈前端漂移 ~1.5 m)。闸 2/3 m ⇒ **误杀全部 76 个真对**;5 m ⇒ 误杀 **0**、远对(GT >15 m)漏进 **0**;20 m ⇒ 多白跑 137 次分钟级 ICP |
+| `LOOP_SCREEN_STRIDE` / `_OVERLAP` | 8 / 0.10 | **抽稀查询云 + 1 次迭代**的预筛(overlap 是比例,抽稀是无偏估计):真对筛值 min **0.187**(余量 1.9×)⇒ **0/76 误杀**,成本 **0.2 s**(vs 全量首迭代 1.5–18 s);反极支筛值恒 0.01–0.03 ⇒ 0.2 s 出局 |
+| (短路,无新常量) | — | yaw=0 支**已过门** ⇒ 不跑反极支(一份点云不可能同时与 0° 和 180° 对齐;过门候选的反极支 overlap ≤0.03、rmse ≥2.4)。**接受判据没动**:反极支仍在"第一支没过门"时才跑(覆盖反向重访) |
+
+**实测成本分解**(669 s):筛 196 次 + 82 次反极支筛(0.2 s 级)≈ 1 min;
+**196 次全量 ICP 全部落在 yaw=0(已对齐)那一支上**(前端相对位姿给的初值本就对,错的是 180° 那支)
+⇒ 平均 **3.4 s/次**,合计 ≈ 10 min。**失配路径(82–125 s/次)被完全消掉了** ——
+这正是"跑不完 → 11 min"的全部原因。剩下的 196 次对齐 ICP 是**固有代价**:粗几何与描述子都分不开
+"真重访"与"同街近邻"(见 .4 的构成表),只有真配准能判。
+
+> ⚠️ **边界修正**(本小节初稿写的「CARLA 不漂移 ⇒ PGO 收益天然很小」**被实测否掉了**,见 .4):
+> CARLA 的**真值**不漂移,但我们的**前端**(纯 numpy ICP 里程计)在 512 m / 802 帧上累积了
+> **3.05–4.15 m** 的重访相对误差 —— 这就是**回环边残差 = PGO 真正要纠的量**(其中 ~1.5 m 是漂移,
+> ~2.6 m 以内是关键帧相位量化)。
+
+##### P-H.3.4 判据 ②③④ —— 端到端结果(2026-09-27,`outputs/slam_loop`)
+
+**闸门链与耗时**:整条后端 **669 s = 11.1 min**(此前"跑不完"、粗估小时级)。
+
+| 阶段 | 数 | 说明 |
+|---|---|---|
+| SC 候选 | **351** | 描述子 top-5 ∧ `min_gap=25` 关键帧 |
+| 先验闸拒 | 155 | `LOOP_PRIOR_MAX_M = 5.0` |
+| 廉价筛(候选级出局) | **0** | 但 **82 个候选的反极支**被筛在 0.2 s 上(逐候选记 `skipped_branches`) |
+| 进全量 ICP | 196 | |
+| 反极支被短路 | **114** | yaw=0 支已过门 ⇒ 不跑反极支 |
+| **过门(=`n_loops`)** | **114** | **判据 ② ✓** |
+
+两条优化各贡献一半(短路 114 次 × ~50 s + 筛 82 次 × ~50 s);无它们 ≈ **2.7 h**,实测 **11 min**。
+
+**判据 ② 的构成(GT 核对 —— 数值达标 ≠ "检出的都是真回环")**:
+
+| | 条数 | GT <2 m(真重访) | GT 2–15 m(同街近邻) |
+|---|---|---|---|
+| **接受** | 114 | **49** | 65 |
+| **拒绝** | 82 | **27** | 55 |
+
+- **真回环召回 = 49/76 = 64.5%**(27 条真回环被 ICP 门拒掉)
+- ★ **接受/拒绝两组的 GT 分布几乎重合**(中位 2.10 vs 2.38 m)⇒ **在 5 m 先验闸之内,ICP 门对
+  "是不是真重访"几乎不区分** —— 它判的是"能不能对齐",而 4 m 内的两片云本来就都能对齐。
+  **区分力主要来自 SC 描述子 + 先验闸,不是 ICP 门**(此性质本身值得记:它说明"过门数"不能当"检出数"报)
+- 提示(未用于任何闸):真回环 `sc_dist` 中位 0.0554 vs 近邻 0.0746 —— 有信号但重叠严重(见 .3 负面结论表)
+
+**判据 ③ 闭合误差(第一次成为真漂移指标,不再是"路径长度量级")**:
+
+| | 值 | 对 GT 的误差 |
+|---|---|---|
+| **GT 参考**(kf0=帧 0 ↔ kf80=帧 800) | **10.994 m** | — |
+| `closure_pre`(前端) | 12.386 m | **+1.392 m** |
+| `closure_post`(PGO) | 10.808 m | **−0.186 m** |
+
+⇒ **这 1.58 m 修正可 100% 归因于回环边**:只含里程计边的位姿图按构造以链式轨迹为最优解(残差恒 0)
+⇒ 它**不可能**移动闭合误差。
+
+**判据 ④ `eval_slam` 前后**(802 帧,`lever_arm=True`,对齐含尺度):
+
+| 指标 | pre | post | 判 |
+|---|---|---|---|
+| **`ate_aligned` rmse** | **1.4127 m** | **0.1352 m** | **改善 10.4×** |
+| `ate_aligned` mean / max / final | 1.2605 / 2.4246 / 2.4246 m | 0.1239 / 0.2548 / 0.1297 m | 全线改善 |
+| `ate_aligned` scale | 1.00773 | 1.01018 | — |
+| `rpe` d1 trans rmse | 0.0222 m | 0.0229 m | 略劣化(+3%) |
+| `rpe` d10 **rot** rmse | 0.2414° | **0.4696°** | **劣化 ~2×**(绝对值仍 <0.5°) |
+| `ate_raw`(未对齐,被原点偏移主导) | 68.53 m | 68.58 m | **口径陷阱,勿引用** |
+
+⇒ **判据 ④ 通过**(ATE 不劣化 —— 实际大幅改善);代价是**局部旋转一致性略劣化**(d10 0.24°→0.47°),
+这是位姿图把误差全局重分配的正常代价,**如实记下**。
+
+> ⚠️ **边界修正(第二次,推翻了本小节初稿的预测)**:
+> 初稿写「CARLA 不漂移 ⇒ PGO 收益天然很小」——**实测否掉**。CARLA 的**真值**确实不漂移,
+> 但**我们的前端**(纯 numpy ICP 里程计)在 512 m / 802 帧上 `ate_aligned` = **1.41 m**(0.28%),
+> PGO 收到回环边后压到 **0.135 m**。P-H.1 的「前端 400 帧 ATE 0.1877 m」是**另一条序列**
+> (autopilot 直线段为主、无 2 圈闭环),**不能拿来预测本条** —— 环路弯多、单圈 259 m,
+> 前端累积漂移大得多。**教训:跨序列借用精度数字 = 换了个口径,和跨机型比 AP 同病。**
+
 ### P-I 累积语义建图 / 地面提取 / 聚类(教程 11+12+13)——✅ 链路闭环
-- 累积:`autodrivedata/accum.py` + `autodrivedata/slam/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
+- 累积:`autodrivedata/slam/accum.py` + `autodrivedata/slam/build_accum_map.py`(ego 位姿变换累积到全局系 + 时序证据加权)→
   `outputs/accum_map/map.ply`(150 帧);`tests/test_accum.py` 11 passed。累积显著抑制单帧伪影
-- 地面:`autodrivedata/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合 + 内点掩码)→
+- 地面:`autodrivedata/perception/ground.py` + `autodrivedata/perception/extract_ground.py`(RANSAC 平面拟合 + 内点掩码)→
   `outputs/ground/`;`tests/test_ground.py` 8 passed
-- 聚类:`autodrivedata/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(DBSCAN 风格邻域密度连通)→
+- 聚类:`autodrivedata/perception/cluster.py` + `autodrivedata/perception/cluster_obstacles.py`(DBSCAN 风格邻域密度连通)→
   `outputs/cluster/`(150 帧,均值 117.97 簇/帧);`tests/test_cluster.py` 4 passed
 - 注:上一会话"聚类任务失败"是误报——产物齐全,仅末行 bash 因 /tmp 配额满报错
 
@@ -1564,6 +1755,213 @@ boundary 0.3075 / centerline 0.3821 @`--score-thr 0.2 --exclude-seg seg4 --keep-
 阈值扫描与 run-to-run 非确定性**均已排除**;本机 CPU ≡ GPU;git log 只有纯搬文件提交。
 **归因为换机器带来的既存差异,但机制(kernel 舍入 vs 匹配并列打破)未证。**
 
+#### P-M.14 MapQR 方法移植进自实现线(2026-09-27,阶段 0 ✅ / 消融未跑)
+
+**用户裁决**:路线 = **移植进自实现线**(不重建已终止的官方栈);范围 = **query + HeightKernelAttention 两部分都要**。
+
+**动因 —— MapQR 与我们同源**:实测 diff(`hdMapGitHub/MapQR` vs 同目录的 `MapTR_maptrv2` 参照物),
+它**不是新模型**,是 MapTRv2 上的局部改动,且核心贡献**恰好打在我们自实现线的两处「工程简化」上**:
+
+| 原 `maptr/head.py` | MapQR |
+|---|---|
+| `q_pt = q_pt + self.bev_proj(sampled)`(固定位置双线性) | deformable(多头 + **可学习采样偏移**) |
+| `q_ins = q_ins + self.agg_proj(q_pt.mean(dim=2))` | `flatten(2)` **拼接** + MLP 聚合(不取均值) |
+| 无 reference point 位置嵌入 | `pt_query_pos`(逐层 sine 位置嵌入) |
+
+论文自称的 scatter-and-gather 即 **instance query 散成 P 个点查询 → 采样 → 拼接聚回 instance**;
+**均值正是抹平同一要素内各点内容差异的那个操作**,所以这条改进对我们对症。
+
+改动量实测(vs MapTRv2):`decoder.py` 409 行、`height_kernel_attention.py` **448 行新文件**、
+`maptrv2_head.py` 68、`transformer.py` 45、`bevformer/encoder.py` 23;配置里 MapQR 把
+`query_embed_type` 从 `instance_pts` 换成新增的 **`instance`**。
+
+**已交付(阶段 0,全部增量、默认关 ⇒ 关时与原行为逐位一致)**:
+
+| 落点 | 内容 |
+|---|---|
+| `deform_attn.py`(新) | 可变形注意力原语 + `normalize_ref` / `sine_pos_embed` / `build_sampling_locations`;**两支共用一份实现** |
+| `head.py` | `MapTRHead(scatter_gather=)` —— 只做**装配**(按开关选解码器类)+ `match_assign` / `maptr_loss` |
+| `decoder.py` / `decoder_mapqr.py` | **两套解码器各写各的文件**(2026-09-27 用户诉求):默认线 MapTRv2 口径 / MapQR scatter-and-gather 口径;依赖**单向**(MapQR 线 import 默认线的 `FFN`,反向禁止,`test_head.py` 有 AST 结构钉) |
+| `bevenc.py`(新) | `BEVEncoder`(N 层)= 可变形自注意力 + `HeightKernelAttention`(带 `height_offsets`)+ FFN,插在 GKT 之后 |
+| `model.py` | `scatter_gather=` / `bev_encoder=` 两个开关;**与 `temporal_window>1` 互斥** |
+| `train_maptr.py` | CLI 五个新参 + 变体写进 `rl.highlight`(与 `batch`/`score_thr` 同处,结论可归属) |
+| 单测 | `test_deform_attn.py`(9)+ `test_bevenc.py`(12)+ `test_head.py` 扩展(6) |
+
+**z 跨度取 (−2, 2)**:MapQR nuScenes config 的 `point_cloud_range` 是 `[-15,-30,-2,15,30,2]` ——
+其 BEV 网格(x∈[−15,15] × y∈[−30,30],200×100 @0.3 m/px)与我们 `BEV_DEFAULT` **逐位相同**,
+只差 z。故引它,不自己发明。
+
+**★ 从源码里查出的三处「不写下来就会静默错」**(全部已加断言或回归钉):
+
+1. **`MSDeformableAttentionKernel` 里 `D == n_heads` 是隐式硬约束**。官方参考点是 **D 个高度锚点**、
+   偏移是 **heads 个注意力头**,两者靠**广播对齐**(官方 config 恰是 8 = 8),语义即
+   **第 h 个头专门采第 h 个高度锚点**。不成立时广播会拼出 7 维张量,`multi_scale_deform_attn`
+   随后因维度不符报错,但**报错点离病根很远**。移植时用断言显式化,并让 `--bev-encoder-heads`
+   直接派生 D,从配置上消掉这个组合。
+2. **`build_lidar2img` 必须把 ego→world 折进 4×4**。BEV 锚点是 **ego 局部**坐标,而
+   `gkt.project_pts` 是两步(`p_w = p_ego @ r_eᵀ + t_e` → `p_c = (p_w − t_cam) @ r_w2cᵀ`)。
+   只做第二步、把 ego 局部点当世界点投,**只有 ego 位姿非恒等时才错** —— 玩具夹具位姿恒等,
+   两版**数值上恰好同解**,看不出来。**首次实现正是踩了这个**,由「真实位姿 oracle」抓出。
+   (推论:`p_c = C2K·R_sᵀ·(p_ego − t_s)`,**ego→图像矩阵本就与 ego 位姿无关** ——
+   锚点与相机同挂 ego 上,位姿在复合里必然抵消;这条不变量本身成了回归钉。)
+3. **`scale_k` 的 `(w,h)` 与 `feat_shape` 的 `(h,w)` 不同序**,传反不报错、只让投影错一位 ——
+   与 GKT 头注记的坑 ②(内参不缩放)同类,已用非方形特征图钉死。
+
+**★ 归一化是最大的静默失效风险**:官方整套数学吃 **归一化 `[0,1]`**,本项目坐标是**米**。
+米直接进 `sine_pos_embed` **不报错**,只让正弦频率**别名**、位置嵌入退化成噪声 ——
+**症状是「训不动」而不是异常**。故两处(sine 输入 / deformable 参考点)都必须先 `normalize_ref`:
+`test_head.py` 用 monkeypatch 钉住**调用点**,`test_deform_attn.py` 钉住**语义**(米与归一化必须产生不同嵌入)。
+
+**实测(阶段 0,RTX 3090 48 G,真实 `surround_v2` 帧)**:
+
+| 配置 | 参数量 | 峰值显存 | 备注 |
+|---|---|---|---|
+| 基线 bs=4 / bs=2 | 33.2 M | 21.9 / 11.0 GiB | — |
+| `scatter_gather` bs=4 | **119.6 M** | 23.2 GiB | 参数涨在 gather 的三段 MLP(`P·C → P·C/2 → C`,官方口径) |
+| `bev_encoder` 1/2/3 层 bs=2 | 39.1 M(3 层) | 16.4 / 20.0 / 23.6 GiB | **每层 ≈ +3.6 GiB** ⇒ 这才是降档杠杆 |
+
+**分块实测与假设相反**:`chunk=0` 与 `8192` 同为 23.6 GiB(该帧 `max_len = 5074 < 8192`,只有一块),
+而 `4096 / 2048` **反升到** 26.3 / 29.5 GiB。故默认 0,并在帮助文本与模块头注写明
+**「要压显存请调层数,别用分块」**。参数保留仅为在别的形状上可复测。
+
+**几何自证**:投影修好后,六路相机各自可见 BEV 单元 7.4%–25.4%(合计 109%,含重叠),
+**至少一路可见覆盖 19842/20000 = 99.2%**;`max_len = 5074`。(修前是「只有 CAM_FRONT 看见全部
+20000、其余五路全零」—— 那个反常正是发现 bug 的线索。)
+
+**有意分歧清单(与官方不同构,逐条记明,便于日后若重启官方栈时对账)**:
+1. `init_reference` 仍是可学习 `nn.Parameter` 锚点(米),**不**用官方的 `Linear(query_pos).sigmoid()`
+   —— 后者是归一化空间构造;代价是失去「由 query_pos 条件化生成初值」。
+2. 回归输出保持**米**(不用官方 `inverse_sigmoid/sigmoid`)。
+3. **BEV query 来自 GKT 输出**(+可学习位置编码),官方的 BEV 嵌入是**可学习参数**。
+   GKT 在 MapQR 里对应 `LSSTransform`(图像→BEV 提升),故本模块是**细化**而非提升;
+   代价是与官方不同源,好处是 GKT 与其回归测试一字未动。
+4. 按 **per-batch** 算每相机可见 query 集合;官方用 `mask_per_img[0]`(bs>1 时官方那份是错的)。
+5. 不做 `one2many` 辅助分支、不做 `aux_seg` 辅助分割(不在本次范围)。
+
+**★ 换机器(本次实测发现,影响所有后续数字)**:本会话前段的 runlog 记录 GPU 为
+**RTX 4080 SUPER / 32760 MiB / driver 595.91.07 / CUDA 13.2**,本轮实测已是
+**RTX 3090 / 49152 MiB / driver 580.82.09** —— 显存 32 G → 48 G,**`auto_tune_batch_size`
+选到的 batch 很可能不同**。按 CLAUDE.md 红线:**跨机器 AP 不许直接比,判据看 `logs/*.json`
+的 `highlights.batch`,对不上就别比**。
+
+**变体选择与权重归属(2026-09-27 补)**:
+- **一键开关** `--variant {maptrv2,mapqr}`(= 同时打 `--scatter-gather` + `--bev-encoder height_kernel`);
+  与细粒度开关**互斥**(同时给报错)—— 不定义"谁覆盖谁",消融走细粒度那条路。
+- **变体逻辑只此一份**:`maptr/variants.py`(`VARIANTS` 表 + `resolve_variant` + 建模型 + 认权重)。
+  `eval_maptr` / `viz_maptr_pred` / `live_common` 里与变体相关的代码**各只有一行**(构造 `MapTR`),
+  靠 `MapTR.forward` 的输出契约与变体无关 ⇒ **不按变体复制文件**:`eval_maptr` 若复制一份给 MapQR,
+  chamfer AP 就有两份实现,直接违反红线;studio 两份 800–970 行的复制差异只有一行。
+- **checkpoint 自带结构说明**:落盘为 `{"state_dict": …, "model_kwargs": …}`。于是
+  **`eval`/`viz`/`studio` 不用额外参数就能建对模型**(实测:`--variant mapqr` 训出的权重,
+  `eval_maptr --ckpt …` 直接打出「变体 mapqr」并评出 AP);旧**裸 state_dict** 权重照旧可读
+  (归为基线是**事实**——开关是今天才加的),只是不带架构参数,须由调用方用 `**overrides` 补
+  (补不齐**当场报 length/size mismatch**,不静默)。实测 `outputs/maptr_v2_singleF.pt` 走新路径正常载入(33.2M)。
+
+**下一步(阶段 1/2/3,未启动)**:①只开 query;②只开 BEV encoder;③两者同开。
+三个阶段都:单帧 128 ep、与 `maptr_v2_singleF.pt` **同数据同 epoch 同 seed**、
+`--score-thr 0.2` 固定、**帧级留出 + 路线级留出双报**、把 `batch` 一起记。
+阶段 0 的端到端冒烟已过(三变体各 2 帧 2 ep,loss 正常下降;`logs/*.json` 的
+`highlights.scatter_gather` / `bev_encoder` / `bev_encoder_layers` 已能正确归属)。
+**注意 `maptr_v2_singleF.pt` 是在旧机器上训的**:阶段 1 之前应先在同一台机器上用**基线配置**
+重训一次取得可比基线,否则「变体 vs 基线」的差里混着换机器的效应。
+
+#### P-M.15 HD 地图三格式适配器:opendrive / lanelet2 / apollo(2026-09-27 ✅)
+
+**诉求**:`map/apollo.py` 与 `lanelet2.py`(原为空文件)补成与 [`opendrive.py`](../autodrivedata/map/opendrive.py)
+同角色的**地图格式适配器**,接进 mapvec 管线;**默认输出 opendrive,点名 `--lanelet2` / `--apollo` 才换**。
+
+**用户裁决**(AskUserQuestion):
+| 项 | 取值 |
+|---|---|
+| opendrive 那头 | **保持现状**(现有 `{map}_full.json`);新开关只**追加**写新格式 |
+| Apollo 形态 | **text-format protobuf**(`base_map.txt` 风格)—— 本机无 `.proto`,免 protoc、零新依赖 |
+| 对接点 | **mapvec 管线双向** + **`mapvec_pred/1` 两者都做**(来源字段 + 逐帧地图文件) |
+| 几何粒度 | **只到标线级**;文档写明升级到 lane/lanelet 的路径 |
+
+**★ 唯一的语义降级(必须知道)**:Apollo 的 `Map` **没有通用折线要素**(要素是 lane/crosswalk/stop_line/signal/
+junction/road…),而我们的源是**标线中心**的六类折线。天然对应只有三类;`divider`/`boundary`/`centerline`
+**借 `lane.central_curve` 承载**(即"一条只有中心曲线的 lane"),类名编进 `id.id` —— 保形可往返,但**把标线当车道**。
+已写进 `apollo.py` 模块头注 + 本表,不静默。
+
+**升级路径(选项二,已写进两个模块的头注)**:
+- **Apollo 真 lane**:给 `centerline` 的 attrs 补 `road_id`/`lane_id`/`s`(`_extract_centerlines` 内部已知,只是没带出来)
+  → 用 `opendrive.lane_boundary_t` 重算左右边界填进 `lane.left/right_boundary` → 此时 divider/boundary 不再单独出(否则重复);
+- **Lanelet2 真 lanelet**:把 [`mapvec.py`](../autodrivedata/map/mapvec.py) 内部的 `_Edge`(边界线 + 两侧 lane 列表)
+  提升为公开模型 → 按 section 为每个 driving lane 找左右边界 → 输出 `relation type=lanelet` + 左右 `member`。
+
+**实现要点(踩过的坑都在这里)**:
+- **lanelet2 的 `.osm` 存 lat/lon,我们是米** ⇒ 等距圆柱投影;**origin 写进文件内 XML 注释**
+  (外部工具忽略、自己读得回)⇒ 往返**不依赖文件外的隐式约定**;缺 origin 又没显式给就**报错**,不默默按 (0,0)
+  算(那会把整图挪到几内亚湾)。经纬度按 12 位小数落盘(≈1e-4 mm)。
+- **保真通道**:lanelet2 走自定义 tag + `attrs:<key>`(**重复键**加 `:N` 后缀 —— OSM tag key 必须唯一);
+  apollo 无 KV 槽 ⇒ `attrs`/`id`/`src`/**顺序**全编进 `id.id`(保留键 `@id`/`@src` 含 `@`,而 attr 键经 `quote(safe="")`
+  会把 `@` 变成 `%40`,**不可能撞名**)。顺序必须编 —— 文件按种类分块写,读时按种类分组会**打乱顺序**。
+- **逐类指定几何字段**:Apollo `lane` 只取 `central_curve`;整节点递归收点会把第三方 lane 的
+  `left/right_boundary` 点**吸进中心线**(折线悄悄变长,比"丢要素"更难发现)。
+- **丢弃必须计数**:单点折线在 OSM 里无合法表达、空几何在 Apollo 里无意义 ⇒ 丢弃 + 写进文件注释
+  (`autodrivedata-dropped: N`),不静默。
+- **写读两张表**:同一张表做 `--from` 会把写出器当读入器调,症状是"vecs 变成 str"而不是"函数不存在"。
+
+**验证(真实图 Town10HD_Opt,816 实例)**:
+- **默认路径逐位不变**:三格式各跑一遍,`{map}_full.json` 的 **sha256 完全相同**
+  (`0f96d8f8…c192f`),因为 `vecs_dump` 一字未动;
+- **往返**:lanelet2 / apollo 读回均 **816 实例、0 类不符**;apollo 源重跑管线产出的 JSON **逐位复现**原 JSON,
+  lanelet2 源最大差 **1e-3 m**(= JSON 自身的 mm 量化步长;实测只有 **2/151311 个坐标分量**差 1 个量化步长 ——
+  投影误差 1e-7 m 把恰好落在 `.0005` 边界的值推了过去,不是精度不足);
+- **互斥**:`--lanelet2 --apollo` 同时给 ⇒ 报错;
+- **逐帧契约**:`--out-frames --map-format apollo` ⇒ `{token}.json`(带 `map_format`) + `{token}.txt`(50 条 GT);
+  旧文件(无 `map_format`)仍能 `frame_from_dict` ⇒ **不 bump 版本号**。
+
+**⚠️ 没有官方校验工具**:本机**无 `lanelet2` 包、无 Apollo `.proto`/protoc** ⇒ 格式合法性只能做到
+**结构自证 + 我们自己读得回**(`.osm` 能被 ElementTree 解析、元素计数与类计数一致、text-format 能被自写解析器读回)。
+**不声称"通过官方工具校验"**。lat/lon 用的是等距圆柱(非 UTM),单张 CARLA 图尺度上可忽略,
+**跨图拼接或与真实 GNSS 对齐不适用**。
+
+#### P-M.16 跨图拼接 + 三处实测逼出来的修正(2026-09-27 ✅)
+
+**诉求**:把几张图合并成一张整体道路地图。用户裁决:拼接对象 = **自己设计的分段图 + 官方 Town 互拼(两者都要)**;
+顺序 = **先修两个拦路虎再拼**。
+
+**★ 这件事的本质**:CARLA 各 Town 是**独立 UE 关卡、原点任意,彼此没有真值相对位姿** ⇒ 拼官方 Town
+**不是配准问题**(没有共享内容可对齐)而是**人为摆位**,placement 表填的是人的决定。只有拼自己设计的分段图时,
+接缝处才有真值。**官方 Town 之间摆多近,车道都接不上** —— 那是数据的性质,不是实现缺陷。
+
+**先修的三处(前两处是 P-M.15 那轮带出来的)**:
+
+| # | 问题 | 实测 | 修法 |
+|---|---|---|---|
+| A | `_extract_objects` 越界 raise,**8/20 张图整张提不出来** | object 轮廓跨路段端点,越界 ≤ **2.44 m**,双向;Town03 1.20 / Town04 1.88 / Town05 0.98 / Town06 2.44 m | `_geo_at` 加 `strict`(默认仍 raise);object 走**有界外推**(上限 10 m)+ 越界幅度写进 attrs |
+| B1 | lanelet2 **丢 z** | `1.5/2.5 → 0/0`;而 12 张能提的图里 **10 张有非平凡高程**(Town07 9.4 m → **Town11 791 m**) | 高程走标准 `ele` 属性 |
+| B2 | lanelet2 的 `<nd>` **内联坐标**(破坏性偏离) | 真实 reader 只认 `ref` ⇒ 每条 way 读成**空几何**;互操作是**单向**的 | 改标准 `<node>` + `<way><nd ref>` |
+| B3 | 我的"往返精确"单测**名不副实** | 写的是 `for (ax, ay, _), (bx, by, _)` —— **故意跳过 z**,丢了也不红 | 改为**含 z 逐分量**比较 + 加标准结构钉 |
+
+**修 A 为什么用外推不用 clamp**:越界最大 2.44 m,clamp 会把轮廓压回端点、斑马线多边形**肉眼可见变形** ——
+那是"改数据"不是"修 bug"。外推用本路段几何延拓,几何量级同越界幅度,且**计数上报**(`attrs.s_extrapolated`)。
+
+**修完的实测**:20/20 张图可提取(原 12/20),越界外推实例合计 112 条;lanelet2 **含 z 往返最大差 5e-7 m**;
+**默认导出 sha256 逐位未变**(`0f96d8f8…`)** —— 未越界的实例不加 `s_extrapolated`,本来就好的图产出一个 bit 都不动。
+
+**拼接实现**(`map/stitch.py`,纯值):`Placement(dx,dy,dz,yaw)` + `place()`(刚体,**恒等原样返回同一对象**)
++ `stitch()`(并集 / **多图**加 id 前缀 / **跨图**去重)+ `seams()`(接缝候选**报告**)。坐标走**纯平面米系**,
+不引入 WGS84(拼接是摆位问题,lat/lon 只会再叠一层等距圆柱近似)。CLI:`export_mapvec --stitch "A=0,0;B=2000,0,0,90"`。
+
+**★ 两条实测逼出来的去重判据(合成数据测不出来,真实图上一跑就露)**:
+1. **同图内部一律不去重**。开着"同图也去重"实测会删掉 `Town10HD_Opt` 10 条、`Town01` 16 条 ——
+   全是**不同 road 的中心线恰好重合**(实测 `road 90` vs `road 89`,互距 **0.0000 m**)。那是**真实的道路结构**
+   (分隔带两侧、被拆成多个 road id 的同一条路)。单张图自身自洽,重复只可能来自**两图在交叠区各导一遍**。
+2. **单点要素(信号灯)必须参与去重**。把它排除在外,同一张图复制两份同位会残留 **36/495** 条 —— 而那 36
+   恰好就是信号灯的条数。修完正好 495。
+
+另有一处是**既有单测当场抓住的**:重构把哈希键里的 `cls` 丢了 ⇒ 同位置的 divider 与 boundary 被当重复删掉。
+`test_different_classes_are_not_deduped` 立刻红了。
+
+**⚠️ 合并图的用途边界(必须写清)**:对 **MapTR 训练基本无用** —— 训练仍是逐帧 `BEV_RANGE`(±15/±30)裁剪,
+合并图超窗口。价值在**全图质检 / 可视化 / 对外交付**。已写进模块头注,避免被当成训练数据源。
+
+**没做的部分(如实记)**:plan 里的 `stitch_topology` **没有实现成"接 link"** —— 因为 [`MapVec`](../autodrivedata/map/mapvec.py)
+**不携带道路图**(`predecessor`/`successor`/junction 在 `opendrive.Road` 上,提取时没带出来),没有 link 可接。
+交付的是 `seams()` **接缝候选报告**(端点配对 + 朝向差),供人判断。要真接拓扑得先把道路图带进 MapVec,那是另一件事。
+
 ## 8 遗留缺口
 
 **当前待办(§P-M.11 冻结口径下,按硬顺序)**:
@@ -1667,12 +2065,12 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
   - **生产口径**(`--detector yolo`):YOLO 检测框 → 配 GT 投影框 IoU 贪心(match_dets_to_gt,conf 降序)
     → **131 命中**/147 GT(漏检 39);mean err 10.53%(vs 基线 8.56,模型框抖动如实上升)、z10_20 36% <10%
   - 产物 `outputs/mono_distance/results.json`(project)/ `results_yolo.json`(yolo)
-- **P-E 多雷达标定**(教程 15):`autodrivedata/multilidar.py`(point-to-plane ICP,纯 numpy)+ `autodrivedata/calib/calib_multilidar.py`
+- **P-E 多雷达标定**(教程 15):`autodrivedata/perception/multilidar.py`(point-to-plane ICP,纯 numpy)+ `autodrivedata/calib/calib_multilidar.py`
   - 修复:收敛 = converged(增量阈值)∧ rmse_final<0.05m ∧ **overlap≥0.6** ∧ **plausible(t<5m、r<30°)**
   - 实测:small(0.1rad/0.1m)**converged**(overlap 0.991、iter 5、恢复 t 0.15m/r 5.7°);
     large(1.2rad/2m)**not_converged**(overlap 仍 0.991,recovered t 10.26m/r 68.8° 被 plausible 否决)
     → RMSE 对平面场景天然低,overlap+合理性双闸分开真伪标定;`outputs/multilidar/icp_result.json`
-- **P-F 双目测距**(教程 09):`autodrivedata/sim/collect_stereo.py`(基线 0.4m,y 轴 ±0.2m)+ `autodrivedata/stereo.py`
+- **P-F 双目测距**(教程 09):`autodrivedata/sim/collect_stereo.py`(基线 0.4m,y 轴 ±0.2m)+ `autodrivedata/perception/stereo.py`
   (z=f·B/d 三角测量、SGBM 视差可选、NCC 纯 numpy、自监督 reprojection_loss)
   - 实测:定速 5.98 m/s(逐帧自证);SGM 近物点云 z≈5.5m ↔ GT 深度同值;`outputs/stereo/`(40 帧)
 - **P-G 3DGS 重建**(教程 16,链路验证):`autodrivedata/sim/collect_3dgs.py`(360° 环绕采集,spectator 归位修复)+
@@ -1685,7 +2083,7 @@ HD map 车道向量化正是 §5.11 A 阶段 xodr 已有数据的同构表示),�
     在新采集上复现 val~10(采集条件年内变化,pitch 覆盖减半的消融 2×90→1500 iters 仍
     16.34/10.67)。多俯仰价值 = 补顶面/近地隐面(重建完整性,psnr_all ↑),代价 = 留出帧
     视角外推变难。产物 `gaussians_mp3_120k_v2.ply` / `train_result_mp3_120k_v2.json`。
-- **累积建图 + 地面 + 聚类**(教程 11/12/13):`autodrivedata/accum.py` / `ground.py` / `cluster.py`
+- **累积建图 + 地面 + 聚类**(教程 11/12/13):`autodrivedata/slam/accum.py` / `autodrivedata/perception/ground.py` / `autodrivedata/perception/cluster.py`
   + 对应 bin;150 帧产物齐全,聚类均值 117.97 簇/帧
 - **采集器纯函数下沉**(2026-09-18):`autodrivedata/collect_rig.py`(ring_cam_pose 环绕位姿 +
   stereo_rig_offsets 双目挂点;零 carla,AST 纪律守护)→ autodrivedata/sim/collect_3dgs.py / collect_stereo.py 改用,
