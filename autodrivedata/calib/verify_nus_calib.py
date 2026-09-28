@@ -30,6 +30,13 @@
 `calibrated_sensor.rotation`** 转到 ego 系,再与**官方标定的光轴**比 ⇒ 测的才是
 "落盘的 R 与官方 R 是否同一个"。修前(声明 R = 单位阵)四路角雷达掉到 0.00–0.04。
 
+**`--live` 断言当前图(2026-09-28 增)**:判据 ⑥(渲染 FoV)与 ⑧(相邻共视)要往世界里
+**摆锥体、读渲染结果**,命中与否取决于服务器当前在哪张图 ⇒ **场景相关**。在别处遗留的图上
+跑会得到看似「标定坏了」的失败(实测 Town13 上 CAM_FRONT_RIGHT 偏差 0.10024° 超 0.1° 阈值,
+而标定图 Town10HD_Opt 上只有 0.00431°;两次跑逐位相同 ⇒ 确定性,不是抖动)。
+故 `--live` 先断言图 = `CALIB_MAP`,不等就直接退出并给出 stop/start 的处置;
+确要在别图上跑用 `--any-map`(报告里带 `map_warning`,**结论不可用于验收**)。
+
 **明令禁止的判据**:`num_radar_pts`(跨 5 通道求和,即使用官方 R + 合并 + 官方框也只有
 0.6279)。LiDAR 的 1.0000 是特例,不外推。
 
@@ -110,6 +117,28 @@ TOL_RADAR_DEG = 0.1
 MIN_FOV_FRAC = 0.80
 TOL_K_PX = 0.01
 TOL_FOV_DEG = 0.1
+
+# 判据 ⑥(渲染 FoV)与 ⑧(相邻共视)要往世界里**摆锥体、读渲染结果**,命中与否取决于
+# **服务器当前在哪张图** ⇒ 它们是**场景相关**的,在别的图上跑会给出"标定坏了"的假警报。
+# 2026-09-28 实测(同一套 nuscenes rig、同一份代码):
+#   Town10HD_Opt(默认图,= 标定所在):CAM_FRONT_RIGHT 渲染 FoV 偏差 **+0.00431°**,十条全 ✓
+#   Town13(被 collect_traj --map Town13 留下的):同一相机偏差 **+0.10024°**(阈值 0.1° ⇒ 超),
+#     且 CAM_FRONT_RIGHT↔CAM_BACK_RIGHT 的共视锥**被完全遮挡**(两路 px=0)⇒ 判据 ⑧ ✗
+# 两次都是**确定性**的(连跑两次逐位相同),即不是抖动,是"图不对"。
+# 所以 `--live` **断言当前图**;要故意在别的图上跑,得显式 `--any-map`,且结论不可用于验收。
+CALIB_MAP = "Town10HD_Opt"
+
+
+def on_calibration_map(map_name: str, expect: str = CALIB_MAP) -> bool:
+    """CARLA 的 map 名是否就是期望那张图。
+
+    **不能只判 `==`**:同一个图 CARLA 会给出两种写法 —— `Carla/Maps/Town10HD_Opt`
+    与 `Carla/Maps/Town13/Town13`(2026-09-28 两种都实测到)。故按**路径分量**匹配。
+    抽成纯函数是为了让"断言当前图"这条能被离线钉住(见
+    `tests/calib/test_nuscenes_calib_consistency.py::TestCalibMapGuard`)。
+    """
+    return expect in [p for p in map_name.split("/") if p]
+
 
 # ⑥ 用的锥体摆放:沿光轴 Z 处、按相机自身"右"轴横移到 ±`FOV_LATERAL_FRAC`·Z
 #
@@ -532,7 +561,13 @@ def world_pose_chain(
     }
 
 
-def run_live(host: str, port: int) -> dict[str, Any]:
+def run_live(
+    host: str,
+    port: int,
+    *,
+    expect_map: str = CALIB_MAP,
+    allow_any_map: bool = False,
+) -> dict[str, Any]:
     import carla
 
     from autodrivedata.calib import probe_calib as pc
@@ -543,10 +578,34 @@ def run_live(host: str, port: int) -> dict[str, Any]:
     client = carla.Client(host, port)
     client.set_timeout(30.0)
     world = client.get_world()
+
+    # ★ **先断言当前图,再干活**(理由见 CALIB_MAP 上方的注释)。放最前面是因为跑一轮
+    # 约一分钟 —— 图不对时不该白跑,更不该把假 ✗ 写进报告让人当成「标定坏了」。
+    map_name = world.get_map().name
+    on_calib_map = on_calibration_map(map_name, expect_map)
+    if not on_calib_map and not allow_any_map:
+        raise SystemExit(
+            f"❌ 服务器当前图 = {map_name},不是标定图 {expect_map}。\n"
+            f"   判据 ⑥(渲染 FoV)/⑧(相邻共视)要往世界里摆锥体并读渲染结果 ⇒ **场景相关**:\n"
+            f"   换图后命中与否随之改变,会给出「标定坏了」的**假警报**。实测同一套 rig:\n"
+            f"     Town10HD_Opt(标定图):FR 渲染 FoV 偏差 0.00431° → 十条全 ✓\n"
+            f"     Town13(别处遗留):  FR 渲染 FoV 偏差 0.10024°(阈值 0.1°)→ ⑥⑧ 双 ✗,且两次跑逐位相同\n"
+            f"   处置:bash tools/carla_server.sh stop && bash tools/carla_server.sh start\n"
+            f"   或显式 --any-map 强行跑 —— 那份报告的结论**不可用于验收**。"
+        )
+
     sync_mode(world)
     ego = spawn_ego(world)
     bp_lib = world.get_blueprint_library()
-    rep: dict[str, Any] = {"map": world.get_map().name}
+    rep: dict[str, Any] = {
+        "map": map_name,
+        "calibration_map": expect_map,
+        "map_is_calibration_map": on_calib_map,
+    }
+    if not on_calib_map:
+        rep["map_warning"] = (
+            f"本报告采于非标定图({map_name} ≠ {expect_map},经 --any-map 放行):判据 ⑥⑧ 的结论**不可用于验收**"
+        )
 
     # ★ 判据⑩ 先测:它要移动 ego(双偏航),放在 spawn 传感器**之前**最干净
     # (测完已恢复原位;见 `measure_ego_axles`)。
@@ -820,6 +879,16 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument("--out", default=None, help="默认按 rig 取 outputs/nus_calib_check/report[_wide].json")
+    ap.add_argument(
+        "--expect-map",
+        default=CALIB_MAP,
+        help=f"--live 要求的服务器地图(默认 {CALIB_MAP};判据 ⑥⑧ 场景相关,见模块内 CALIB_MAP 注释)",
+    )
+    ap.add_argument(
+        "--any-map",
+        action="store_true",
+        help="关掉 --live 的地图断言(在别处遗留的图上强行跑);该报告**不可用于验收**",
+    )
     args = ap.parse_args()
     if not (args.offline or args.live):
         ap.error("至少要给 --offline 或 --live")
@@ -834,7 +903,7 @@ def main() -> int:
     if args.offline:
         rep.update(run_offline(project_path(args.dataroot)))
     if args.live:
-        rep.update(run_live(args.host, args.port))
+        rep.update(run_live(args.host, args.port, expect_map=args.expect_map, allow_any_map=args.any_map))
 
     verdict, text = summarize(rep)
     rep["verdict"] = verdict

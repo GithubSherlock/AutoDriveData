@@ -560,6 +560,8 @@ rig 落在 `autodrivedata/camera_rig.py`(`NUS_WIDE_*`;**前三个与官方逐位
 `auto_tune_batch_size` 选到**不同的 batch** ⇒ **新旧 AP 不可比**,而旧日志里**没记 GPU**。
 
 **用户裁决**:覆盖 = **训练 3 + 推理/评估 13 = 16 个脚本**(采集器 / 数据组装 / 标定探针**不在内**);
+**2026-09-27 扩到 18** —— 补入 `slam/slam_odometry` 与 `slam/slam_backend`(前端 12.6 min / 后端 11 min,
+产物**只在末尾落盘**,中断即零痕迹;口径见 Plan2 §P-M.13 的同日扩展块);
 形态 = **三件套 `.log` + `.jsonl` + `.json`**;训练期 = **loss 逐迭代 + 训练结束自动评一次 mAP**;
 环境指纹 = git rev+dirty / GPU 型号+显存+CUDA / conda env+python / **完整 argv + 起始 cwd**。
 

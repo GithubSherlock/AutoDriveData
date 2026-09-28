@@ -16,6 +16,10 @@
 注意本条输出的 T 是 **LiDAR 系**位姿、且未补杆臂 → 与 ego GT 比前需
 `M·T·M·inv(L)`(M = diag(1,−1,1),L = LiDAR 在 ego 系下的挂点),见 Plan2.md。
 
+每次运行落 `logs/` 三件套(脚本/时间/argv/cwd/git/GPU + 输入产物 sha256 + 结论数字),
+逐帧 `metric()` 进 `.jsonl` 且**逐行 flush** —— 这条链是分钟级、且产物**只在末尾落盘**,
+被中断的跑法在盘上会零痕迹,`.jsonl` 是唯一的"跑到哪了"证据。`--no-runlog` 关。
+
 用法:
   python -m autodrivedata.slam.slam_odometry [--root outputs/kitti_slam] [--frames 0-399]
                               [--voxel 0.5] [--out outputs/slam_gt]
@@ -37,6 +41,7 @@ from autodrivedata.slam.core import (
     closure_error,
     icp_odometry,
 )
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 
@@ -46,8 +51,15 @@ def main() -> None:
     ap.add_argument("--frames", default="0-149", help="帧范围 0-149 或逗号列表")
     ap.add_argument("--voxel", type=float, default=DOWNSAMPLE_VOXEL, help="下采样体素边长(m)")
     ap.add_argument("--out", default="outputs/slam", help="输出根(经 project_path)")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
+    with runlog.run("autodrivedata.slam.slam_odometry") as rl:
+        run(args, rl)
+
+
+def run(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
+    """前端主体。抽出来只为让 `main()` 能用 `with runlog.run(...)` 包住全程。"""
     root = Path(args.root)
     frames: list[int] = []
     for tok in args.frames.split(","):
@@ -59,6 +71,7 @@ def main() -> None:
             frames.append(int(tok))
     out = project_path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    rl.input(args.root, "kitti-root")
 
     print(f"[data] {root} | {len(frames)} 帧 | voxel {args.voxel}m")
     t0 = time.time()
@@ -123,6 +136,15 @@ def main() -> None:
         )
         if (k % 20) == 0 or k == len(frames) - 1:
             print(f"[{k}/{len(frames)}] t={time.time() - t0:.1f}s")
+        # 逐帧落 .jsonl(逐行 flush):前端只在末尾写产物,中断即零痕迹
+        rl.metric(
+            k,
+            frame=fid,
+            rmse_final=round(res["rmse_final"], 5),
+            overlap=round(res["overlap"], 4),
+            iters=res["iters"],
+            failed=res["failed"],
+        )
 
     # 闭合误差(无回环时 = 末帧相对首帧,开放路径参考口径)
     ce = closure_error(poses)
@@ -163,6 +185,25 @@ def main() -> None:
     )
     print(f"  closure: {json.dumps(ce, ensure_ascii=False)}")
     print(f"  耗时 {stats['wall_s']}s(IC {stats['icp_s']}s)→ {out}/traj_raw.json")
+
+    rl.artifact(out / "traj_raw.json", "slam-traj")
+    rl.artifact(out / "icp_stats.json", "slam-icp-stats")
+    rl.highlight("dataset", str(root))
+    rl.highlight("n_frames", len(traj))
+    rl.highlight("voxel", args.voxel)
+    rl.highlight("mean_rmse", stats["mean_rmse"])
+    rl.highlight("mean_overlap", stats["mean_overlap"])
+    rl.highlight("n_failed", n_failed)
+    rl.highlight("n_nan", n_nan)
+    rl.highlight("closure_drift_m", round(ce["drift_m"], 3))
+    rl.highlight("closure_arc_m", round(ce["arc_m"], 3))
+    rl.highlight("wall_s", stats["wall_s"])
+    rl.highlight("icp_s", stats["icp_s"])
+    # 这条 note 是为了防止 `closure_drift_m` 被跨序列误读 —— 见 Plan2 §P-H.1
+    rl.note(
+        "closure_* 是**开放路径**口径(首末位姿距离,量级 = 路径长度),不是漂移率;"
+        "只有闭环序列上它才等于漂移。真漂移看 eval_slam 的 ATE"
+    )
 
 
 def _first_result(init: np.ndarray) -> dict:

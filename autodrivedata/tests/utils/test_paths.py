@@ -65,12 +65,18 @@ class TestWeightPaths:
     而文件实际在 `models/` —— **代码 / 文档 / 文件位置三处同口径地错**,谁都不报错,
     跑起来只是 ultralytics 静默联网重下(不可复现 + 污染工作区)。
 
+    **2026-09-28 复现第二次(本钉当时没接住)**:修 §5.1 时把代码与文档改成同口径指向 `models/`,
+    但文件真身在 `weights/` —— 白名单 `_WEIGHT_ROOTS` 里没有 `weights`,守卫因此**静默通过**。
+    症状与首次逐字相同:ultralytics 联网重下 + 工作区被写进一个 1.9 MB 的截断权重。
+    **教训:白名单本身会过期** —— 权重要换落点时,这里必须同步,否则守卫只会假装在守。
+
     判据不靠人眼:AST 取代码里所有 `project_path("<...>.pt")` 字面量,指向不存在时,
     若**同名文件在仓库别处存在**即判为路径写错;仓库里也没有才是合法的「权重未入库」。
     """
 
     # 权重【未入库】在本仓可能出现的落点(见 docs/fileTree.md);空串 = 项目根
-    _WEIGHT_ROOTS = ("", "models", "outputs/models")
+    # ⚠️ 新增落点必须加进来(2026-09-28:`weights/` 缺席导致本钉漏判,见类 docstring)
+    _WEIGHT_ROOTS = ("", "models", "weights", "outputs/models")
 
     def _pt_literals(self):
         """扫 `bin/`(迁移期遗留)与 `autodrivedata/` 下所有 project_path("*.pt") 字面量。"""

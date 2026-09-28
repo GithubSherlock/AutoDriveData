@@ -17,10 +17,13 @@
 用法:
   python -m autodrivedata.traj.assemble_traj_pt \
       --traj outputs/traj_town13/traj.json \
-      --map-json training/map/Town13_full.json \
       --map Town13 \
       --out outputs/hivt_carla/val --steps 1 \
       --samples-per-map 250
+
+注:`--map` 只吃**地图名**(内部自行找到该图的 xodr centerline 拉车道)。
+**没有 `--map-json` 这个参数** —— 本节曾列过它,照抄会得到
+`unrecognized arguments: --map-json`(2026-09-28 实测,已删)。
 """
 
 from __future__ import annotations

@@ -15,11 +15,15 @@
   outputs/3dgs/render_compare{tag}.png                    GT|渲染|差值(帧0 与帧45)
 
 用法(必须先建好 gsplat 扩展,见 CLAUDE.md 环境注意):
-  CUDA_HOME=/usr/local/cuda-11.8 TORCH_CUDA_ARCH_LIST=8.9 \
+  CUDA_HOME=/usr/local/cuda-11.8 \
     python -m autodrivedata.gs.train_3dgs_mini [--iters 1500] [--tag ep1500] [--scale 0.05]
 
-环境注意:gsplat 通过 torch JIT 一次性编译(sm_89 本机缓存)。每次进程启动时
-TORCH_CUDA_ARCH_LIST 必须与本机 arch 一致,否则 import 即抛 ValueError。
+环境注意**架构不再手写**:gsplat 走 torch JIT 编译,本模块在 import 它**之前**
+按当前实卡(`torch.cuda.get_device_capability()`)设置 `TORCH_CUDA_ARCH_LIST`
+(用 `setdefault`,外部显式指定仍然优先)。**不要照抄某个数字** —— 这台机器换过卡
+(3080 Ti sm_86 → 4080 SUPER sm_89 → 3090 sm_86),写死的 `8.9` 在 sm_86 上会让内核
+起不来,报的却是 `Failed to set maximum shared memory size ... try lowering tile_size`
+(2026-09-28 实测:它提示的方向是误导,真因是**架构不符**)。
 """
 
 from __future__ import annotations
@@ -27,9 +31,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 
-import gsplat
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -39,6 +43,13 @@ from torch import nn
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
+
+# ★ 必须在 `import gsplat` **之前**设好 —— 它决定 CUDA 内核的编译目标架构。
+if torch.cuda.is_available():
+    _cc = torch.cuda.get_device_capability()
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", f"{_cc[0]}.{_cc[1]}")
+
+import gsplat  # noqa: E402  —— 必须排在上面那段设置之后
 
 _DOWNSAMPLE = 2  # 1242x375 → 621x187
 _N_INIT_PER_FRAME = 800  # 每帧深度采样点数(270 帧 → ~216k 候选,再降采样)

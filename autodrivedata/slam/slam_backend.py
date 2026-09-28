@@ -19,6 +19,10 @@
 
 纯值,不 import carla/torch;产物经 paths.project_path 落 outputs/。
 
+每次运行落 `logs/` 三件套(脚本/时间/argv/cwd/git/GPU + 输入产物 sha256 + 结论数字),
+关键帧循环的累计计数逐段 `metric()` 进 `.jsonl`(逐行 flush)—— 这条链是**分钟到小时级**
+且产物只在末尾落盘,中断的跑法靠 `.jsonl` 才能判"跑到哪、卡在哪一档"。`--no-runlog` 关。
+
 用法:
   python -m autodrivedata.slam.slam_backend [--traj outputs/slam/traj_raw.json]
                              [--root outputs/kitti_drive] [--out outputs/slam]
@@ -51,6 +55,7 @@ from autodrivedata.slam.core import (
     pose_graph_optimize,
     sc_candidates,
 )
+from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
 # 回环候选的**几何先验闸**(米):前端轨迹给出的两关键帧距离超过它就**不进 ICP**。
@@ -96,8 +101,15 @@ def main() -> None:
     ap.add_argument("--out", default="outputs/slam", help="输出根(经 project_path)")
     ap.add_argument("--every", type=int, default=KEYFRAME_EVERY, help="关键帧间隔(帧)")
     ap.add_argument("--min-gap", type=int, default=SC_MIN_GAP_NODES, help="回环候选最小关键帧号差")
+    ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
+    with runlog.run("autodrivedata.slam.slam_backend") as rl:
+        run(args, rl)
+
+
+def run(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
+    """后端主体。抽出来只为让 `main()` 能用 `with runlog.run(...)` 包住全程。"""
     t0 = time.time()
     traj_doc = json.loads(Path(args.traj).read_text())
     frames = [int(f["frame"]) for f in traj_doc["traj"]]
@@ -105,6 +117,8 @@ def main() -> None:
     root = Path(args.root)
     out = project_path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    rl.input(args.traj, "slam-traj")
+    rl.input(args.root, "kitti-root")
 
     # --- 关键帧 + 描述子 ---
     kf_idx = list(range(0, len(frames), args.every))
@@ -135,6 +149,18 @@ def main() -> None:
             print(
                 f"  [loop] {n}/{len(kf_idx)} 关键帧 | SC 候选 {n_cand}(先验拒 {n_prior}"
                 f" / 筛出局 {n_screened} / 短路 {n_short})过门 {n_ok} | 耗时 {time.time() - t_loop:.0f}s"
+            )
+            # 与上面那行 print 同频:卡住时判"卡在第几档"(先验拒/筛出局/短路/全量 ICP)
+            rl.metric(
+                n,
+                kf_done=n,
+                sc_candidates=n_cand,
+                prior_rejected=n_prior,
+                screened_out=n_screened,
+                short_circuit=n_short,
+                full_icp=len(loops),
+                accepted=n_ok,
+                loop_s=round(time.time() - t_loop, 1),
             )
         cands = sc_candidates(
             descs_arr, descs_arr[n], n, top_n=SC_TOP_N, min_gap=args.min_gap, thresh=SC_SIM_THRESH
@@ -314,6 +340,34 @@ def main() -> None:
         f"[done] 回环 {len(accepted)}/{len(loops)} | 闭合 pre {ce_pre['drift_m']:.3f}m → post {ce_post['drift_m']:.3f}m"
     )
     print(f"  耗时 {summary['wall_s']}s → {out}/traj_pgo.json")
+
+    for name, kind in (
+        ("traj_pgo.json", "slam-traj-pgo"),
+        ("loops.json", "slam-loops"),
+        ("slam_summary.json", "slam-summary"),
+    ):
+        rl.artifact(out / name, kind)
+    rl.highlight("dataset", str(root))
+    rl.highlight("n_frames", len(frames))
+    rl.highlight("n_keyframes", len(kf_idx))
+    rl.highlight("keyframe_every", args.every)
+    rl.highlight("min_gap", args.min_gap)
+    rl.highlight("n_candidates_sc", n_cand)
+    rl.highlight("n_prior_rejected", n_prior)
+    rl.highlight("n_screened_out", n_screened)
+    rl.highlight("n_short_circuit", n_short)
+    rl.highlight("n_loop_candidates", len(loops))
+    rl.highlight("n_loops", len(accepted))
+    rl.highlight("closure_pre_drift_m", round(ce_pre["drift_m"], 3))
+    rl.highlight("closure_post_drift_m", round(ce_post["drift_m"], 3))
+    rl.highlight("wall_s", summary["wall_s"])
+    # 这两个常量决定候选被砍多少 ⇒ `n_loops` 跨版本比较前先看它们(与 AP 看 batch 同理)
+    rl.highlight("loop_prior_max_m", LOOP_PRIOR_MAX_M)
+    rl.highlight("loop_screen_overlap", LOOP_SCREEN_OVERLAP)
+    rl.note(
+        "closure_* 在开放路径上 = 首末位姿距离(≠ 漂移);n_loops=0 是直线段数据的合法结果。"
+        "n_candidates_sc → n_loop_candidates 的差 = 几何先验闸(LOOP_PRIOR_MAX_M)+ 廉价筛"
+    )
 
 
 if __name__ == "__main__":

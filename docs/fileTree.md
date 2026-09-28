@@ -60,8 +60,10 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 **运行留痕(2026-09-27)**:每个**训练 / 推理 / 评估**入口跑一次就在 `logs/` 落**三件套**
 (stem 相同:`<能力>_<模块>_<时间戳>.log` 全量文本 / `.jsonl` 逐迭代指标 / `.json` 汇总),
 口径与关法见下方 [`utils/runlog.py`](#utils--通用件4) 行,落点见 §6。
-下表标 **落 `logs/` 三件套** 的**恰好 16 个**,即用户裁决的覆盖范围;
-**采集器(`sim/collect_*`)、数据组装(`map/assemble_*` / `merge_train_infos`)、标定探针(`calib/*`)不在其中** ——
+下表标 **落 `logs/` 三件套** 的**恰好 18 个**:用户裁决的覆盖范围(16 = 训练 3 + 推理/评估 13)外加
+**2026-09-27 补入的两个 SLAM 链路入口**(`slam/slam_odometry`、`slam/slam_backend` —— 前端 12.6 min、
+后端 11 min 却都**只在末尾落盘**,中断即零痕迹,是这三类里留痕价值最高的一对);
+**采集器(`sim/collect_*`)、数据组装(`map/assemble_*` / `merge_train_infos`)、标定探针(`calib/*`)仍不在其中** ——
 它们的产物自带逐帧索引,留痕价值低于上述三类。
 
 ### `sim/` — CARLA 仿真交互层 + 全部采集器(24)
@@ -192,8 +194,8 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `slam_eval.py` | 轨迹精度评估纯值:Umeyama 对齐 / ATE / RPE(evo·KITTI 口径);**纯直行序列的绕轴旋转不可辨识**见模块 docstring |
 | `live_slam.py` | **在线 SLAM 会话**(纯值):`LiveSlam.push` 逐帧增量重建(链式约定逐字复用 `slam_odometry`)+ `map_in_ego_frame`/`traj_in_ego_frame` 换到当前 ego 系;**`SlamWorker` = 有界丢旧队列 + 帧间隙止损(`max_gap`,防"丢帧→间隙更大→ICP 更慢"正反馈),默认同步执行(worker 线程被 GIL 压到 eff 0.04–0.24)** —— 滞后有界的判据靠它单测 |
 | `accum.py` | 累积语义点云建图:多帧 velodyne 全局累积 + 语义着色 |
-| `slam_odometry.py` | SLAM 前端:逐帧 velodyne → 链式位姿 `T_k = P_{k-1}·inv(T_delta)`(双出口契约见 `slam.py`) |
-| `slam_backend.py` | SLAM 后端:关键帧 + ScanContext 回环候选 + **几何先验闸 `LOOP_PRIOR_MAX_M` + 抽稀云廉价筛 `LOOP_SCREEN_*`**(都只用来**拒**)+ 双 yaw ICP 验证(反极支在首支过门时**短路**)+ PGO(边存点映射 `Z_ij`)。成本与三条实测依据见 Plan2 §P-H.3.3 |
+| `slam_odometry.py` | SLAM 前端:逐帧 velodyne → 链式位姿 `T_k = P_{k-1}·inv(T_delta)`(双出口契约见 `slam.py`) · 落 `logs/` 三件套(**逐帧** `metric()` 进 `.jsonl` —— 产物只在末尾落盘,中断时它是唯一的进度证据) |
+| `slam_backend.py` | SLAM 后端:关键帧 + ScanContext 回环候选 + **几何先验闸 `LOOP_PRIOR_MAX_M` + 抽稀云廉价筛 `LOOP_SCREEN_*`**(都只用来**拒**)+ 双 yaw ICP 验证(反极支在首支过门时**短路**)+ PGO(边存点映射 `Z_ij`)。成本与三条实测依据见 Plan2 §P-H.3.3 · 落 `logs/` 三件套(**每 25 关键帧**一条累计计数 `metric()`:先验拒/筛出局/短路/全量 ICP —— 小时级跑法靠它判"卡在哪一档") |
 | `slam_diff_test.py` | 前端位对齐对拍:numpy vs `slam_cpp` 同一 `(prev,cur,init,seed)` 下比单次 ICP |
 | `eval_slam.py` | SLAM 精度评估:LiDAR 系位姿 → ego 系(手性共轭 `M·T·M` + 杆臂 `inv(L)`)→ ATE/RPE · 落 `logs/` 三件套 |
 | `build_accum_map.py` | 累积语义建图(多帧 velodyne → 全局语义地图) |
@@ -275,6 +277,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | 实时可视化 | `test_live_common.py` | `compose_grid` **尺寸守卫**(不符必抛,防 `paste` 静默裁)+ `compose_rows` 每格**原生像素**逐像素等于源图 + studio `GRID_ROWS` 三层行序 + **`rig_spec`/`resolve_rig`**(两代 rig 口径与"按权重选":legacy 共用挂点 + pitch/roll=0,nuscenes 逐相机 6DoF;显式指定不被文件名覆盖)+ **`mount_deviation_of` 规格对账**(相机与雷达共用;矩阵顺序写反 ⇒ 平移爆掉而偏航仍 ~0、偏差随 ego 离原点变远而变大、legacy 实挂对 nuscenes 规格必报 110°、tick 前全 0 陈旧位姿**不许**判成"通过";`rig_mount_deviation` 是它的薄封装)+ `draw_hud(y=)` 第二行(第一行逐像素不变、`y=0` 与旧行为一致)。测试搬进包后**直连 `autodrivedata.sim.live_common`**,旧的 `sys.path` hack 与 `pyright: ignore` 已摘除 |
 | 配置图 / 覆盖表 | `test_rigviz.py` | **交付物图的数值侧回归**(纯值,PIL + numpy)。`TestCoverageTable`:wide 三个盲区**逐项等于设计预算**(7.3353/6.0984/1.7224 = 15.1561°、覆盖 0.9579)、官方 rig 零盲区;重叠对的 `span` 必须落在两个相机各自的扇区里(共视探针按它摆锥)。`TestAzimuthIndependentImplementation`:`rigviz.azimuth_of` == `camera_rig.camera_azimuth_nus`(两套独立实现)。`TestRigLayoutFigure`:**盲区红弧"有当且有、无当且无"**(官方 0 个盲区 ⇒ 0 红像素;wide 有 ⇒ >0)+ 六通道都有画色与短码。`TestRulerLanes`:底尺**跨 0° 不崩**(`360.0 % 360 == 0` 会让 `rectangle` 抛 `ValueError`)+ 盲区红**列数** ∝ Σ盲区度数 + 六条泳道都画出来 + 页脚折行后每行实测宽 ≤ 画布且不压数字表。**不钉排版/错别字**——那些写成断言只会得到"改个字就红"的脆测试 |
 | 绘制字体 | `test_fonts.py` | **中文字形不许静默变豆腐块**的回归钉。`TestProbe`:探针立论自证(`U+10FFFF` 在任何字体下都落 `.notdef`)+ **DejaVu 被正确判否**(它有 `−`/`°`/`★` 却画不了中文 ⇒ 判据不是"文件在不在")+ 生效字体实测能画中文。`TestRendering`:两个不同汉字在**画布上必须像素不同**(最强钉——豆腐块下它们逐像素相同)、`sanitize` 后零缺字 / 替换目标自己画得出 / 不等长(排版不错位)、CJK 宽 ≈ 2× ASCII(HUD 底条据此定宽)。`TestDrawnStringsAreRenderable`:**AST 扫全仓绘制字符串**(8 个绘制模块 × 绘制调用实参 + `hud_line` 之类构造器**函数体**——漏后者 `calib_live` 整行中文 HUD 会逃检)⇒ 逐个 `sanitize` 后零缺字;另有**根因钉** `test_no_module_draws_with_a_bare_text_call`(不许出现不带 `font=` 的 `d.text(...)`)与每模块 `import fonts` 钉 |
+| **验收补钉(2026-09-28)** | `tests/perception/test_sem_bev.py` `tests/calib/test_viz_layout_cmp.py` | 两条都补的是**同一类失效:CLI 早就跑不起来,而 pytest 全绿**(见 [docs/acceptance-2026-09-28.md](acceptance-2026-09-28.md) §4.1/§4.2)。`test_sem_bev`:桩模型跑通 YOLOPv2 掩膜链(**该模块此前零覆盖**),顺带把一直没人测的 letterbox→裁 padding→缩回原图几何钉住(含反例对照:把带挪位置,输出必须跟着挪);并 AST 钉住"外部 `utils` 包不许回来"(注意与 `traj/convert_hivt_pt.py` 的 HiVT `utils` 是**同名多义**,别混)。`test_viz_layout_cmp`:`--a`/`--b` 必须真的决定**读图**路径 —— 两个 root 的图染成**纯红/纯蓝**,断言两张输出各自取自自己的 root(路径再写死必然同色);**改代码前先确认它对旧逻辑报红** |
 | MapTR 数据划分 | `test_maptr_select.py` | **留出划分与多段组装的回归钉**(§P-M.12)。两条被测契约都是**静默失效型**:划分有交集只会让 AP 看起来更高、`data_path` 前缀写错只会让旧命令指错文件 —— 都不报错。`TestSelectFrames`:路线级(`--exclude-seg seg4`)与帧级(`--keep-in-seg 0:2`)两侧**互斥且并集为全集**、边界左闭右开、选择器取交集、**段名拼错必须 `ValueError` 而不是空列表**、旧单段 infos 不带选择器照旧可用。`TestArgParsing`:`parse_segs` 空串/纯空白 → `None`;`parse_frame_range` 拒绝 `80` / `80:100:2` / `100:80` / `5:5`。`TestRootsAndPrefixes`:单段前缀空 / 多段 `segK/`、glob 只收目录、必须且只能给一个来源。`TestHistoryWindows` / `TestWindowDataset`(时序窗口,§P-M.12 阶段 4):窗口**不跨段**、**不跨切分**(训练/留出各自只见自己的帧,窗口帧 ⊆ 本切分池)、段首帧丢弃且计数上报、`frame` 在段缝连续故**不许**当历史键、`window=1` 返回结构与单帧基线逐字节相同。`TestOverfitGate`(假警报型,§P-M.12):过拟合闸门按**实际训练样本数**判(`is_single_frame_anchor`),`320/400/500` 全不是锚点;外加**静态根因钉** —— AST 扫源码禁止 `args.frames` 与整数字面量比较(只禁这一形态,`args.frames > len(sel)` 的截断检查合法),因为"再写回 `args.frames > 1`"就是本条缺陷的复发式 |
 | MapTR 自实现 | `test_gkt.py` `test_head.py` `test_device.py` | 单帧过拟合正确性锚定。`test_gkt` 三条**回归钉**:`test_pose_rotation_order_is_carla_convention`(换序)、`test_scale_k_to_feature_resolution`(K 缩放)、`test_gkt_valid_coverage_on_real_rig`(真实 rig BEV 可见率 ≈94%,修前 1.25%) |
 | 地图格式(§P-M.15/.16) | `test_lanelet2.py` `test_apollo.py` `test_stitch.py` | **往返是主判据**:六类 + 重复键 attrs + id/src + **顺序**逐字段全等;投影往返 < 1e-4 m 且**换 origin 结果必须不同**(防投影没生效);origin 随文件走、缺 origin **报错不猜**;格式合法性与**元素计数一致**(防静默丢要素);**第三方文件按语义标签尽力读回**;Apollo 侧另钉「`lane` 不许把 `left/right_boundary` 的点吸进 `central_curve`」与「按种类分组读**不许打乱顺序**」;**含 z** 逐分量往返(Town11 的 791 m 是压力点)。`test_stitch`:恒等 placement **返回同一对象**、单图拼接**逐位不变**、计数守恒、**z 保真**、去重容差边界、**同图内部不去重**、**单点要素参与去重**、变换口径手算钉 |
@@ -289,11 +292,18 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 ## 4 `tools/` — 开放性工具
 
 > 判据:**不含本项目领域知识**。含领域知识的编排脚本跟着它的 Python 走(如 `map/assemble_and_merge.sh`)。
+>
+> ⚠️ **一条明写的例外(2026-09-28,用户裁决)**:`showcase.py` 破了上面的判据 —— 它内嵌全部项目入口命令,
+> 但它**跨能力面**,放 `calib/` 或 `map/` 都是误导,而包根只允许有 `__init__.py`。
+> 裁决 = **留在 `tools/`**,并给它加一条**比"无领域知识"更硬**的约束:
+> **只许调 CLI(`subprocess`),不许 import 任何业务模块** —— 某条命令写法错了,它必须**像用户手敲一样**地失败,
+> 而不是靠 import 到内部函数把错遮住。
 
 | 文件 | 职责 |
 |---|---|
 | `carla_server.sh` | CARLA 服务器启动/停止(GPU 修复栈 + **Vulkan 兼容层自愈**;宿主驱动升版致 `libnvidia-gpucomp.so.<ver>` 缺失时自动顶名,见 Plan.md §5.11f) |
 | `gpu_fix/` | GPU 修复栈:`install.sh`(NVIDIA 用户态补齐 + shim 安装)+ `mhookshim.c`(LD_PRELOAD shim 源码) |
+| `showcase.py` | **全能力面验收编排器**(2026-09-28):四阶段 `baseline`/`offline`/`online`/`figures`,把 [docs/acceptance-2026-09-28.md](acceptance-2026-09-28.md) 里逐条跑过的命令固化成可复跑入口。**只调 CLI 不 import 业务模块**(见上方例外条款);`online` 会改写 CARLA 所在图,跑完须 stop/start 回默认图 |
 | `clear_cache.sh` / `gitpush.sh` | 【未入库】本机磁盘清理 / 推送辅助(环境维护,非项目代码) |
 
 ## 5 `docs/` — 文档
@@ -307,6 +317,9 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `PRD.md` / `TRD.md` | 需求/技术文档(**当前为空占位**) |
 | `Carla_Sim_Tutorial_01..16.md` | 16 篇 Carla 仿真教程(ros-bridge 旧栈),Plan2.md 的能力对照来源 |
 | `refactor-2026-09.md` | **目录结构的决策与依据**:能力面划分的理由、已实测否决的方案、搬迁清单 |
+| `acceptance-2026-09-28.md` | **全能力面验收记录**(2026-09-28):一次"从零把整条流水线重跑一遍"的逐数字对账(§0 扫描表)+ 复跑中新发现的 11 条问题(3 条已修并补回归钉、4 条待用户裁决、4 条口径注记)+ 产物索引 + 复跑须知。复跑入口 = [tools/showcase.py](../tools/showcase.py) |
+| `ros2-humble-build.md` | **ROS2 Humble 源码构建记录**(2026-09-28,**环境侧**):三档成本实测(136/158/349 源码包)、四步命令与每步的坑、踩坑清单、构建期 github 抓取的镜像注入。**与能力线无关**(主线有意纯 numpy 不吃 ROS);`github.com` SNI 级被封的判据也在这一份 |
+| `ros2-feasibility.md` | **ROS2 引入可行性评估**(2026-09-28):结论 = **不引入**。三条判据(GIL 疼点已被"同步执行"绕过 / 教程能力线 16 次选择不用它 / 代价可量化而收益不可量化)+ **分层守卫会静默失效**(`rclpy` 不在任何禁用集里)+ 工业惯例三层对照 + 唯一真候选(FAST-LIO2 对标基线)为何区分度低 + **五条触发重评条件**。与 Plan.md §5.12(官方 MapTR/MapQR 复线终止)**无关** |
 
 ## 6 `outputs/` — 产物目录(唯一落点,**不展开子文件**)
 
@@ -340,7 +353,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 
 > 【未入库】,已被 `.gitignore` 忽略(回归钉 `test_paths.py::test_logs_dir_is_ignored`)。
 
-16 个训练/推理/评估入口**每次跑都落三件套**(同 stem;语义见 `utils/runlog.py` 行):
+18 个训练/推理/评估入口**每次跑都落三件套**(同 stem;语义见 `utils/runlog.py` 行):
 `<能力>_<模块>_<YYYYmmdd-HHMMSS>.log`(全量 stdout 文本)/ `.jsonl`(逐迭代指标)/ `.json`(环境指纹 + 入参 + 产物表带 sha256 + 结论)。
 `logs/latest/<能力>_<模块>.<ext>` 是**相对软链**,指向该脚本最近一次 —— `tail -f` 用它。
 **增量式、不滚动**(每次一份):先看实际增长速度,嫌多再议清理,**本轮不做**。

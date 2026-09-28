@@ -24,7 +24,9 @@ SHIM_SRC=$PROJECT_ROOT/tools/gpu_fix/mhookshim.c
 # (libGLX_nvidia.so.0)dlopen 失败 → 枚举 0 个 Vulkan 设备 → UE4 渲染线程起不来
 # (GameThread timed out waiting for RenderThread + Signal 11),显存恒 0 MiB。
 # 处置:用镜像自带副本按缺失的 SONAME 顶名,经本项目私有目录注入 LD_LIBRARY_PATH
-# (不动 /usr/lib)。判据:`python -m autodrivedata.sim.probe_vulkan` 应列出 RTX 3080 Ti(缺兼容层时只剩 llvmpipe)。
+# (不动 /usr/lib)。判据:`python -m autodrivedata.sim.probe_vulkan` 应列出**一块 NVIDIA 卡**
+# (缺兼容层时只剩 llvmpipe)。⚠️ **别把卡型号写进判据**:这台机器换过卡
+# (3080 Ti → 4080 SUPER → 3090,2026-09-28 实测是 RTX 3090),判据只该判"有没有 NVIDIA 设备"。
 COMPAT_DIR=$STATE/nvidia-compat
 GPUCOMP_FALLBACK=/usr/lib/x86_64-linux-gnu/libnvidia-gpucomp.so.580.76.05
 COMPAT_LDPATH=

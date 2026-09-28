@@ -129,23 +129,19 @@ def letterbox_sq(img_bgr: np.ndarray, imgsz: int = 640) -> tuple[np.ndarray, flo
     return img, r, dw, dh
 
 
-def scale_coords_like(
-    boxes: np.ndarray, ratio: float, dw: float, dh: float, orig_shape: tuple[int, int]
-) -> np.ndarray:
-    """letterbox 反变换:模型输出框 → 原图坐标。"""
-    oh, ow = orig_shape
-    boxes = boxes.copy()
-    boxes[:, [0, 2]] = (boxes[:, [0, 2]] - dw) / ratio
-    boxes[:, [1, 3]] = (boxes[:, [1, 3]] - dh) / ratio
-    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, ow)
-    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, oh)
-    return boxes
-
-
 def yolopv2_predict(model, img_bgr: np.ndarray, device: torch.device, imgsz: int = 640):
-    """YOLOPv2 推理(官方 demo.py 同式),返回 (det [N,6], da_mask, ll_mask)。
+    """YOLOPv2 推理,返回 (da_mask, ll_mask) —— 可行驶区 / 车道线,均为原图分辨率二值掩膜。
 
-    img_bgr 原图;内部 letterbox 到 imgsz×imgsz;输出 da/ll = 原图分辨率二值掩膜。
+    img_bgr 原图;内部 letterbox 到 imgsz×imgsz。
+
+    ⚠️ **2026-09-28 删掉一段从未执行过的死代码路径**(它卡死了整个能力面):
+    本函数原本还返回检测框 `det`,靠 `from utils.utils import non_max_suppression,
+    split_for_trace_model`(YOLOPv2 官方仓库自带的包)做后处理。该包本机不存在,
+    而**唯一调用点写的是 `_, da, llm = ...` —— 返回值从来没被消费过**。
+    症状:9-27 与 9-28 两次运行都抛 `ModuleNotFoundError: No module named 'utils'`,
+    整个语义 BEV 出不了图(两次 runlog 都如实记了,tests/ 里却**没有任何用例覆盖本模块**,
+    因此没有一处会报红)。检测框本就走下面的 YOLO11s-seg,故整段删除 ——
+    `model(img)` 只取 seg/ll 两路输出,掩膜不需要 NMS。
     """
     h, w = img_bgr.shape[:2]
     img, ratio, dw, dh = letterbox_sq(img_bgr, imgsz)
@@ -153,15 +149,7 @@ def yolopv2_predict(model, img_bgr: np.ndarray, device: torch.device, imgsz: int
     img = torch.from_numpy(img).to(device).float() / 255.0
     img = img.unsqueeze(0)
     with torch.no_grad():
-        (pred, anchor_grid), seg, ll = model(img)
-    # NMS(yolov5 系;参考官方 demo split_for_trace_model + non_max_suppression)
-    from utils.utils import non_max_suppression, split_for_trace_model  # noqa: E402  # type: ignore
-
-    pred = split_for_trace_model(pred, anchor_grid)
-    dets = non_max_suppression(pred, 0.25, 0.45)[0]
-    dets = dets.cpu().numpy() if dets is not None else np.zeros((0, 6))
-    if len(dets):
-        dets[:, :4] = scale_coords_like(dets[:, :4], ratio, dw, dh, (h, w))
+        _, seg, ll = model(img)
     # 掩膜:seg[:, :, 12:372, :] 可行驶 2 类;ll 车道线 1 类。
     # **seg/ll 输出已是 640×640**(= letterbox 输入分辨率,官方 demo 的 scale_factor=2
     # 是给 1280×720 显示用的,不是模型输出尺寸)——直接 argmax/round,勿再 x2。
@@ -175,7 +163,7 @@ def yolopv2_predict(model, img_bgr: np.ndarray, device: torch.device, imgsz: int
     if (h, w) != da.shape:
         da = cv2.resize(da.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
         llm = cv2.resize(llm.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
-    return dets, da.astype(bool), llm.astype(bool)
+    return da.astype(bool), llm.astype(bool)
 
 
 def main() -> None:
@@ -216,7 +204,9 @@ def main() -> None:
         print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
 
         # 模型
-        yolo11 = YOLO(str(project_path("models/yolo11s-seg.pt")))  # 权重落点 = models/
+        yolo11 = YOLO(
+            str(project_path("weights/yolo11s-seg.pt"))
+        )  # 权重落点 = weights/(同目录另有 kitti3d_finetune/)
         # TorchScript archive:autodrivedata env torch 无 CUDA 驱动,jit.load 会做 CUDA 探测
         # 失败(驱动 12.4 vs torch cu130)→ 用 torch.load(weights_only=False) 直接载权重图。
         ckpt = torch.load(
@@ -262,7 +252,7 @@ def main() -> None:
                 intrinsics, se = init_camera(calib[cam], size)
                 world_cam = cam_pose(ego, se)
                 # YOLOPv2:da + ll
-                _, da, llm = yolopv2_predict(yolopv2, img, device, args.imgsz)
+                da, llm = yolopv2_predict(yolopv2, img, device, args.imgsz)
                 # YOLO11:实例掩膜(车/人/卡车/巴士)
                 res = yolo11.predict(img, conf=0.35, verbose=False)[0]
                 obj_mask = np.zeros(size[::-1], dtype=bool)

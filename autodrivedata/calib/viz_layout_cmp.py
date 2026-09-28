@@ -53,23 +53,27 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    tables: list[tuple[str, dict, dict]] = []
+    # (tag, root, infos, calib) —— root 一路带到读图处。**曾经它是丢掉的**:
+    # 读 infos 用 `--a`/`--b`,读图却拼死路径 `PROJECT_ROOT/outputs/surround_micro_{tag}`
+    # (2026-09-28 实测:按 docstring 重采到别处再 `--a/--b` 指过去,数值表照出、读图必
+    # `FileNotFoundError`)。与「硬编码源码路径常量」是同一类失效(见 docs/refactor-2026-09.md 阶段 4)。
+    tables: list[tuple[str, str, dict, dict]] = []
     for tag, root in (("legacy", args.a), ("official", args.b)):
         infos = json.loads((Path(root) / "map_infos.json").read_text(encoding="utf-8"))
         calib = json.loads((Path(root) / "calib.json").read_text(encoding="utf-8"))
-        tables.append((tag, infos, calib))
+        tables.append((tag, root, infos, calib))
 
-    infos_a = tables[0][1]
+    infos_a = tables[0][2]
     rec = infos_a[args.frame]
     ego = rec["ego2global"]
     gt = _gt_lines_for(infos_a, args.frame)
     cam_names = sorted(rec["cams"])
 
     print(f"帧 {args.frame}  ego={tuple(round(v, 3) for v in ego[:4])}  GT {len(gt)} 条折线")
-    print(f"{'相机':<18}" + "".join(f"{t:>12}" for t, _, _ in tables))
+    print(f"{'相机':<18}" + "".join(f"{t:>12}" for t, _, _, _ in tables))
     for name in cam_names:
         row = []
-        for _tag, infos, calib in tables:
+        for _tag, _root, infos, calib in tables:
             k = infos[args.frame]["cams"][name]["intrinsic"]
             intrinsics = intrinsics_from_k(k, (1242, 375))
             pose = cam_pose(infos[args.frame]["ego2global"], calib[name]["sensor2ego"])
@@ -77,16 +81,10 @@ def main() -> None:
             row.append(len(segs))
         print(f"{name:<18}" + "".join(f"{v:>12}" for v in row))
 
-    for tag, infos, calib in tables:
+    for tag, root, infos, calib in tables:
         canvases = []
         for name in cam_names:
-            data_path = (
-                Path("/root/autodl-tmp/Documents/Projects/AutoDriveData")
-                / "outputs"
-                / f"surround_micro_{tag}"
-                / f"{name.lower()}"
-                / f"{args.frame:06d}.png"
-            )
+            data_path = Path(root) / name.lower() / f"{args.frame:06d}.png"
             img = Image.open(data_path).convert("RGB")
             draw = ImageDraw.Draw(img)
             k = infos[args.frame]["cams"][name]["intrinsic"]

@@ -631,3 +631,45 @@ class TestVerifyRigSelection:
         src = (CALIB / "verify_nus_calib.py").read_text(encoding="utf-8")
         assert "nus_mini_wide" in src and "report_wide.json" in src
         assert "choices=NUS_RIGS" in src, "`--rig` 的 choices 必须直接引自 `NUS_RIGS`"
+
+
+class TestCalibMapGuard:
+    """`--live` **断言当前图**的回归钉(2026-09-28 实测故障)。
+
+    **实际故障**:判据 ⑥(渲染 FoV)与 ⑧(相邻共视)要往世界里摆锥体、读渲染结果 ⇒ **场景相关**。
+    服务器被 `collect_traj --map Town13` 留在 Town13 后跑一次,同一套 nuscenes rig 得到:
+    `CAM_FRONT_RIGHT` 渲染 FoV 偏差 **+0.10024°**(阈值 0.1° ⇒ 超)、`FR↔BR` 共视锥**被完全遮挡**
+    ⇒ 判据 ⑥⑧ 双 ✗,**看着像标定坏了**。同一份代码在标定图 Town10HD_Opt 上偏差只有 **+0.00431°**、十条全过。
+    两次在 Town13 上跑**逐位相同**(确定性,不是抖动)—— 即"图不对"而不是"标定不对"。
+
+    钉法:把图名匹配抽成纯函数 `on_calibration_map`,**必须按路径分量匹配而不是 `==`** ——
+    同一个图 CARLA 给两种写法(`Carla/Maps/Town10HD_Opt` 与 `Carla/Maps/Town13/Town13`,都实测到),
+    写成 `==` 会让断言在**正确**的图上误报(比不检查更糟:人会学会忽略它)。
+    """
+
+    def test_both_carla_spellings_are_recognised(self):
+        assert vnc.on_calibration_map("Carla/Maps/Town10HD_Opt")
+        assert vnc.on_calibration_map("Carla/Maps/Town10HD_Opt/Town10HD_Opt")
+
+    def test_other_maps_are_rejected(self):
+        assert not vnc.on_calibration_map("Carla/Maps/Town13/Town13")
+        assert not vnc.on_calibration_map("Carla/Maps/Town01")
+
+    def test_substring_is_not_a_match(self):
+        """**不许退化成子串匹配**:`Town10HD_Opt` 是 `Town10HD_Opt2` 的子串,但它们是两张图。"""
+        assert not vnc.on_calibration_map("Carla/Maps/Town10HD_Opt2")
+        assert not vnc.on_calibration_map("Carla/Maps/MyTown10HD_Opt")
+
+    def test_live_refuses_before_touching_the_world(self):
+        """断言必须**在跑判据之前** —— 跑一轮约一分钟,图不对时不该白跑,更不该把假 ✗ 写进报告。"""
+        src = (CALIB / "verify_nus_calib.py").read_text(encoding="utf-8")
+        fn = next(
+            n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "run_live"
+        )
+        lines = [
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and _call_name(n) == "on_calibration_map"
+        ]
+        assert lines, "`run_live` 里没有调用 `on_calibration_map` —— 断言被摘掉了"
+        assert any(isinstance(n, ast.Raise) for n in ast.walk(fn)), "不匹配时没有 `raise` —— 断言是软的"

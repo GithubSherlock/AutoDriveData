@@ -69,7 +69,7 @@ autodrivedata/          ★ 主包 —— 按能力面分层,包根只有 __init
 
 tools/                 开放性工具(判据:不含本项目领域知识):carla_server.sh + gpu_fix/
 docs/(含 fileTree.md / refactor-2026-09.md)  README.md  Plan.md(冻结)  Plan2.md(新计划制定地)
-outputs/  logs/(16 入口的运行三件套)  training/  lightning_logs/  hdMapGitHub/  auto3dlabel/  【未入库】
+outputs/  logs/(18 入口的运行三件套)  training/  lightning_logs/  hdMapGitHub/  auto3dlabel/  【未入库】
 ```
 
 **命名约定**:目录名 = 能力面;模块名 = 能力内的构件。**模块与所在目录同名时改名 `core.py`**
@@ -96,8 +96,9 @@ python -m autodrivedata.sim.collect_slam --route loop --laps 2 --map Town10HD_Op
 #   闸门:一圈帧数 = 环长/(速度×tick) 必须 ≥ 250(SC_MIN_GAP_NODES × KEYFRAME_EVERY),
 #   否则两次到访帧差不够、回环候选必然为空 —— 环短就得开慢,或换 --spawn-index
 
-# 回环链路端到端(前端 → 后端 → 评估;后端在 802 帧闭环数据上是**小时级**,
-#   成本主项 = 失配候选的 ICP,见 Plan2 §P-H.3.3;判据与边界见 §P-H.3)
+# 回环链路端到端(前端 → 后端 → 评估;802 帧闭环数据实测 = 前端 12.6 min + 后端 11 min,
+#   成本主项是**失配候选**的 ICP(未加闸前是**小时级**),见 Plan2 §P-H.3.3;判据与边界见 §P-H.3)
+#   ★ 三步每次跑都落 logs/ 三件套;长跑中途被中断时,靠 .jsonl 判"跑到第几帧/卡在哪一档"
 python -m autodrivedata.slam.slam_odometry --root outputs/kitti_loop --frames 0-801 --out outputs/slam_loop
 python -m autodrivedata.slam.slam_backend  --traj outputs/slam_loop/traj_raw.json --root outputs/kitti_loop --out outputs/slam_loop
 python -m autodrivedata.slam.eval_slam --traj outputs/slam_loop/traj_raw.json --gt outputs/kitti_loop --out outputs/slam_loop/eval_pre.json
@@ -163,7 +164,8 @@ python -m autodrivedata.sim.collect_nus --rig wide --out outputs/nus_mini_wide -
 python -m autodrivedata.calib.verify_nus_calib --rig wide --offline --live   # → report_wide.json
 python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/calib_check/{rig_layout_*,views_*,report_*}
 
-# 运行日志:16 个训练/推理/评估入口**每次跑都落三件套**到 logs/(同 stem)
+# 运行日志:18 个训练/推理/评估入口**每次跑都落三件套**到 logs/(同 stem;
+#   = 用户裁决的 16 + 2026-09-27 补入的 slam_odometry / slam_backend)
 #   <能力>_<模块>_<YYYYmmdd-HHMMSS>.log = tee 的全量 stdout(头块含 git/GPU/env/argv)
 #   .jsonl = 逐迭代指标(逐行 flush);.json = 环境指纹 + 入参 + 产物表(带 sha256) + 结论
 #   logs/latest/<能力>_<模块>.<ext> = 指向该脚本最近一次的**相对软链**(tail -f 用它)
@@ -172,10 +174,10 @@ python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pytest 之外的路径前缀**
-                                 # 基线:上一版 1024 passed + 6 跳过 + 0 失败(--collect-only 报 1027;
-                                 #   差额 3 = 模块级 `importorskip` 的三个模块,收集期不计入)
-                                 # **2026-09-27**:--collect-only 报 **1074**(加闭环路线/MapQR 用例后 +47),
-                                 #   passed 数**未在全量上复测**(全局红线不许主动跑全量)⇒ 提交前跑一次落实
+                                 # 基线:1076 passed + 6 跳过 + 0 失败(2026-09-28 实测,172 s;
+                                 #   --collect-only 报 1079,差额 3 = 模块级 `importorskip` 的三个模块,
+                                 #   收集期不计入。上一版 1071/1074,补齐 sem_bev 与 viz_layout_cmp 的
+                                 #   回归钉后 +5 —— 这两个坑都是"pytest 全绿而 CLI 跑不起来"的那一类)
                                  # 基线数**只写在这一处**;加/删用例后回来改这一行,别在多处复述
 ```
 
@@ -185,6 +187,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **跨机器/跨机型的 AP 不许直接比**:显存变 ⇒ `auto_tune_batch_size` 实测选到**不同的 batch** ⇒ 新旧 AP 不可比。判据看 `logs/*.json` 的 `highlights.batch`,**对不上就别比**;`.log` 头块的 GPU 型号/显存/CUDA/driver + git rev 是归属依据
 - **AP 尾部不注水**:未达 recall=1 段 precision=0(11 点插值,与 compare.ap11 同口径)。旧尾行 `ap += (1-prev_r)*prev_p` 曾把低 recall 吹高(雨夜 0.48 检出报 0.976),已修
 - **MapTR chamfer AP 必须带 score_thr 引用**;跨权重比较**固定 `--score-thr`**,看曲线用 `--sweep`;**单独报一个 mAP 数字而不写阈值 = 无效结论**
+- **AP 的复现性下限 ≈ 2e-3**:同权重、同数据、同后处理,**换推理设备或换进程**也会让 AP 动 —— 边界实例的 sigmoid 得分跨过 `--score-thr` 就翻面(2026-09-28 实测:路线级 `boundary` **pred 1308@GPU vs 1307@CPU**,帧级留出 mAP 归档 0.3043 / 实测 0.3048,同一配置连跑 4 次则**逐位相同**)。⇒ **跨设备/跨机型的 AP 差 < 2e-3 一律视为不显著**,不许当"涨了/掉了"报;判据是**固定 `--score-thr` + 记录是否 GPU 推理 + `pred/gt` 计数**(计数不等 = 预测真变了,计数相同而 AP 变 = 阈值边界抖动)
 - **carla pyi 桩坑**:`try_spawn_actor` 桩标返回 `Actor`(实为 `Actor|None`)→ 用 Vehicle 方法必须 `cast(carla.Vehicle, v)`;Vector3D 运算结果不能直接进 `carla.Transform`(显式 `carla.Location`);函数签名要 `tuple[float, float, float]` 定长时禁用 tuple 推导(变长 tuple)
 - **sunset_glare 方位**:az=90=东=+x=车头正前(yaw=0 时);az=300 是顺光陷阱(太阳在车后)。判据 = 全图过曝最低(AE 压最狠)
 - **采集器清场 + 起点校验**:残留 actor 阻塞 spawn point 会致 fallback 反向出生点、轨迹失配(collect_ab_route/collect_static_gt 已内置,勿删)

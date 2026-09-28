@@ -1700,6 +1700,16 @@ RTX 4080 SUPER 服务器**,显存 12 G → 32 G 会让 `auto_tune_batch_size` �
 | 训练期 mAP | **loss 逐迭代 + 训练结束自动评一次 mAP**(不逐迭代算 AP —— AP 口径只能有一份实现) |
 | 环境指纹 | git rev + dirty / GPU 型号+显存+CUDA / conda env + python / 完整 argv + 起始 cwd(**四项全要**) |
 
+> **2026-09-27 扩展:覆盖 16 → 18**,补入 `slam/slam_odometry` 与 `slam/slam_backend`(用户指示「要补」)。
+> 理由 = 本节的原始动因(「shell 里临时 `| tee` 跑过即无痕」)恰恰在这两个入口上最尖锐:前端 12.6 min、
+> 后端 11 min(802 帧闭环数据),而 `--out` 的产物**只在末尾落盘** —— 中断的跑法在盘上零痕迹,
+> 连"跑到第几帧"都无从判。接线口径与其他入口一致,**只加登记、不改任何判据**:
+> 前端逐帧 `metric()`(frame/rmse/overlap/iters/failed)、后端每 25 关键帧一条累计计数
+> (SC 候选 / 先验拒 / 筛出局 / 短路 / 全量 ICP / 过门)+ 把 `LOOP_PRIOR_MAX_M`、`LOOP_SCREEN_OVERLAP`
+> 两个**决定候选被砍多少**的常量提成 highlight(`n_loops` 跨版本比较前先看它们,与 AP 看 `batch` 同理)。
+> 两个入口的 `main()` 拆成 `main()`(parse + `with runlog.run(...)`)+ `run(args, rl)`(原主体**逐字不动**),
+> 与 `train_maptr` 同一手法。采集器 / 数据组装 / 标定探针**仍不在内**。
+
 **设计**:新模块 [`autodrivedata/utils/runlog.py`](../autodrivedata/utils/runlog.py)(`utils/` 准入判据 =
 无领域语义、无 carla/torch ⇒ 只用 stdlib 合规;落点 3 → 4)。
 `with runlog.run("autodrivedata.<能力>.<模块>") as rl:` 包住 `main()` 主体,其余 `print()` **一字不改**
@@ -1736,7 +1746,7 @@ boundary 0.3075 / centerline 0.3821 @`--score-thr 0.2 --exclude-seg seg4 --keep-
 **执行中发现并修的自身回归**:`traj/convert_hivt_pt.py` 以**文件路径**在 hivt env 里跑
 (`<hivt>/bin/python autodrivedata/traj/convert_hivt_pt.py ...`),此时 `sys.path[0]` = **脚本所在目录**、
 项目根不在路径上 ⇒ 新加的 `from autodrivedata.utils import runlog` 在 import 期就 `ModuleNotFoundError`。
-已在该脚本内加**项目根 `sys.path` 引导**(与它既有的 HiVT 路径插入同一手法)。**教训**:16 个脚本里
+已在该脚本内加**项目根 `sys.path` 引导**(与它既有的 HiVT 路径插入同一手法)。**教训**:当时那 16 个脚本里
 **唯一一个不在本 env 里跑**的那个,机械改法必然漏 —— 改完必须**真跑**而不是只看 import。
 
 **新机器上的三个环境阻塞(与本次改动无关,不是日志代码引起的;如实记录)**:

@@ -374,6 +374,11 @@ def main() -> None:
         # **detector 必须与误差数字一起留痕**:project 档是"GT 框投影"的诚实上界,
         # yolo 档才是生产口径 —— 两者混在同一份日志里比数字,是最典型的误读。
         rl.highlight("detector", args.detector)
+        # **帧窗同理必须留痕**:`--max-frames` 默认 40,而文档里的归档口径是 70 ——
+        # 不传参就会跑出**另一批框**、拿到不可比的数字,而日志里没有帧数时**无从追溯**。
+        # 2026-09-28 实测:`kitti_ab_day_clear` 在 70 帧下 147 框 / mean 8.56%(= 归档口径),
+        # 在默认 40 帧下只有 94 框 / 10.17% —— 同一个 root、同一个 detector,差的全是帧窗。
+        rl.highlight("max_frames", args.max_frames)
         rl.highlight("n_rows", len(res["rows"]))
         for name, st in summary["methods"].items():
             for key in ("mean_err_pct", "z10_20_mean_err_pct"):
