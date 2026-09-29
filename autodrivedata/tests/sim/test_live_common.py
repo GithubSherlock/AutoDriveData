@@ -192,50 +192,6 @@ class TestRigSpec:
         assert {n: mounts[n] for n in NUS_CAMERA_RIG} == {n: v[0] for n, v in NUS_CAMERA_RIG.items()}
         assert {n: rots[n] for n in NUS_CAMERA_RIG} == {n: v[1] for n, v in NUS_CAMERA_RIG.items()}
 
-    def test_legacy_is_a_distinct_rig_not_a_near_copy(self):
-        """legacy(180±55 / 共用挂点 / pitch=roll=0)与 nuscenes 是**两套口径**,不是近似。
-
-        **实测差异形状**(2026-09-22 复核,别按直觉猜):前侧两台差 **110°**(镜像的形状),
-        后侧两台只差 **14–16°**(legacy 的 `180±55` 恰好落在官方 `±108.6/110.8` 附近)——
-        所以"差得多不多"不是判据,**挂点是否逐相机 + 有无 pitch/roll** 才是。
-        """
-        from autodrivedata.sim import live_common as lc
-
-        leg_mounts, leg_rots = lc.rig_spec(lc.RIG_LEGACY)
-        nus_mounts, nus_rots = lc.rig_spec(lc.RIG_NUSCENES)
-        assert leg_rots["CAM_BACK_LEFT"][1] == 235.0 and leg_rots["CAM_BACK_RIGHT"][1] == 125.0
-
-        def wrap(d: float) -> float:
-            return abs((d + 180.0) % 360.0 - 180.0)
-
-        # 前侧两台:镜像形状的 110° 偏差
-        for name in ("CAM_FRONT_LEFT", "CAM_FRONT_RIGHT"):
-            assert wrap(nus_rots[name][1] - leg_rots[name][1]) > 100.0, name
-        # 后侧两台:只差 ~15°(故"偏差大小"不能当判据)
-        for name in ("CAM_BACK_LEFT", "CAM_BACK_RIGHT"):
-            assert 5.0 < wrap(nus_rots[name][1] - leg_rots[name][1]) < 30.0, name
-
-        # 真正的判别式:legacy 共用同一挂点平移 + pitch/roll 恒 0;nuscenes 逐相机 + 6DoF
-        assert len({m for m in leg_mounts.values()}) == 1
-        assert len({m for m in nus_mounts.values()}) == 6
-        assert all(r[0] == 0.0 and r[2] == 0.0 for r in leg_rots.values())
-        assert any(r[0] != 0.0 or r[2] != 0.0 for r in nus_rots.values())
-
-    def test_auto_picks_legacy_for_legacy_ckpts(self):
-        from autodrivedata.sim import live_common as lc
-
-        for tag in lc.LEGACY_CKPTS:
-            assert lc.resolve_rig("auto", f"outputs/{tag}.pt") == lc.RIG_LEGACY
-        assert lc.resolve_rig("auto", "outputs/maptr_9999.pt") == lc.RIG_NUSCENES
-        assert lc.resolve_rig("auto", None) == lc.RIG_NUSCENES  # 无权重 ⇒ 采集口径
-
-    def test_explicit_choice_is_not_overridden(self):
-        """显式给 rig 时不猜 —— 否则"我明明指定了 legacy"会被文件名静默改掉。"""
-        from autodrivedata.sim import live_common as lc
-
-        assert lc.resolve_rig(lc.RIG_LEGACY, "outputs/maptr_9999.pt") == lc.RIG_LEGACY
-        assert lc.resolve_rig(lc.RIG_NUSCENES, "outputs/maptr_ep512.pt") == lc.RIG_NUSCENES
-
 
 class _FakeTransform:
     """只带 4×4 位姿的桩(免起 CARLA 服务器)。"""
@@ -317,15 +273,6 @@ class TestRigMountDeviation:
             *self._cams_and_ego(lc.RIG_NUSCENES, (500.0, 0.0), "wrong"), lc.RIG_NUSCENES
         )
         assert far[0] > near[0] * 100.0
-
-    def test_catches_a_mirrored_rig(self):
-        """把 legacy 的实挂位姿拿去对 nuscenes 规格 ⇒ 必须报出大偏差(镜像 rig 的判据形式)。"""
-        from autodrivedata.sim import live_common as lc
-
-        cams, ego = self._cams_and_ego(lc.RIG_LEGACY, (0.0, 0.0))
-        dev_t, dev_y = lc.rig_mount_deviation(cams, ego, lc.RIG_NUSCENES)
-        assert dev_t > 0.1  # legacy 共用挂点 vs nuscenes 逐相机,平移就对不上
-        assert dev_y > 100.0  # 前侧相机镜像的 110° 量级
 
     def test_stale_zero_transforms_are_not_silently_zero_deviation(self):
         """tick 前 `get_transform()` 返回全 0(陈旧值)⇒ 必须**报出偏差**,不能判成"通过"。"""

@@ -29,6 +29,14 @@ testpaths = ["autodrivedata/tests"]
 # 项目实际风格 ~110 列(默认 88 会把中文注释/表格式行反复折行)
 line-length = 110
 target-version = "py310"
+# ⚠️ **`weights/` 必须排除**(2026-09-28 实测踩到):ruff 0.16 **会格式化 Markdown 里的
+# python 代码块**,而 `weights/` 是**未跟踪且未被 `.gitignore` 覆盖**的目录(只有 `*.pt` 被忽略,
+# 目录本身没有)—— 裸敲 `ruff format`(项目文档里的标准用法)会走进去,把**下载来的第三方
+# README** 改掉。已发生一次:`weights/sam3/README.md` 的示例代码被重排。
+# 这不是"格式洁癖",是**改动了外部来源的文件**(上游校验和会因此对不上)。
+# 其余产物目录(outputs/logs/training/hdMapGitHub/…)**已被 `.gitignore` 覆盖**,ruff 默认
+# `respect-gitignore` 会跳过,故这里只需点名 `weights/`。
+extend-exclude = ["weights/"]
 
 [tool.ruff.lint]
 # 显式钉死规则集:ruff 升级不引入意外新规则(默认只 E4/E7/E9/F)

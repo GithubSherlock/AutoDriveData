@@ -72,10 +72,10 @@ BEV 槽 = SLAM 地图点(浅灰)+ 轨迹(青)+ 可选 MapTR 预测(品红)。在
   python -m autodrivedata.sim.live_studio --speed 8 --npcs         # 定速直行(键盘自动关闭)
   python -m autodrivedata.sim.live_studio --scene rain_night       # 天气档
   python -m autodrivedata.sim.live_studio --calib --speed 8 --duration 30 --calib-report outputs/calib_check/live.json
-  python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_ep512.pt   # BEV 槽出感知结果
+  python -m autodrivedata.sim.live_studio --maptr-ckpt outputs/maptr_v2_singleF.pt   # BEV 槽出感知结果
   python -m autodrivedata.sim.live_studio --slam --speed 8 --duration 90        # 在线 SLAM + 验收报告
   # 落一段八视角视频(拼图槽逐帧写 mp4;--video-fps 调到接近实际采集 fps 才是实时播放)
-  python -m autodrivedata.sim.live_studio --slam --maptr-ckpt outputs/maptr_ep512.pt --npcs \
+  python -m autodrivedata.sim.live_studio --slam --maptr-ckpt outputs/maptr_v2_singleF.pt --npcs \
     --speed 8 --duration 40 --video outputs/videos/studio_8view.mp4 --video-fps 3
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
@@ -99,6 +99,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import selfcheck
+from autodrivedata.calib.camera_rig import CAMERA_GRID_ROWS
 from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, bev_window_mask, draw_projected_lines
 from autodrivedata.perception.semantic import semantic_to_velodyne_bin
@@ -115,6 +116,8 @@ from autodrivedata.sim.carla_common import (
 )
 from autodrivedata.sim.collect_slam import ego_pose_matrix
 from autodrivedata.sim.live_common import (
+    RIG_NUSCENES,
+    RIGS,
     FrameSlot,
     KeyboardState,
     actor_box,
@@ -133,7 +136,6 @@ from autodrivedata.sim.live_common import (
     load_maptr,
     maptr_predict,
     overlay_gt,
-    resolve_rig,
     rig_frame,
     rig_mount_deviation,
     start_server,
@@ -180,13 +182,10 @@ EGO_BOX_COLOR = (255, 255, 255)  # 第三方视角里的 ego 自身框(白:与 G
 
 # 拼图布局(用户口径 2026-09-20):三层,行内按**车头朝前**的环视顺序排。
 #   ① 左前 / 前 / 右前   ② 右后 / 后 / 左后   ③ 第三方 + BEV
-# 不沿用 `SURROUND_CAMS` 的字典序(FRONT, FRONT_RIGHT, FRONT_LEFT, BACK, BACK_LEFT, BACK_RIGHT)
-# —— 那样第二行会变成"左后/右后"与地理直觉相反。
-GRID_ROWS: tuple[tuple[str, ...], ...] = (
-    ("CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"),
-    ("CAM_BACK_RIGHT", "CAM_BACK", "CAM_BACK_LEFT"),
-    (SPECTATOR_NAME, BEV_NAME),
-)
+# 前两行**引自 `camera_rig.CAMERA_GRID_ROWS`**(六视角行序的唯一来源)—— 本处只加第三层。
+# 原来是就地写一份字面量,于是 `viz_rig_check` 抄反了第二行、`viz_layout_cmp` 抄成了 1×6 字母序
+# (2026-09-28 实测);单一来源消除这个面。
+GRID_ROWS: tuple[tuple[str, ...], ...] = (*CAMERA_GRID_ROWS, (SPECTATOR_NAME, BEV_NAME))
 
 
 def grid_rows(by_name: dict[str, Image.Image]) -> list[list[tuple[str, Image.Image]]]:
@@ -297,9 +296,9 @@ def main() -> None:
     ap.add_argument("--calib-report", default=None, help="落盘 JSON:逐相机样本数/中位残差(经 project_path)")
     ap.add_argument(
         "--rig",
-        choices=("auto", "nuscenes", "legacy"),
-        default="auto",
-        help="环视挂点口径;auto 按权重名选(ep256/ep512=legacy,600/1000=nuscenes)",
+        choices=RIGS,
+        default=RIG_NUSCENES,
+        help="环视挂点口径(legacy 已于 2026-09-28 移除,见 docs/legacy-rig-archive.md)",
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sim-port", type=int, default=2000)
@@ -362,7 +361,7 @@ def main() -> None:
     vel = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
 
     maptr = load_maptr(args.maptr_ckpt, args.maptr_device) if args.maptr_ckpt else None
-    rig = resolve_rig(args.rig, args.maptr_ckpt)
+    rig = args.rig
     if maptr:
         # 模型输入必须与**该权重**训练数据逐字段一致(画幅 + 逐通道 fov + 逐相机挂点)
         # ⇒ rig 按训练口径挂,只在显示侧缩放(与 view_stream 同一条已验证路径)。

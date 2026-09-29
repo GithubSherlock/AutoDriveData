@@ -39,15 +39,16 @@ AutoDriveData/
 
 | 能力目录 | 规模 | 一句话 | 层约束 |
 |---|---|---|---|
-| `sim/` | 24 | CARLA 仿真交互层 + 全部采集器 + 平台探针 + 闭环路线纯值 | 许 carla |
-| `calib/` | 14 | 标定原语 / rig 表 / 自证探针 / 实时监看 / 配置图 | 许 carla,禁 torch |
-| `map/` | 35 | 地图矢量 + MapTR(含 `maptr/`、`maptr_official/`) | 不设限 |
+| `sim/` | 25 | CARLA 仿真交互层 + 全部采集器 + 平台探针 + 闭环路线纯值 | 许 carla |
+| `calib/` | 13 | 标定原语 / rig 表 / 自证探针 / 实时监看 / 配置图 | 许 carla,禁 torch |
+| `map/` | 36 | 地图矢量 + MapTR(含 `maptr/`、`maptr_official/`)+ 时序拼接 | 不设限 |
 | `slam/` | 10 | 两段式激光 SLAM + 精度评估 + C++ 对拍 | **纯值** |
 | `perception/` | 17 | 检测 / 单双目 / 雷达 / 语义 / 点云 | **不 import carla** |
 | `gt/` | 5 | 动态目标 + 静态目标 + 灯态 + 落盘导出 | **纯值** |
 | `traj/` `gs/` | 3 | 轨迹组装转换 / 3DGS 训练 | 许 torch,禁 carla |
+| `runtime/` | 1 | 设备探测 / TF32 口径 / 显存体检 / 批量超参实测 | 许 torch,禁 carla |
 | `utils/` | 4 | `geometry` `paths` `fonts` `runlog` | **纯值** |
-| `tests/` | 58 | 与能力目录镜像(见 §3) | 不设限 |
+| `tests/` | 60 | 与能力目录镜像(见 §3) | 不设限 |
 
 **规模列口径(两个,别混)**:§2 表 = **递归**(`find <目录> -name '*.py' ! -name '__init__.py'`);
 各小节标题 = 该目录**本级**文件数(子包另立小节,如 `gt/` 记 `3 + export/ 子包`、`map/` 记 18
@@ -66,7 +67,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 **采集器(`sim/collect_*`)、数据组装(`map/assemble_*` / `merge_train_infos`)、标定探针(`calib/*`)仍不在其中** ——
 它们的产物自带逐帧索引,留痕价值低于上述三类。
 
-### `sim/` — CARLA 仿真交互层 + 全部采集器(24)
+### `sim/` — CARLA 仿真交互层 + 全部采集器(25)
 
 **唯一大面积 `import carla` 的目录**;采集器、实时流、平台探针都在这。
 
@@ -80,7 +81,8 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `collect_ab_route.py` | P1 A/B 专用:ego 定速直行 + 路侧静置车(固定位置,帧级配对) |
 | `collect_nus.py` | nuScenes 迷你集:6 相机 + LiDAR + 5 雷达。**全传感器标定「渲染位姿 = 声明位姿」同源**(2026-09-23,§P-M.7):相机走 `NUS_CAMERA_RIG`(逐相机 6DoF 挂点)+ 逐通道蓝图 `fov`;LiDAR 走官方挂点 + 由四元数**导出**的姿态(`LIDAR_ROT` 不手抄);雷达偏航 `−az_nus` **由 `NUS_RADAR_OFFSETS` 导出**。历史缺陷(已删 `CAM_YAW_OFFSET` 镜像表 / 雷达猜测表 / LiDAR 无 rotation)见模块头注的对照表。判据复现器 = `autodrivedata/calib/verify_nus_calib.py`。**挂点原点**:位置/姿态全走 `geometry.nus_ego_translation` + `nus_ego_rotation`(后轴,§P-M.10);挂传感器前先让车静置收敛(`ego_settle`,实测 8 tick),`ego_pose` 写全 6DoF |
 | `collect_surround.py` | 环视 6 相机采集(nuScenes 布局)→ 图像 + 内外参 + 逐帧 ego 位姿 |
-| `collect_surround_micro.py` | 环视微采样(10 帧)→ 相机布局对照微实验 |
+| `collect_surround_lidar.py` | **多传感器采集:6 环视相机 + LiDAR + 5 雷达 + ego 真值位姿,一次过落进同一个 root**。存在的理由:两条下游链各要各的,而**磁盘上没有任何一份数据集同时有两者**(`collect_surround` 只挂相机 / `collect_slam` 只挂 LiDAR)⇒ 「逐帧环视预测 + SLAM 位姿」这种组合**无数据可跑**(`map/stitch_temporal --pose slam` 就卡在这)。落盘**三份布局**(**刻意不统一**:各走各自已有消费方的形状)—— ① `cam_*/` + `calib.json` + `ego_pose.json`(喂 `assemble_maptr`)② `training/velodyne/` + `training/pose/`(喂 `slam_odometry` / `eval_slam`)③ `samples/RADAR_*/*.pcd`(devkit 18 字段,喂 AutoLabel 雷达线)。雷达有**相位空 tick**(~7%)⇒ 非阻塞 drain + 空 pcd,`--no-radar` 可关。定速照 `collect_ab_route` 红线(清制动残留 + **逐帧反算实测速度自证**) |
+| `collect_surround_micro.py` | 环视微采样(10 帧)→ **极小规模**的环视输入(投影链 / 组装器 / 可视化改动的冒烟用,比 400 帧的 `collect_surround` 便宜)。原先的「与 legacy 旧布局做对照」用途已随 legacy 移除 |
 | `collect_static_gt.py` | 静态目标/道路特征 GT(地图查询源,含 overlay 目检图) |
 | `collect_tl_states.py` | 灯色动态 GT(记录模式 / `--cycle` 受控切灯) |
 | `collect_traj.py` | 多 agent 轨迹采集(HiVT 训练数据源) |
@@ -88,7 +90,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `collect_3dgs.py` | 静态场景 360° 环绕采集(RGB + 真值深度,支持多俯仰) |
 | `collect_slam.py` | SLAM 数据集采集:ego 定速巡游 → `training/velodyne/` + **`training/pose/`(ego 真值位姿,ATE/RPE 评估的 GT)**。**`--route loop`** = 路网找环 + 纯追踪跑 `--laps` 圈(让同一处真被走两次,后端回环链路的端到端数据源);`--dry-run` 只找环报预算(闸门见 `route.py`),`--spawn-index` 换可复现起点 |
 | `view_stream.py` | 场景实时流:真 UE 渲染 + GT/预测 overlay → 浏览器 MJPEG |
-| `live_common.py` | **实时可视化共享件**(从 view_stream 抽出):多槽 MJPEG 服务(单端口 `/stream/<name>` + `/` 索引页)/ **拼图(两套:`compose_grid` 等尺寸 + **尺寸守卫**,不符即 `ValueError` —— `paste` 源图大于目标框时只贴左上角、静默裁;`compose_rows` 按行拼、每格**原生像素**,studio 三层用它)** / GT overlay / **环视 rig(两代口径 `rig_spec`:`nuscenes` 逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态,`legacy` 共用 `SENSOR_OFFSET` + 235/125;`resolve_rig` 按权重名选)** / 第三方视角 / 键盘 —— view_stream 与 live_studio 共用。**`build_surround_rig(..., kind=)`** 可挂 `rgb` 或 `depth`(深度槽必须与 RGB 槽**同挂点同内参同分辨率**,否则 overlay 无法逐像素对齐);`draw_hud(..., y=)` 支持第二行(条带 16 px) |
+| `live_common.py` | **实时可视化共享件**(从 view_stream 抽出):多槽 MJPEG 服务(单端口 `/stream/<name>` + `/` 索引页)/ **拼图(两套:`compose_grid` 等尺寸 + **尺寸守卫**,不符即 `ValueError` —— `paste` 源图大于目标框时只贴左上角、静默裁;`compose_rows` 按行拼、每格**原生像素**,studio 三层用它)** / GT overlay / **环视 rig(`rig_spec`,可选口径 = `RIGS`:`nuscenes` 逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态 / `wide` 后三路后移;`legacy` 与 `resolve_rig` 已于 2026-09-28 移除)** / 第三方视角 / 键盘 —— view_stream 与 live_studio 共用。**`build_surround_rig(..., kind=)`** 可挂 `rgb` 或 `depth`(深度槽必须与 RGB 槽**同挂点同内参同分辨率**,否则 overlay 无法逐像素对齐);`draw_hud(..., y=)` 支持第二行(条带 16 px) |
 | `live_studio.py` | **8 路 studio**:6 相机 + BEV + 第三方 + `grid` 拼图槽,各占一路;`--keyboard` 折进 tick 循环(WASD 开采集);第三方非 attach 每 tick 摆位。**拼图 = `GRID_ROWS` 三层**(①左前/前/右前 ②右后/后/左后 ③第三方 + BEV),**每格原生像素不缩放**(相机 1242×375 / 第三方 640×360 / BEV `--bev-size` ⇒ 画布 3726×1170;旧 4×2 等尺寸布局把相机图裁到 621×187 丢掉地面,见 Plan2.md §P-L.6)。**`--slam` 接在线 SLAM**(挂语义 LiDAR → `SlamWorker`,BEV 槽画地图点/轨迹;`--slam-async` / `--slam-voxel` / `--slam-max-gap` / `--slam-report` 落验收 JSON)。**`--calib` 接实时标定监看**(另挂 6 深度相机同挂点同内参 + `sensor.lidar.ray_cast`,LiDAR→世界平面→投影回相机按深度残差着色画进各相机槽,`draw_hud` 第二行报 pooled |e| 与逐路样本数,`--calib-report` 落 JSON;`--calib-refit` 默认 2 tick 重拟合一次,预算见 `calib_live.py`)。**`--video` 落八视角视频段**(拼图槽逐帧写 mp4,cv2/mp4v 惰性开编码器;`--video-fps` 标称帧率 / `--video-tile` 放大倍数) |
 | `drive_ego.py` | live 手动驾驶(服务器终端 WASD 遥控);薄封装 `live_common.KeyboardState`(studio 内置键盘是首选) |
 | `probe_radar_l3.py` | 雷达物理合理性探针(对照真实 ars408 规格) |
@@ -98,21 +100,29 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `carla_common.py` | 采集公共件:位姿换算 / NPC 摆放 / 传感器参数 / 同步模式 / 灯态归一与绘制 |
 | `smoke_radar_collect.sh` | 雷达采集冒烟 |
 
-### `calib/` — 标定(14)
+### `runtime/` — 运行时设备工具(1)
+
+**为什么单独立档**:这些是**跨能力面**的 torch 运行时问题(map 用它调训练 batch、eval 用它调推理
+batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE`、**禁 torch**,有守卫强制。
+
+| 文件 | 职责 |
+|---|---|
+| `device.py` | 设备探测(`get_device`/`print_device`)、**TF32 口径**(`disable_tf32`)、显存体检(`check_gpu_headroom`)、批量超参实测(`tune_batch_size` 通用核心 + 训练/推理两个薄封装)。**最有价值的是 TF32**:`cudnn.allow_tf32` 在 torch 2.x 默认 True 而全仓原本无人设置 ⇒ 归档 AP 是 TF32 关的口径、今天默认开着跑出 0.3048 vs 归档 0.3043(`pred/gt` 计数完全一致)。合并自 AutoLabel `auto2dlabel/tools/device.py` + 原 `map/maptr/device.py`,三处改动见模块头注 |
+
+### `calib/` — 标定(13)
 
 许 carla、禁 torch。
 
 | 文件 | 职责 |
 |---|---|
 | `core.py`(原 `calib.py`) | KITTI 标定生成(内参/外参 → calib txt,含 `world_to_img` 投影共用件) |
-| `camera_rig.py` | **环视相机 rig 唯一来源**:官方 nuScenes `calibrated_sensor`(6DoF 四元数)→ CARLA 采集口径 `NUS_CAMERA_RIG`(平移 y 翻号 + 姿态走 `nus_camera_rotation_to_carla`)。采集器 / 实时流 / 导出器同源;模块头注记录**镜像 bug**(`yaw_carla = −az_nus` 漏翻 ⇒ 四个侧/后相机左右互换)。平移一律 = 官方表 + `geometry.NUS_EGO_ORIGIN_X`(§P-M.10 后轴对齐);wide 的后三路常量是 **CARLA 口径**的 `NUS_WIDE_REAR_X_CARLA = -1.9000`(落盘 nus 侧 = −0.6437),命名即口径,别混。**头注的四元数模长归因已于 2026-09-23 订正**:非单位的来源是**本表手抄的 4 位小数**(如 `CAM_FRONT_LEFT` `|q|−1 = −5.04e-05`),官方 mini 120 条 `calibrated_sensor` 的 |q| 实测全为 1.000000000000 |
+| `camera_rig.py` | **环视相机 rig 唯一来源**:官方 nuScenes `calibrated_sensor`(6DoF 四元数)→ CARLA 采集口径 `NUS_CAMERA_RIG`(平移 y 翻号 + 姿态走 `nus_camera_rotation_to_carla`)。采集器 / 实时流 / 导出器同源;模块头注记录**镜像 bug**(`yaw_carla = −az_nus` 漏翻 ⇒ 四个侧/后相机左右互换)。平移一律 = 官方表 + `geometry.NUS_EGO_ORIGIN_X`(§P-M.10 后轴对齐);wide 的后三路常量是 **CARLA 口径**的 `NUS_WIDE_REAR_X_CARLA = -1.9000`(落盘 nus 侧 = −0.6437),命名即口径,别混。**头注的四元数模长归因已于 2026-09-23 订正**:非单位的来源是**本表手抄的 4 位小数**(如 `CAM_FRONT_LEFT` `|q|−1 = −5.04e-05`),官方 mini 120 条 `calibrated_sensor` 的 |q| 实测全为 1.000000000000。**另含六视角画布口径**:`CAMERA_GRID_ROWS`(2 行×3 列,按方位绕车:左前/前/右前 + 右后/后/左后)+ 取序入口 `camera_grid_rows` / `camera_grid_order`。**七处产出点同源** —— `live_studio`(实时拼图,定义源头)/ `viz_rig_check`(六视角实拍)/ `viz_layout_cmp`(布局对照)/ `viz_calib_check`(标定 A/B)/ `probe_calib`(残差 overlay)/ `viz_maptr_pred`(预测回投)/ `view_stream --view grid6`。2026-09-28 收敛:此前各处自己写,其中**四处是错的**(一处第二行左右反、一处 1×6 字母序、一处把后三路排到了第一行、一处 2 列×3 行形状不符)。回归钉 `tests/calib/test_rigviz.py::TestCameraGridRows`(方位扫描 + 产出者必须真 import + 禁 `sorted(相机集合)`) |
 | `selfcheck.py` | **标定自证纯值件**:平面拟合(`fit_plane`/`fit_local_planes`)、相机射线/反投影(`cam_rays`/`project_world`/`backproject_depth`)、深度图采样(`collect_samples`/`DepthSamples`)、轴目标物质心法主点裁决(`estimate_axis_delta`/`estimate_delta_uv`)、镜像不对称度(`mirror_asymmetry`)、径向误差剖面 |
 | `depth_codec.py` | CARLA 深度图编解码(`decode_depth`/`encode_depth`,BGRA→米)+ 采样口径(`CONVENTION_CENTER`/`CONVENTION_CORNER` + `sample_bilinear_many`)——**实测裁决 CARLA 光栅 = corner**(索引 i 即连续坐标 i;见 `probe_calib.py` A3/A4),`CENTER` 保留供对照。**坑:`decode` 与 `sample` 的像素索引约定必须一致**,差 0.5 px 在近处 = 米级深度误差 |
 | `calib_live.py` | **实时标定槽纯值件**(`live_studio --calib`):`live_planes`(体素+抽样+逐点邻域平面,`LIVE_*` 廉价预算)/ `sample_camera`(复用 `selfcheck.collect_samples`,`CONVENTION_CORNER`,不开窗口极差)/ `residual_colors`+`paint_residuals`(着色,**与离线探针同源**)/ `summarize`+`CameraResidual`(样本 < `MIN_CAM_SAMPLES` 时 `median_abs is None`,**不许报假数字**)/ `self_occluded_cameras`+`near_fraction`(**相对**判据,见下)/ `hud_line`。**坑:自遮挡判据不能写死阈值**——近场占比随**画幅宽高比**变(CAM_BACK 1242×375 是 0.367、640×360 只有 0.195),故按同批可用相机的近场占比中位数定阈;平面是**世界系**故可跨 tick 复用(瓶颈全在拟合 ~100–150 ms vs 六相机采样 ~9 ms ⇒ 默认每 2 tick 重拟合) |
 | `rigviz.py` | **自车 + 传感器标定配置图**(纯值,PIL;见 Plan2.md §P-M.9):`draw_rig_layout` 一页三区 = 俯视(车体实测包围盒 + 逐相机挂点与视锥 + 短码)+ 方位环(重叠橙、盲区红带度数)+ 数字表(`通道 · 挂点 x,y,z · 方位角 · FoV · **az ± fov/2**`)。`azimuth_of` 是方位角算式的**第二份独立实现**(单测钉它与 `camera_rig.camera_azimuth_nus` 相等)。**分区是硬坐标**——图例压锥 / 方位环压表都踩过。接受**显式 calibs/fov 参数**,故"还没采过的候选 rig"只改常量就能出图。俯视图另有**后轴标记线**(洋红 = nus 原点)+ **空心灰圈 = 修正前挂点**(整体后移 1.2563 m 落在后轴线上,§P-M.10) |
 | `calib_multilidar.py` | 多雷达标定判据评估(注入已知误差 → 判据数值) |
 | `viz_layout_cmp.py` | 相机布局对照数值化(同镜头两布局的可见性对比) |
-| `probe_rig_mount.py` | **环视挂点口径 A/B 实测**:同一权重喂「它训练时见过的 rig」vs「另一代 rig」→ 品红像素/段数差 = 错配代价(结论见 Plan2.md §P-L.1) |
 | `probe_calib.py` | **标定自证探针(七锚 A0–A6)**:spawn 6 RGB + 6 depth + LiDAR + 施工锥 → `outputs/calib_check/{report.json,overlay.png}`。A0 光轴 vs 官方方位角 / A1 侧别一致性 / A2 实例分割解码(`id = G + 256·B`)/ A3 LiDAR-平面-深度图交叉验证(裁决**像素约定 = corner**)/ A4 轴目标物掩膜质心回归主点 / A5 实挂 vs 规格 / A6 主点锁定 `(w−1)/2`。**判据全数值,不目检** |
 | `viz_calib_check.py` | **标定修正的人工复核图**(`probe_calib` 的数值结论 → 人能对着看的图,判据数字烧进画面):①`check_geometry.png`(纯值,不依赖 CARLA,先落盘)——官方方位角极坐标轮(实线=修正后 / 淡线=历史字面值)+ 镜像差表(**不 wrap**,217.2° 折成 142.8° 就看不出镜像)+ A4/A3 读数;②`check_raw.png`/`check_overlay.png`(A3 六相机**同一帧**的 raw 与残差 overlay,两张逐像素差 = 画上去的点数);③`check_rig_ab.png`(同一 ego、同一批施工锥,`nuscenes` vs `legacy` 各拍一遍 → **世界左方的锥出现在哪一路**即镜像的直接证据)。落 `outputs/calib_check/check_*.png` + `viz_summary.json` |
 | `verify_nus_calib.py` | **`collect_nus` 验收判据的复现器**(全数值,不目检;落 `outputs/nus_calib_check/report.json`)。`--offline`(不需 CARLA):③ 雷达点落进**自身 FOV** 占比(以官方 R 为锚 —— 点云在传感器自身系,+x 即光轴,不转到 ego 系再比就是恒真)、④ LiDAR 复现 `num_lidar_pts`(官方集 1.0000 vs 单位阵消融 0.1684)、⑤ 相机内参 vs 该 rig 声明表;`--live`:① 相机实挂 vs 声明(`live_common.mount_deviation_of`,**必须先 tick**)、② 雷达实挂 vs 官方 az、⑥ 渲染 FOV vs 蓝图 fov(复用 `probe_calib` 的锥体/掩膜回归,**不另写实例分割解码**)、⑦⑧ 转 `rig_check.instance_probe`。**⑥ 两个实测坑**:每 tick 必须**抽干全部相机队列**(否则未测相机积压陈旧帧 ⇒ 掩膜恒 0,症状是"只有第一个相机测得出"且与距离无关)、Z 取**阶梯** `(20,14,10,8,6)`(地图遮挡随出生点变,写死会假失败)。**明令禁止 `num_radar_pts` 作判据**(跨 5 通道求和,官方 R 也只复现 0.6279)。**+ ⑨⑩(§P-M.10)**:⑨ 世界系链(`declared = 落盘表 ⊕ **实测**后轴位姿` vs `rendered = CARLA 实挂经共轭`,12 路逐位比 —— ①② 相对同一个 ego,**对原点误差在结构上盲**,必须有它);⑩ 独立复测后轴(双偏航自解,**不读常量**,防常量腐化静默错位)。`--rig {nuscenes,wide}`:③④ 与相机无关原样适用,其余换该 rig 的声明表;默认落点按 rig 分叉(`nus_mini[_wide]` / `report[_wide].json`,**不互相覆盖**) |
@@ -125,6 +135,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 |---|---|
 | `opendrive.py` | OpenDRIVE 1.4 解析(planView/lanes/objects/signals/junction)。`_geo_at` 有 `strict` 档:默认对 `s ∉ [0,length]` raise(**抓调用方 bug** 的守卫,不是物理约束);`strict=False` 才**有界外推**(上限 10 m) |
 | `stitch.py` | **跨图拼接**(§P-M.16):`Placement` 表 + `place()`(刚体,**恒等原样返回**)+ `stitch()`(并集 / 多图加 id 前缀 / **跨图**去重)+ `seams()`(接缝候选**报告**)。⚠️ 官方 Town 无真值相对位姿,placement 是**人为摆位**;⚠️ `MapVec` 不带道路图 ⇒ 接不了 link;⚠️ 合并图**对 MapTR 训练无用**(训练仍逐帧 `BEV_RANGE` 裁剪)。两条实测逼出来的判据:**同图内部不去重**(不同 road 的中心线会恰好重合)、**单点要素(信号灯)必须参与去重** |
+| `stitch_temporal.py` | **时序拼接**:逐帧 BEV 矢量预测按位姿拼成全局矢量图。与 `stitch.py`(跨**图**、人为摆位)分工不同,它跨**帧**、位姿来自轨迹(`--pose gt` 上界 / `--pose slam` 车载口径)。几何层复用 `stitch.place`(正好 = ego→world)与 `_dedup`;**融合**另有 `--fusion cluster`(Chamfer + 朝向门 + 簇内平均)—— 实测 `_dedup` 的 Hausdorff 对跨帧是错配(tol 0.5 m 只合掉 0.7%)。**按 seg 分段是硬约束**(段缝位移 56.8–109.6 m)。产物 **JSON + PNG 两份** |
 | `lanelet2.py` | **Lanelet2(.osm XML)适配器,双向**(§P-M.15):**标准 OSM 结构**(`<node id lat lon ele>` + `<way><nd ref>`;早先把坐标内联进 `<nd>`,真实 reader 会**读成空图**)+ **高程走 `ele`** + `autodrivedata:seq` 还原顺序;六类要素→`way`/`node`(标线级,`divider`→`line_thin`、`boundary`→`line_thick`、`ped_crossing`→`crosswalk`…);坐标系是**米**而 .osm 存 lat/lon ⇒ **等距圆柱投影**,`origin` 默认取质心并**写进文件注释**(外部工具忽略、自己读得回 ⇒ 往返不依赖文件外的隐式约定)。保真走自定义 tag `autodrivedata:cls`/`:id`/`:src` + `attrs:<key>`(**重复键**加 `:N` 后缀);读回**优先自定义 tag、回退语义标签** ⇒ 也能尽力读第三方。**只到标线级**;升级到真 lanelet 需要什么见模块头注 |
 | `apollo.py` | **Apollo HD Map(text-format protobuf)适配器,双向**(§P-M.15):`ped_crossing`/`stop_line`/`traffic_light` → `crosswalk`/`stop_line`/`signal`(**天然对应**);⛔ **`divider`/`boundary`/`centerline` 在 Apollo `Map` 里没有落点** ⇒ 降级为借 `lane.central_curve` 承载(**把标线当车道**),类名编进 `id.id`。保真 ≈ 无 KV 槽 ⇒ `attrs`/`id`/`src`/顺序全编进 `id.id`(保留键 `@id`/`@src` 带 `@`,与 quote 后的 attr 键不可能撞名)。走 text-format 是因为**本机无 `.proto`**、免 protoc。升级到真 lane 需要什么见模块头注 |
 | `mapvec.py` | 地图矢量 GT 提取与采样(MapTR 口径:六类要素 + 裁剪 + 重采样)。**object 轮廓走非严格外推**(斑马线/停车线摆在路段起止处会合法溢到相邻路段,实测最多 2.44 m)⇒ 修前 Town03/04/05/06 **整张图提不出来**(12/20),现 **20/20**;越界实例在 attrs 里带 `s_extrapolated`,未越界的**不加该键**(⇒ 本来就好的图产出逐位不变) |
@@ -317,6 +328,8 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `PRD.md` / `TRD.md` | 需求/技术文档(**当前为空占位**) |
 | `Carla_Sim_Tutorial_01..16.md` | 16 篇 Carla 仿真教程(ros-bridge 旧栈),Plan2.md 的能力对照来源 |
 | `refactor-2026-09.md` | **目录结构的决策与依据**:能力面划分的理由、已实测否决的方案、搬迁清单 |
+| `temporal-stitch-2026-09-29.md` | **时序拼接实测**(2026-09-29):逐帧 BEV 矢量预测 → 全局矢量图首次真跑通。含**两个位姿源对比**(CARLA 真值 vs SLAM,ATE 0.877 m **小于**模型逐帧抖动 2–4 m ⇒ **位姿不是瓶颈**)、**融合口径的 60× 差**(Hausdorff 去重对时序是错配,只合 0.7%)、以及为它新建的双传感器采集器的首跑记录 |
+| `legacy-rig-archive.md` | **legacy rig 归档**(2026-09-28):该口径按用户裁决从代码中**完全移除**,本文件冻结镜像 bug 的**成因 + 逐相机方位数字 + 覆盖表 + 图**(`assets/legacy-rig/`)。移除的代价是「镜像 bug 已修」无法在仓内重跑复现 —— 要查当年长什么样看这一份,别在代码里找 |
 | `acceptance-2026-09-28.md` | **全能力面验收记录**(2026-09-28):一次"从零把整条流水线重跑一遍"的逐数字对账(§0 扫描表)+ 复跑中新发现的 11 条问题(3 条已修并补回归钉、4 条待用户裁决、4 条口径注记)+ 产物索引 + 复跑须知。复跑入口 = [tools/showcase.py](../tools/showcase.py) |
 | `ros2-humble-build.md` | **ROS2 Humble 源码构建记录**(2026-09-28,**环境侧**):三档成本实测(136/158/349 源码包)、四步命令与每步的坑、踩坑清单、构建期 github 抓取的镜像注入。**与能力线无关**(主线有意纯 numpy 不吃 ROS);`github.com` SNI 级被封的判据也在这一份 |
 | `ros2-feasibility.md` | **ROS2 引入可行性评估**(2026-09-28):结论 = **不引入**。三条判据(GIL 疼点已被"同步执行"绕过 / 教程能力线 16 次选择不用它 / 代价可量化而收益不可量化)+ **分层守卫会静默失效**(`rclpy` 不在任何禁用集里)+ 工业惯例三层对照 + 唯一真候选(FAST-LIO2 对标基线)为何区分度低 + **五条触发重评条件**。与 Plan.md §5.12(官方 MapTR/MapQR 复线终止)**无关** |

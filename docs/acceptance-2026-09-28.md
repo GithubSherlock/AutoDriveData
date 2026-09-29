@@ -327,7 +327,44 @@ docstring 写 `--map-json training/map/Town13_full.json --map Town13`,
 `unrecognized arguments: --map-json`。
 **修**:docstring 删掉 `--map-json`,并加一句"**没有这个参数**"的显式说明(防止有人再照旧版加回来)。
 
-### 4.11 【口径注记】`--bev-chunk` 之外:本轮无新增显存/性能结论
+### 4.11 【口径注记 · 回答一个会被反复问的问题】`legacy` rig **不是**被抛弃的旧设置
+
+**问法**:"showcase 的 calib 里出现了 `legacy_*`,之后的项目不该用这个标定 —— 它被抛弃了吗?"
+
+**答**:`legacy` **是刻意保留的、喂旧权重的兼容口径**,不是项目当前标定。三条事实:
+
+| 事实 | 出处 |
+|---|---|
+| rig 表里写明 "`nuscenes`(**当前**)" vs "`legacy`(**早期**)" | `sim/live_common.py:10-15` |
+| **"它**不是无条件 bug**:`maptr_ep512.pt` 就是在这套 rig 上训出来的,拿 nuscenes 喂它**反而是错配**。故本文件同时保留两套口径" | `sim/live_common.py:23-26` |
+| 选法是 `resolve_rig(choice, ckpt)`:`auto` 时**按权重文件名**判 —— `maptr_ep256/512` → legacy,其余 → nuscenes | `sim/live_common.py:92,144-155` |
+
+**现役权重 `maptr_v2_singleF.pt` 走 `auto` 得到的是 `nuscenes`** —— 管线没有在用 legacy。
+
+**showcase 里那两张 `legacy_*` / `official_*`** 来自 `viz_layout_cmp`,是**两代布局对照**(同一段路、同一份地图 GT,
+A = 旧布局 / B = 官方布局,比逐相机覆盖量),**不是**"用 legacy 标定出的管线产物"。这一项是本轮自选的展示图,
+与 `live_studio` 的 `--rig` 选择无关。**若认为它不该出现在验收图集里,删掉 `showcase.py` 的 `viz_layout_cmp` 那一条即可**
+(采集侧 `collect_surround_micro --cam-back legacy` 也只服务于这个对照)。
+
+> **教训(展示层的)**:把"两代对照"混进"能力面代表图"里,会让人以为被对照的那一代还在生产链上。
+> 展示项的**选取**也需要判据,不能只图信息量大。
+
+**★ 2026-09-28 用户裁决:legacy 口径从代码中完全移除**(范围 = 运行时选项 + 诊断 + 证据归档)。
+证据冻结在 [docs/legacy-rig-archive.md](legacy-rig-archive.md) + `assets/legacy-rig/`(4 张图,3.7 MB)。
+
+| 动作 | 内容 |
+|---|---|
+| 证据归档 | 新建 `docs/legacy-rig-archive.md`(镜像成因 / 逐相机方位数字 / 覆盖表 / 4 张图)+ `assets/legacy-rig/` |
+| 运行时选项删 | `RIG_LEGACY` / `LEGACY_CAM_YAW` / `LEGACY_CKPTS` / `LEGACY_FRAME` / `LEGACY_FOV` / `resolve_rig` / `--rig auto`;`rig_spec` 未知 rig 改为**直接抛**(不再静默回退) |
+| 诊断删 | `calib/probe_rig_mount.py`(**整文件删**)、`viz_calib_check` 的 `check_rig_ab.png` 与 `sheet_geometry` 的历史对照、`collect_surround_micro --cam-back legacy` |
+| 标签改名 | `viz_layout_cmp` 的产物标签 `legacy/official` → **`a`/`b`**(它就是用户最初看到并起疑的那张图) |
+| 测试 | 删 5 条 pin legacy 的用例;`_PRODUCERS` 移除 `viz_calib_check`(它不再是六格产出者) |
+
+⚠️ **移除的代价(写进归档,别忘)**:镜像 bug 的**直接对照**以后无法在仓内重跑 ——
+同一失效模式改由 `verify_nus_calib` 十条 / `probe_calib` A0–A6 / `viz_rig_check` 的车体像素判据覆盖
+(它们本来就不依赖 legacy 口径存在)。
+
+### 4.12 【口径注记】`--bev-chunk` 之外:本轮无新增显存/性能结论
 
 `--bev-chunk` 的老结论(分块不降反升)未复跑;在线 SLAM 的同步/异步口径本轮只验证了**同步路径正常**
 (滞后 0 / 丢 0 / 止损 0),**未做 `--slam-async` 对照**。
@@ -402,6 +439,55 @@ python tools/showcase.py --list               # 只列命令
 | `autodrivedata/gs/train_3dgs_mini.py` | **按实卡自取** `TORCH_CUDA_ARCH_LIST`,文档里的 `8.9` 删除(§4.9) |
 | `autodrivedata/traj/assemble_traj_pt.py` | docstring 删掉不存在的 `--map-json`(§4.10) |
 | `tools/carla_server.sh` | `probe_vulkan` 的判据**不再写卡型号**(原写"应列出 RTX 3080 Ti" —— 那是活判据不是历史记录,换卡即失效)。判据改为"有 NVIDIA 设备、不是只剩 llvmpipe" |
+
+### 追加轮(2026-09-28 用户两条追加指示)
+
+| 文件 | 改动 |
+|---|---|
+| `autodrivedata/calib/camera_rig.py` | **新增 `CAMERA_GRID_ROWS`** = 六视角画布行序(2 行×3 列,按方位绕车)。放在这里是因为本模块已是"环视相机 rig 唯一来源",且**纯值**(离线脚本也能引用) |
+| `autodrivedata/sim/live_studio.py` | `GRID_ROWS` 的前两行改为引自 `CAMERA_GRID_ROWS`(**值不变**,只是不再就地写字面量) |
+| `autodrivedata/calib/camera_rig.py` | 另加**取序入口** `camera_grid_rows()` / `camera_grid_order()`(展平版),产出点不再各写一遍过滤/展平 |
+| `autodrivedata/calib/viz_rig_check.py` | 同上;并**订正第二行**:原先 `BACK_LEFT, BACK, BACK_RIGHT` 左右反了 |
+| `autodrivedata/calib/viz_layout_cmp.py` | 由 `sorted()` **字母序 + 一行六列**改为 2×3 + 同一行序;顺带给每格加相机名标签(2×3 之后靠"数第几格"读不出来) |
+| `autodrivedata/map/viz_maptr_pred.py` | `sorted(ds.cam_names)` → `camera_grid_order(...)`。**字母序把后三路排到了第一行**、前一行挤到第二行,且每行内部左右也反 |
+| `autodrivedata/sim/view_stream.py` | `--view grid6` 的列序原来自 `rig_spec` 字典序(`F, FL, FR, B, BL, BR`)→ 改用取序入口 |
+| `autodrivedata/calib/viz_calib_check.py` | `check_rig_ab.png` 原按 `for name in NUS_CAMERA_RIG` 每 3 个硬切 → 改用取序入口 |
+| `autodrivedata/calib/probe_calib.py` | `overlay.png` 列序改用取序入口;**形状由 2 列×3 行改为 3 列×2 行** |
+| `tests/calib/test_rigviz.py` | 新增 `TestCameraGridRows` 3 条:①行优先必须是**绕车的方位扫描**(间隔 ≤120°);②七个产出者**必须真 import 单一定义**(AST 查 import,不是文本匹配);③呈现层禁 `sorted(相机集合)` |
+| `tests/calib/test_viz_layout_cmp.py` | 新增 `TestTileGrid`:六路染**互不相同的纯色**,逐格采样断言 (r,c) 格 = 该行第 c 路 —— 顺带把画布形状钉成 2×3 |
+
+**这条的性质**:不是"新约定",而是**把各处绘制对齐到已有的用户口径** —— `live_studio.GRID_ROWS` 本来就是
+`左前/前/右前 + 右后/后/左后`,连注释都写着同一理由("不沿用字典序,那样第二行会变成左后/右后与地理直觉相反")。
+真正的问题是它被**抄成了七份,其中四处是错的**。现在七处同源。
+
+**七处产出点全部逐格复核**(不靠目检:裁格内标签到原生像素,或按图内容与源图做匹配):
+
+| 产出点 | 形状 | 验证 |
+|---|---|---|
+| `sim/live_studio.py`(定义源头) | 3×2 + 第三层 | 既有测试 pin |
+| `calib/viz_rig_check.py` `views_{rig}.png` | 3×2 + 方位尺 | 裁标签(两代 rig 各跑一遍) |
+| `calib/viz_layout_cmp.py` | 3×2 | 逐格纯色采样 + 裁标签 |
+| `map/viz_maptr_pred.py` | 3×2 + BEV 面板 | 逐格与源图 MAE 匹配:命中 1.2–4.3 vs 次近 46–59(≈15× 分离) |
+| `calib/viz_calib_check.py` `check_rig_ab.png` | 3×2 | 裁标签 |
+| `calib/probe_calib.py` `overlay.png` | 3×2 | 裁标签 |
+| `sim/view_stream.py --view grid6` | 3×2 | 裁标签 |
+
+> ⚠️ **两个判据都踩过,值得记** —— 都是"我以为它抓得住,实测抓不住":
+>
+> 1. **恒真的断言**:初版把"行优先必须是**严格递减**的方位序列"写成断言 —— 那是**恒真**的
+>    ("减到 ≤ 前一个为止"这个解缠 `while` 对**任何**输入都产出严格递减序列),把第二行左右对调
+>    它**照样绿**(实测确认)。真正有区分度的是**相邻间隔**:正确顺序实测最大 **71.3°**,对调后跳到
+>    **195.0°/288.7°**、字母序 **248.9°** —— 取 120° 作界,三方都离得很远。
+> 2. **文本匹配被注释骗过**:"产出者必须引用单一定义"初版是 `tok in 源码` 的裸字符串查,把 import
+>    与调用一起删掉、只在注释里留一句 `camera_grid_order`,它**照样绿**。改成 **AST 查真实 import** 才抓住。
+>
+> **"我加的断言能抓住目标缺陷"必须实测,不能假定。** 两条钉现在都有实测红证(sort 版报
+> `map/viz_maptr_pred.py:91 sorted(ds.cam_names)`;删 import 版报 `已 import 到的:['argparse','json','time','torch']`)。
+>
+> ⚠️ **一条不该改的地方**(查过才没动):`map/maptr/dataset.py` 的 `self.cam_names = sorted(...)` 看着像同一个
+> bug,但它是**数据序不是画布序** —— 那个 dict 顺序喂给 GKT,只在"两台相机深度恰好相等"的并列 BEV 像素上
+> 决定谁胜(GKT 用 `d < best_d` 严格取先到者);改它等于动那批像素的裁决。画布序该在**呈现点**换,
+> 这条已写进回归钉的判据边界里。
 | `docs/acceptance-2026-09-28.md` | §4.4/§4.5/§4.7/§4.9/§4.10 更新;§4.7 含**对本文初版的订正** |
 
 > **未提交任何东西**(项目纪律:不自动提交)。

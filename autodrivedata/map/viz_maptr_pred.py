@@ -23,8 +23,9 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageDraw
 
+from autodrivedata.calib.camera_rig import camera_grid_order
 from autodrivedata.map.maptr.dataset import MAPTR_CLASSES, MapTRDataset
-from autodrivedata.map.maptr.variants import load_map_model
+from autodrivedata.map.maptr.variants import load_map_model, read_map_meta
 from autodrivedata.map.mapviz import (
     GT_COLOR,
     PRED_COLOR,
@@ -74,8 +75,15 @@ def main() -> None:
         dev = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
         infos = json.loads(Path(args.infos).read_text(encoding="utf-8"))
         frames = list(range(args.start, min(args.start + args.frames, len(infos))))
-        ds = MapTRDataset(infos, args.root, frames=frames)
-        print(f"[data] {len(frames)} 帧 × {len(ds.cam_names)} 相机,设备 {dev}")
+        # ★ 时序窗口**从 checkpoint 自带的元信息读**,不给 CLI 开关:窗口是**结构**的一部分
+        # (fusion 模块按它构造),调用方指定错了就是"拿单帧喂时序模型"。
+        # 2026-09-29 实测:原先恒 window=1,按时序权重会**响亮报错**
+        # `模型是时序版(window=3),但只收到单帧图像` —— 好过静默跑错,但 viz 因此出不了图。
+        window = int(read_map_meta(args.ckpt).get("model_kwargs", {}).get("temporal_window", 1) or 1)
+        ds = MapTRDataset(infos, args.root, frames=frames, window=window)
+        if ds.dropped:
+            print(f"[data] 窗口 {window} 丢弃 {len(ds.dropped)} 帧(前驱不在本次帧集内)")
+        print(f"[data] {len(ds)} 帧 × {len(ds.cam_names)} 相机,设备 {dev},时序窗口 {window}")
 
         # 结构由 checkpoint 自带(变体/参数);显式指定会拿错结构,故不给开关
         model, meta = load_map_model(args.ckpt, dev)
@@ -84,12 +92,22 @@ def main() -> None:
 
         out_dir = project_path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        cam_names = sorted(ds.cam_names)
+        # 画布行序走**唯一取序入口**(`camera_rig.camera_grid_order`)。原先这里是
+        # `sorted(ds.cam_names)` —— 字母序把后三路排到了 `_collage` 的**第一行**、
+        # 前一行挤到第二行,且每行内部左右也是反的(2026-09-28 实测)。
+        cam_names = camera_grid_order(ds.cam_names)
         with torch.no_grad():
             for i, item in enumerate(ds):
                 t0 = time.perf_counter()
-                images = {n: t[None].to(dev) for n, t in item["images"].items()}
-                out, _ = model(images, item["pose"][None].to(dev), ds.calibs)
+                # window=1 → images 是字典、pose 是单帧;window=K>1 → images 是**列表**(旧 → 新 K 帧)、
+                # pose 是 `poses`。两种契约都要认(`eval_maptr` 同款分支 —— 那是唯一的另一处消费方)。
+                if isinstance(item["images"], list):
+                    images = [{n: t[None].to(dev) for n, t in f.items()} for f in item["images"]]
+                    pose_in = item["poses"][None].to(dev)
+                else:
+                    images = {n: t[None].to(dev) for n, t in item["images"].items()}
+                    pose_in = item["pose"][None].to(dev)
+                out, _ = model(images, pose_in, ds.calibs)
                 logits = out["pred_logits"][0].float()
                 pts = out["pred_points"][0].float().cpu().numpy()
                 scores = torch.sigmoid(logits).cpu().numpy()
@@ -101,8 +119,14 @@ def main() -> None:
                 n_pred = sum(len(p) for p in preds)
                 n_gt = sum(len(g) for g in item["gt"])
 
-                eg = infos[frames[i]]["ego2global"]
-                info_cams = infos[frames[i]]["cams"]
+                # **必须走 `ds.infos[i]` 而不是 `infos[frames[i]]`**:window>1 时
+                # `history_windows` 会丢掉拿不到完整历史的帧,`ds` 的下标与 `frames` 就**错位**了
+                # (实测:窗口 3 且只取 3 帧时,唯一留下的样本是第 3 帧,按 frames[i] 取会画错帧)。
+                # `ds.infos[i]` 两种窗口下都是该样本自己的帧记录。
+                rec = ds.infos[i]
+                fid = int(rec["frame"])
+                eg = rec["ego2global"]
+                info_cams = rec["cams"]
                 cells: list[tuple[str, Image.Image]] = []
                 n_seg = 0
                 for name in cam_names:
@@ -119,19 +143,17 @@ def main() -> None:
 
                 canvas = _collage(
                     cells,
-                    bev_panel(
-                        preds, item["gt"], f"frame {frames[i]} pred {n_pred} / gt {n_gt}", (_BEV_W, _BEV_H)
-                    ),
+                    bev_panel(preds, item["gt"], f"frame {fid} pred {n_pred} / gt {n_gt}", (_BEV_W, _BEV_H)),
                 )
-                path = out_dir / f"frame_{frames[i]:04d}.png"
+                path = out_dir / f"frame_{fid:04d}.png"
                 canvas.save(path)
                 print(
                     f"[viz] {path.name} pred {n_pred} / gt {n_gt} / 段 {n_seg} ({time.perf_counter() - t0:.1f}s)"
                 )
                 # 逐帧一行:`n_seg`(投到画面上的**线段数**)是"图看着画出来了"与
                 # "投影真落了位"的分界 —— 前者不构成投影正确的证据,后者才是。
-                rl.metric(frames[i], frame=frames[i], n_pred=n_pred, n_gt=n_gt, n_seg=n_seg)
-        rl.highlight("n_frames", len(frames))
+                rl.metric(fid, frame=fid, n_pred=n_pred, n_gt=n_gt, n_seg=n_seg)
+        rl.highlight("n_frames", len(ds))
         rl.highlight("score_thr", args.score_thr)
         rl.highlight("start", args.start)
         rl.artifact_dir(out_dir, "viz-collage")

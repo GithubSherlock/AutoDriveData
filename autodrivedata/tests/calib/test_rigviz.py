@@ -226,3 +226,129 @@ class TestRulerLanes:
         img = vrc.ruler_image(rig, self.WIDTH)
         for name, col in CAM_COLOR.items():
             assert _mask(img, col).sum() > 0, f"{name} 的泳道没画出来"
+
+
+class TestCameraGridRows:
+    """六视角画布行序:**单一来源 + 几何自洽**(2026-09-28 用户口径)。
+
+    **实际故障**:三处六视角图各写一份行序 —— `live_studio`(实时拼图)是对的,
+    `viz_rig_check`(六视角实拍)第二行**左右写反了**、`viz_layout_cmp`(布局对照)干脆是
+    `sorted()` 的字母序 + 一行六列。同一辆车、同一个方位,三张图三种读法。
+
+    **判据不看图,也不写死顺序**:顺序由 `camera_azimuth_nus` **算出来**验 ——
+    行优先读下去是一段**方位扫描**,相邻两格是"绕车走到下一路",故**间隔必须小**。
+
+    ⚠️ **判据的选择本身踩过一次**:初版写成"解缠后必须严格递减",那是**恒真**的 ——
+    "减到 ≤ 前一个为止"这个 while 对**任何**输入都产出严格递减序列,于是把第二行左右
+    对调它照样绿(实测确认过)。真正有区分度的是**间隔**:按 `ABS_GAP_LIMIT_DEG` 判,
+    正确顺序实测最大间隔 **71.3°**,而对调后会跳到 **195°/289°**,两头都远离上限。
+    方位是模 360 的,故解缠(整体减圈)仍要做,只是它只用来算间隔,不再当断言。
+    """
+
+    # 相邻两格的方位间隔上限。6 路绕车一圈 ⇒ 平均间隔 60°,取 2× 平均 = 120° 作界。
+    # 实测:正确顺序 max 71.3°;`viz_rig_check` 旧的错序(第二行左右反)跳到 195.0°;
+    # `viz_layout_cmp` 旧的字母序跳到 248.9° —— 三方都离 120° 很远,判据不脆。
+    ABS_GAP_LIMIT_DEG = 120.0
+
+    def test_row_major_order_is_a_continuous_azimuth_sweep(self):
+        from autodrivedata.calib.camera_rig import CAMERA_GRID_ROWS
+
+        flat = [c for row in CAMERA_GRID_ROWS for c in row]
+        assert len(flat) == 6 and len(set(flat)) == 6, f"六路必须不重不漏: {flat}"
+
+        seq: list[float] = []
+        for cam in flat:
+            a = camera_azimuth_nus(cam)
+            while seq and a > seq[-1]:  # 模 360:解缠到掉头前的同一圈
+                a -= 360.0
+            seq.append(a)
+
+        gaps = [b - a for a, b in zip(seq, seq[1:], strict=False)]
+        assert all(abs(g) <= self.ABS_GAP_LIMIT_DEG for g in gaps), (
+            "行优先顺序不是绕车的方位扫描 —— 格与格之间跳太远(第二行左右可能被对调):\n  "
+            + " → ".join(f"{c} {v:+.1f}°" for c, v in zip(flat, seq, strict=True))
+            + f"\n  实测间隔 {[round(g, 1) for g in gaps]},上限 ±{self.ABS_GAP_LIMIT_DEG}°"
+        )
+
+    #: 全部**产出六视角图**的模块(相对包根)。新增产出者请加进来 —— 下一条钉按它扫,
+    #: 再下一条(禁 `sorted(相机集合)`)可独立兜住漏网的,两条互为补充。
+    _PRODUCERS = (
+        "calib/viz_rig_check.py",  # 六视角实拍图 views_{rig}.png
+        "calib/viz_layout_cmp.py",  # 布局对照 {legacy,official}_frame*.png
+        "calib/probe_calib.py",  # 残差 overlay.png(每帧一行六格)
+        "map/viz_maptr_pred.py",  # 预测回投 6 相机 + BEV
+        "sim/view_stream.py",  # --view grid6
+        "sim/live_studio.py",  # 8 路 studio 的拼图槽
+    )
+    _SINGLE_SOURCE = ("CAMERA_GRID_ROWS", "camera_grid_order", "camera_grid_rows")
+
+    def test_every_six_view_producer_uses_the_single_source(self):
+        """每个产出六视角图的模块都**必须真的 import 单一定义** —— 不许各写一份行序。
+
+        **判据走 AST 而不是文本匹配**:初版是 `tok in src` 的裸字符串查,结果**注释里提一句**
+        `camera_grid_order` 就能把它骗过(实测:把 import 与调用一起删掉、只留注释,它照样绿)。
+        """
+        import ast
+        from pathlib import Path
+
+        pkg = Path(vrc.__file__).resolve().parents[1]
+        missing = []
+        for rel in self._PRODUCERS:
+            imported: set[str] = set()
+            for node in ast.walk(ast.parse((pkg / rel).read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("camera_rig"):
+                    imported |= {a.name for a in node.names}
+                elif isinstance(node, ast.Import):
+                    imported |= {a.name.rsplit(".", 1)[-1] for a in node.names}
+            if not (imported & set(self._SINGLE_SOURCE)):
+                missing.append(f"{rel}(import 到的:{sorted(imported) or '无'})")
+        assert not missing, (
+            "这些模块产出六视角图却没 import camera_rig 的单一定义(又自己写了一份行序?):\n  "
+            + "\n  ".join(missing)
+        )
+
+    #: **呈现层**之外允许对相机名排序的地方。不是"图省事的白名单",是一条**语义区分**:
+    #: `map/maptr/` 是模型/数据层,那里的相机集顺序是**数据契约**(喂给 GKT 的 dict 顺序,
+    #: 只在"两台相机深度恰好相等"的并列像素上决定谁胜 —— GKT 用 `d < best_d` 严格取先到者)。
+    #: 从图层要的是**画布序**,两者不是一回事;把数据序也改成画布序会动到那批并列像素的裁决。
+    _DATA_LAYER = "maptr/"
+
+    def test_no_presentation_module_sorts_a_camera_name_collection(self):
+        """**根因钉**:呈现层不许 `sorted(<相机名集合>)`(不带 `key` 的字母序)。
+
+        这正是当初两处的写法 —— `viz_maptr_pred` 的 `sorted(ds.cam_names)` 与
+        `viz_layout_cmp` 的 `sorted(rec["cams"])`。字母序 `BACK, BACK_LEFT, BACK_RIGHT,
+        FRONT, ...` 按 3 列切出来,第一行全是后相机、第二行全是前相机,且每行内部左右也反。
+
+        **两条边界**(都不是放宽,是判据要分清对象):
+        - 带 `key=` 的排序不在此列 —— 那是按某个量排(如 `viz_rig_check` 按方位角排覆盖表),
+          与"字母序当画布序用"是两回事;
+        - `map/maptr/` 排除,理由见上方 `_DATA_LAYER`。
+
+        比"逐个模块查引用"更抗腐:换个变量名、换个模块,只要还在对相机名做字母序排序就会被抓。
+        """
+        import ast
+        from pathlib import Path
+
+        pkg = Path(vrc.__file__).resolve().parents[1]
+        offenders = []
+        for src in sorted(pkg.rglob("*.py")):
+            rel = str(src.relative_to(pkg))
+            if "__pycache__" in src.parts or "ipynb_checkpoints" in str(src) or "tests" in src.parts:
+                continue
+            if self._DATA_LAYER in rel:
+                continue
+            for node in ast.walk(ast.parse(src.read_text(encoding="utf-8"))):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                    continue
+                if node.func.id != "sorted" or not node.args:
+                    continue
+                if any(kw.arg == "key" for kw in node.keywords):  # 按量排 ≠ 字母序
+                    continue
+                if "cam" not in ast.unparse(node.args[0]).lower():
+                    continue
+                offenders.append(f"{rel}:{node.lineno}  {ast.unparse(node)}")
+        assert not offenders, (
+            "对相机名集合做字母序排序 = 拿字母序当画布序(第二行会左右相反)。"
+            "呈现层改用 `camera_rig.camera_grid_order(...)`:\n  " + "\n  ".join(offenders)
+        )

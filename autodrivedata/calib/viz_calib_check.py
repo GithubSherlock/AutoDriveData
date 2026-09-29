@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""标定修正的人工复核图:三张**把判据数字烧进画面**的拼图(自证,不是装饰)。
+"""标定修正的人工复核图:两张**把判据数字烧进画面**的拼图(自证,不是装饰)。
 
 `autodrivedata/calib/probe_calib.py` 的结论是纯数值的(A0–A6 → `report.json`),它只落一张
-`overlay.png`。本脚本补齐"人能对着看"的三张,每张都携带**它自己编码的数字**,
+`overlay.png`。本脚本补齐"人能对着看"的两张,每张都携带**它自己编码的数字**,
 故看图 ≈ 读判据:
 
 | 图 | 编码什么 | 怎么看 |
 |---|---|---|
 | `check_raw.png` / `check_overlay.png` | **同一帧**的 raw 与残差 overlay | 绿点铺满路面/墙面且几乎无红点 = 外参与内参自洽;两张逐像素差 = **去重后的像素数**(≤ 采样点数,差 = 两点落到同一像素的碰撞数) |
-| `check_rig_ab.png` | 同一 ego、同一批锥体,`nuscenes`(修正后)vs `legacy`(历史镜像) | **左方那个锥出现在哪一路**:修正后必是 `*_LEFT`,历史版跑到 `*_RIGHT` —— 镜像一眼可见 |
-| `check_geometry.png` | 官方方位角 → 修正 yaw 的极坐标图 + 历史字面值对比 + 像素约定读数 | 实线(修正)与淡线(历史)在四个侧/后相机上张开 = 镜像;前/后相机两线重合 = 它长期没暴露的原因 |
+| `check_geometry.png` | **当前** rig 的官方方位角 → yaw 极坐标轮 + 逐相机数字表 + 像素约定读数 | 数字全由 `camera_rig` 现算,与 `verify_nus_calib` 判据①同源 |
+
+⚠️ **原第三张 `check_rig_ab.png` 已于 2026-09-28 删除**:它拿 `nuscenes` 与 `legacy` 并排,
+是"镜像 bug 已修"的目视证据 —— 而 `legacy` 口径本身已按用户裁决移除。那份证据冻结在
+[docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md)(图 `assets/legacy-rig/`)。
 
 格式沿用 §P-L.6 的约定:一律 `live_common.compose_rows` **原生像素**拼图,不缩放、不裁剪,
 标签画在格**内**(不额外占画布高度)。
@@ -35,35 +38,21 @@ from PIL import Image, ImageDraw
 from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
 from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.calib.probe_calib import (
-    WORLD_DIRS,
     H,
     SensorRig,
     W,
     clean_world,
-    decode_instance,
     depth_residuals,
     draw_residuals,
     lidar_world_points,
-    place_cone_along,
     world_planes,
 )
+from autodrivedata.gt.export.nuscenes import NUS_CAMERA_FOV
 from autodrivedata.sim.carla_common import CAM_ATTRS, loc, spawn_ego, sync_mode
-from autodrivedata.sim.live_common import RIG_LEGACY, RIG_NUSCENES, compose_rows, image_to_pil, rig_spec
+from autodrivedata.sim.live_common import compose_rows, image_to_pil, rig_spec
 from autodrivedata.utils import fonts
 from autodrivedata.utils.geometry import quat_normalize, quat_to_matrix
 from autodrivedata.utils.paths import project_path
-
-# 历史字面值(修前的 `autodrivedata/sim/collect_surround.py:SURROUND_CAMS`,已随本次修正删除)——
-# 官方方位角被**原样抄成正数**,漏了 `yaw_carla = −az_nus`。列在此处只为让复核图能并排显示
-# "当时写的"与"应该写的";真值一律来自 `autodrivedata/camera_rig.py`。
-HISTORICAL_YAW: dict[str, float] = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 108.6,
-    "CAM_BACK_RIGHT": -110.8,
-}
 
 CAM_COLOR: dict[str, tuple[int, int, int]] = {
     "CAM_FRONT": (255, 255, 255),
@@ -132,7 +121,14 @@ def _az_nus(name: str) -> float:
 
 
 def sheet_geometry(report: dict[str, Any] | None) -> Image.Image:
-    """官方方位角 → 修正 yaw 的极坐标图 + 历史字面值对比 + 像素约定读数。"""
+    """**当前**环视 rig 的方位布局裁决:官方方位角 → yaw 的极坐标轮 + 逐相机数字表 + 像素约定读数。
+
+    全部数字由 `autodrivedata/camera_rig.py` 现算,不手抄。
+
+    ⚠️ **2026-09-28**:本图原先还叠一层「修正值 vs 历史字面值」的镜像对照 —— 那依赖
+    已移除的 `legacy` 口径。镜像证据已冻结在 [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md)
+    (图 `assets/legacy-rig/mirror-polar.png`),本图回归它本来的职责:**当前** rig 的几何自证。
+    """
     cw, ch = 1600, 900
     img = Image.new("RGB", (cw, ch), (18, 18, 22))
     d = ImageDraw.Draw(img)
@@ -140,7 +136,7 @@ def sheet_geometry(report: dict[str, Any] | None) -> Image.Image:
         img,
         [
             "check_geometry — 环视 rig 几何裁决(全部数字由 autodrivedata/camera_rig.py 现算)",
-            "实线 = 修正后(camera_rig.NUS_CAMERA_RIG)  淡线 = 历史字面值(修前 collect_surround.SURROUND_CAMS)",
+            "逐相机:官方方位角 az_nus → CARLA 口径 yaw = −az_nus(见 geometry.carla_yaw_to_nus_yaw)",
         ],
         xy=(16, 14),
         size=24,
@@ -166,9 +162,6 @@ def sheet_geometry(report: dict[str, Any] | None) -> Image.Image:
         ox, oy = _dir_px(az, r * 0.94)
         d.line([cx, cy, cx + ox, cy + oy], fill=col, width=5)
         d.ellipse([cx + ox - 8, cy + oy - 8, cx + ox + 8, cy + oy + 8], fill=col)
-        # 历史字面值:淡线(同一个名字当时指向哪)
-        hx, hy = _dir_px(-HISTORICAL_YAW[name], r * 0.94)  # 历史值当 yaw_carla 用 → az = −yaw
-        d.line([cx, cy, cx + hx, cy + hy], fill=tuple(int(v * 0.45) for v in col), width=2)
         lx, ly = cx + ox * 1.10, cy + oy * 1.10
         fonts.draw_text(d, (lx - 8, ly - 10), name.replace("CAM_", ""), size=19, fill=col)
         fonts.draw_text(d, (lx - 8, ly + 10), f"{az:+.1f}°", size=17, fill=tuple(int(v * 0.8) for v in col))
@@ -185,18 +178,22 @@ def sheet_geometry(report: dict[str, Any] | None) -> Image.Image:
     fonts.draw_text(
         d,
         (tx, ty - 34),
-        "镜像判据:历史值 = 官方方位角原样抄成正数(漏 yaw_carla = −az_nus)",
+        "口径:yaw_carla = −az_nus(漏翻号 = 四个侧/后相机左右镜像 —— 成因与图见 docs/legacy-rig-archive.md)",
         size=tsize,
         fill=(230, 230, 230),
     )
-    heads = ["相机", "官方 az_nus", "修正 yaw", "历史字面", "原始差(不 wrap)"]
-    aligns = ["l", "r", "r", "r", "r"]  # 名称左对齐,数值右对齐(按各自列宽推右缘)
+    heads = ["相机", "官方 az_nus", "yaw_carla", "±FoV/2(度)"]
+    aligns = ["l", "r", "r", "r"]  # 名称左对齐,数值右对齐(按各自列宽推右缘)
     rows: list[tuple[list[str], str, float]] = []
     for name in NUS_CAMERA_RIG:
         yaw = NUS_CAMERA_RIG[name][1][1]
-        hist = HISTORICAL_YAW[name]
-        raw = abs(hist - yaw)  # **不 wrap**:217.2° 折成 142.8° 就看不出"镜像"了
-        rows.append(([name, f"{_az_nus(name):+.3f}", f"{yaw:+.3f}", f"{hist:+.1f}", f"{raw:.1f}"], name, raw))
+        rows.append(
+            (
+                [name, f"{_az_nus(name):+.3f}", f"{yaw:+.3f}", f"±{NUS_CAMERA_FOV[name] / 2:.2f}"],
+                name,
+                abs(yaw),
+            )
+        )
     col_w = [
         max([fonts.width(heads[i], tsize)] + [fonts.width(r[0][i], tsize) for r in rows])
         for i in range(len(heads))
@@ -326,7 +323,7 @@ def pass_residual_pair(rig: SensorRig, args: argparse.Namespace):
     return raw_img, over_img, stats
 
 
-# ---------------------------------------------------------------- 图 2:legacy vs nuscenes
+# ---------------------------------------------------------------- rig 构建 / 采集
 
 
 def build_rig(
@@ -375,95 +372,6 @@ def destroy_rig(world: carla.World, sensors: dict[str, tuple[carla.Sensor, queue
         world.tick()
 
 
-def pass_rig_ab(world: carla.World, ego: carla.Vehicle) -> tuple[Image.Image, dict[str, Any]]:
-    """同一 ego、同一批锥体:两代 rig 各拍一遍 → 锥落在哪一路 = 镜像的直接证据。"""
-    ego_loc = loc(ego.get_transform())
-    cones: list[tuple[str, carla.Actor]] = []
-    for direction, dv in WORLD_DIRS.items():
-        actor = place_cone_along(world, ego_loc, dv)[0]
-        if actor is None:
-            print(f"  ✗ {direction} 锥摆不进去(碰撞),该方向跳过")
-            continue
-        cones.append((direction, actor))
-    print(f"[rig A/B] 锥体就位 {len(cones)}/{len(WORLD_DIRS)}:{[c[0] for c in cones]}")
-
-    result: dict[str, Any] = {"cone_dirs": [c[0] for c in cones]}
-    for rig in (RIG_NUSCENES, RIG_LEGACY):
-        sensors = build_rig(world, ego, rig)
-        frames = capture_rig(world, sensors)
-        yaws = {
-            k.split(":", 1)[1]: sensors[k][0].get_transform().rotation.yaw
-            for k in sensors
-            if k.startswith("rgb:")
-        }
-        inst = {
-            n: decode_instance(frames[f"instance_segmentation:{n}"].raw_data, H, W) for n in NUS_CAMERA_RIG
-        }
-        rgb = {n: image_to_pil(frames[f"rgb:{n}"]) for n in NUS_CAMERA_RIG}
-        seen = {n: {dd: int((inst[n] == a.id).sum()) for dd, a in cones} for n in NUS_CAMERA_RIG}
-        result[rig] = {"mounted_yaw_deg": yaws, "cone_px": seen, "images": rgb}
-        print(f"\n[rig A/B] rig={rig}(实挂 yaw 从 CARLA 读回,已 tick)")
-        for n in NUS_CAMERA_RIG:
-            hits = {dd: px for dd, px in seen[n].items() if px >= 8}
-            print(f"  {n:<17} 实挂 yaw {yaws[n]:>+8.3f}°  看见锥 {hits if hits else '(无)'}")
-
-    destroy_rig(world, sensors)
-    for a in (c[1] for c in cones):
-        a.destroy()
-
-    # 拼图:每格 = nuscenes 在上 / legacy 在下(同名字、同锥、同 ego)
-    rows: list[list[tuple[str, Image.Image]]] = []
-    row: list[tuple[str, Image.Image]] = []
-    for name in NUS_CAMERA_RIG:
-        nu = result[RIG_NUSCENES]["images"][name]
-        lg = result[RIG_LEGACY]["images"][name]
-
-        def cone_txt(rig: str, cam: str = name) -> str:
-            hits = {dd: px for dd, px in result[rig]["cone_px"][cam].items() if px >= 8}
-            return "锥 " + (", ".join(f"{dd}:{px}px" for dd, px in hits.items()) if hits else "无")
-
-        stamp(
-            nu,
-            [
-                f"{name}  nuscenes(修正后)  实挂 yaw {result[RIG_NUSCENES]['mounted_yaw_deg'][name]:+.2f}°",
-                cone_txt(RIG_NUSCENES),
-            ],
-            color=(180, 255, 180),
-            size=20,
-        )
-        stamp(
-            lg,
-            [
-                f"{name}  legacy(历史镜像)  实挂 yaw {result[RIG_LEGACY]['mounted_yaw_deg'][name]:+.2f}°",
-                cone_txt(RIG_LEGACY),
-            ],
-            color=(255, 170, 170),
-            size=20,
-        )
-        border(nu, (0, 200, 0), 3)
-        border(lg, (220, 0, 0), 3)
-        tile = Image.new("RGB", (nu.width, nu.height + lg.height), (0, 0, 0))
-        tile.paste(nu, (0, 0))
-        tile.paste(lg, (0, nu.height))
-        row.append((name, tile))
-        if len(row) == 3:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    img = compose_rows(rows)
-    stamp(
-        img,
-        [
-            "check_rig_ab — 同一 ego、同一批锥体,只变 rig 口径(上绿框 = nuscenes 修正后 / 下红框 = legacy 历史镜像)",
-            "判据:世界的**左**方锥只该出现在 *_LEFT;历史镜像版把它放进 *_RIGHT(反之亦然)",
-        ],
-        size=24,
-    )
-    del result[RIG_NUSCENES]["images"], result[RIG_LEGACY]["images"]  # 图已拼进画布,别留在报告里
-    return img, result
-
-
 # ---------------------------------------------------------------- 主流程
 
 
@@ -474,9 +382,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sim-port", type=int, default=2000)
-    ap.add_argument(
-        "--skip-rig-ab", action="store_true", help="跳过 legacy/nuscenes A/B(省一次 12 相机 spawn)"
-    )
+    ap.add_argument()
     args = ap.parse_args()
 
     out = project_path(args.out)
@@ -515,18 +421,15 @@ def main() -> int:
     summary["a3"] = a3
     print(f"[viz] check_raw.png / check_overlay.png {raw_img.width}×{raw_img.height}")
 
-    # ---- 图 2:rig A/B ----
-    if not args.skip_rig_ab:
-        ab_img, ab = pass_rig_ab(world, ego)
-        ab_img.save(out / "check_rig_ab.png")
-        summary["rig_ab"] = ab
-        print(f"[viz] check_rig_ab.png {ab_img.width}×{ab_img.height}")
+    # ⚠️ **图 2「rig A/B」已于 2026-09-28 删除**:它拿 `nuscenes` 与已移除的 `legacy` 并排,
+    # 是"镜像 bug 已修"的目视证据。证据已冻结在 docs/legacy-rig-archive.md
+    # (图 assets/legacy-rig/mirror-ab-views.png),不再由本脚本产出。
 
     ego.destroy()
     world.apply_settings(carla.WorldSettings())
     with open(out / "viz_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1, ensure_ascii=False)
-    print(f"\n[done] {out}/check_{{geometry,raw,overlay,rig_ab}}.png + viz_summary.json")
+    print(f"\n[done] {out}/check_{{geometry,raw,overlay}}.png + viz_summary.json")
     print("[done] 服务器已恢复异步")
     return 0
 

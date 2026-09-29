@@ -96,7 +96,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.calib import calib_live as cl
 from autodrivedata.calib import selfcheck as sc
-from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG
+from autodrivedata.calib.camera_rig import NUS_CAMERA_CALIBS, NUS_CAMERA_RIG, camera_grid_order
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.calib.depth_codec import (
     CONVENTION_CENTER,
@@ -556,7 +556,9 @@ def pass_a3(
         f = frames if i == 0 else rig.capture()
         p = poses if i == 0 else rig.poses()
         row: list[tuple[str, Image.Image]] = []
-        for name in NUS_CAMERA_RIG:
+        # 列序走**唯一取序入口**(`camera_rig.camera_grid_order`)。原先遍历 `NUS_CAMERA_RIG`
+        # = `F, FL, FR, B, BL, BR`,六格摆出来的左右关系与其它六视角图对不上(2026-09-28)。
+        for name in camera_grid_order(NUS_CAMERA_RIG):
             d_img = decode_depth(f["depth"][name].raw_data, H, W)
             s = depth_residuals(pts, nrm, offs, p[name], d_img, args.edge_radius_px)
             per_cam[name].append(s)
@@ -567,7 +569,7 @@ def pass_a3(
             )
             if i == args.frames - 1:
                 row.append((name, img))
-                if len(row) == 2:
+                if len(row) == 3:  # 与全仓六视角约定同形:**3 列 × 2 行**(曾是 2 列 × 3 行)
                     overlay_rows.append(row)
                     row = []
 

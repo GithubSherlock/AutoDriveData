@@ -40,6 +40,9 @@ LAYER_RULES: dict[str, frozenset[str]] = {
     "slam": _PURE,  # SLAM 纯值部分
     "export": _PURE,  # 落盘(kitti / nuscenes)
     "calib": _CARLA_OK,  # 标定:探针要连 CARLA,但不需要 GPU
+    # 运行时设备/显存/批量超参:**跨能力面**的 torch 工具。放 utils/ 不行(那层 _PURE),
+    # 放 map/maptr/ 又把通用工具挂在了地图能力下 ⇒ 单独立档(2026-09-29 用户裁决)。
+    "runtime": _TORCH_OK,
     "perception": _TORCH_OK,
     "traj": _TORCH_OK,
     "gs": _TORCH_OK,

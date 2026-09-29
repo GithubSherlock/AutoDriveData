@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from autodrivedata.calib.camera_rig import camera_grid_order, camera_grid_rows
 from autodrivedata.map.mapvec import MAPTR_CLASSES
 from autodrivedata.map.mapviz import (
     GT_COLOR,
@@ -31,6 +32,7 @@ from autodrivedata.map.mapviz import (
     intrinsics_from_k,
     project_lines,
 )
+from autodrivedata.utils import fonts
 
 
 def _gt_lines_for(infos: dict, idx: int) -> list[np.ndarray]:
@@ -44,8 +46,8 @@ def _gt_lines_for(infos: dict, idx: int) -> list[np.ndarray]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--a", required=True, help="布局 A micro root(旧 235/125)")
-    ap.add_argument("--b", required=True, help="布局 B micro root(官方 108.6/-110.8)")
+    ap.add_argument("--a", required=True, help="布局 A micro root(如 outputs/surround_micro_a)")
+    ap.add_argument("--b", required=True, help="布局 B micro root(如 outputs/surround_micro_b)")
     ap.add_argument("--frame", type=int, default=0, help="对比帧")
     ap.add_argument("--out", default="outputs/viz_layout_cmp", help="拼图输出目录")
     args = ap.parse_args()
@@ -58,7 +60,10 @@ def main() -> None:
     # (2026-09-28 实测:按 docstring 重采到别处再 `--a/--b` 指过去,数值表照出、读图必
     # `FileNotFoundError`)。与「硬编码源码路径常量」是同一类失效(见 docs/refactor-2026-09.md 阶段 4)。
     tables: list[tuple[str, str, dict, dict]] = []
-    for tag, root in (("legacy", args.a), ("official", args.b)):
+    # 标签只用于产物文件名:a = `--a` / b = `--b`。**别用 legacy/official 当标签** ——
+    # 那是已移除的 rig 名,会让人以为这张图还在对照两代标定(2026-09-28 实测:用户看到
+    # `legacy_frame000000.png` 就是这么误会的)。
+    for tag, root in (("a", args.a), ("b", args.b)):
         infos = json.loads((Path(root) / "map_infos.json").read_text(encoding="utf-8"))
         calib = json.loads((Path(root) / "calib.json").read_text(encoding="utf-8"))
         tables.append((tag, root, infos, calib))
@@ -67,7 +72,10 @@ def main() -> None:
     rec = infos_a[args.frame]
     ego = rec["ego2global"]
     gt = _gt_lines_for(infos_a, args.frame)
-    cam_names = sorted(rec["cams"])
+    # 六路顺序走**唯一取序入口**(`camera_rig.camera_grid_order`)。原先这里是
+    # `sorted(rec["cams"])` —— 字母序出 1×6,第二行左右与地理直觉相反,
+    # 且与另几张六视角图读不出是同一套。数值表也按同一顺序打印,便于对着图读。
+    cam_names = camera_grid_order(rec["cams"])
 
     print(f"帧 {args.frame}  ego={tuple(round(v, 3) for v in ego[:4])}  GT {len(gt)} 条折线")
     print(f"{'相机':<18}" + "".join(f"{t:>12}" for t, _, _, _ in tables))
@@ -82,7 +90,7 @@ def main() -> None:
         print(f"{name:<18}" + "".join(f"{v:>12}" for v in row))
 
     for tag, root, infos, calib in tables:
-        canvases = []
+        tiles: dict[str, Image.Image] = {}
         for name in cam_names:
             data_path = Path(root) / name.lower() / f"{args.frame:06d}.png"
             img = Image.open(data_path).convert("RGB")
@@ -91,15 +99,24 @@ def main() -> None:
             intrinsics = intrinsics_from_k(k, (1242, 375))
             pose = cam_pose(infos[args.frame]["ego2global"], calib[name]["sensor2ego"])
             n = draw_projected_lines(draw, gt, ego, pose, intrinsics, GT_COLOR, width=3)
-            canvases.append(img)
+            # 逐格标注:排成 2×3 之后,"哪一格是哪路"不再能靠"一行从左到右数"读出来,必须标。
+            # **文字一律走 fonts**(裸 `d.text` 遇缺字静默画 .notdef 方框);标签压白底 chip,
+            # 直接压画面会与内容撞色(路面/标线里青绿很常见,而 GT 折线正是青绿)。
+            lx, ly, size = 14, 14, 26
+            w = fonts.width(name, size) + 20
+            draw.rectangle([lx - 8, ly - 6, lx + w, ly + size + 10], fill=(255, 255, 255), outline=(0, 0, 0))
+            fonts.draw_text(draw, (lx, ly), name, size, fill=(0, 0, 0))
+            tiles[name] = img
             print(f"  [{tag}/{name}] 投影 GT 段数 = {n}")
-        wsum = sum(c.width for c in canvases)
-        hmax = max(c.height for c in canvases)
-        merged = Image.new("RGB", (wsum, hmax), (0, 0, 0))
-        x = 0
-        for c in canvases:
-            merged.paste(c, (x, 0))
-            x += c.width
+
+        # 2 行 × 3 列(`CAMERA_GRID_ROWS`)。六格同尺寸,故直接按格宽高 paste。
+        rows = [[tiles[c] for c in row if c in tiles] for row in camera_grid_rows(tiles)]
+        rows = [r for r in rows if r]
+        tw, th = rows[0][0].size
+        merged = Image.new("RGB", (tw * max(len(r) for r in rows), th * len(rows)), (0, 0, 0))
+        for ri, row in enumerate(rows):
+            for ci, tile in enumerate(row):
+                merged.paste(tile, (ci * tw, ri * th))
         p = out / f"{tag}_frame{args.frame:06d}.png"
         merged.save(p)
         print(f"[out] {p.resolve()}")

@@ -1,8 +1,13 @@
-"""B1 微采样:官方布局 tiny 段(10 帧)→ 与已采旧布局做「布局对照」微实验。
+"""B1 微采样:官方布局 tiny 段(10 帧)→ 供 `map/assemble_maptr` / `calib/viz_layout_cmp` 等微实验用。
+
+> ⚠️ **它原先的用途(与 `legacy` 旧布局做「布局对照」)已随 legacy 口径一起移除**
+> (2026-09-28,见 [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md))。
+> 现在它就是一个**极小规模**的环视采样器:做投影链 / 组装器 / 可视化改动的冒烟输入,
+> 比跑 400 帧的 `collect_surround` 便宜得多。
 
 用法(CARLA 服务器运行中):
   python -m autodrivedata.sim.collect_surround_micro --out outputs/surround_micro --frames 10 \
-      --cam-back nuscenes --seed <seed>
+      --seed <seed>
 
 默认不 spawn NPC(纯道路 + 地图矢量 overlay 对照,不受车流变量污染);
 ego 固定起点(spawn point 0,Town10HD_Opt)以贴合周围马茨:
@@ -32,39 +37,22 @@ from autodrivedata.utils.paths import project_path
 
 # 官方布局:真值在 `autodrivedata/camera_rig.py`(6DoF,含 pitch/roll)
 NUSCENES_RIG = NUS_CAMERA_RIG
-# 旧布局(镜像 + 共用挂点 + 偏航 235/125)——只用于微对照,不改主采集
-LEGACY_CAMS = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 235.0,
-    "CAM_BACK_RIGHT": 125.0,
-}
-LEGACY_MOUNT = (1.2, 0.0, 1.65)  # 早期 6 路共用挂点
+# ⚠️ 原先这里还有一套 `legacy` 布局(镜像 + 共用挂点 + 偏航 235/125)供"布局对照"。
+# 该口径已于 2026-09-28 按用户裁决移除(见 docs/legacy-rig-archive.md),本采集器只剩官方布局。
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="输出根目录")
     ap.add_argument("--frames", type=int, default=10)
-    ap.add_argument(
-        "--cam-back",
-        choices=("nuscenes", "legacy"),
-        default="nuscenes",
-        help="后相机布局(对照用;nuscenes = 官方 6DoF 标定)",
-    )
     ap.add_argument("--npc", action="store_true", help="spawn NPC(默认不 spawn,纯道路对照)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     args = ap.parse_args()
     args.out = str(project_path(args.out))
 
-    if args.cam_back == "nuscenes":
-        # (平移, (pitch,yaw,roll)) —— CARLA 口径
-        spec: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = dict(NUSCENES_RIG)
-    else:
-        spec = {name: (LEGACY_MOUNT, (0.0, yaw, 0.0)) for name, yaw in LEGACY_CAMS.items()}
+    # (平移, (pitch,yaw,roll)) —— CARLA 口径;真值只有一份(`camera_rig`)
+    spec: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = dict(NUSCENES_RIG)
     cam_names = list(spec)
 
     client = carla.Client(args.host, args.port)

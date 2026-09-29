@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata.calib.camera_rig import coverage_table  # noqa: E402
+from autodrivedata.calib.camera_rig import CAMERA_GRID_ROWS, coverage_table  # noqa: E402
 from autodrivedata.calib.rigviz import (  # noqa: E402
     CAM_COLOR,
     CAM_SHORT,
@@ -53,11 +53,12 @@ RULER_H = 300
 EGO_TINT = (255, 0, 200)  # 车体像素染色:只要非 0 就一定扎眼
 
 # 拼图行序**不沿用 `SURROUND_CAMS` 字典序**(§P-L.6 的教训:字典序会把后三路打乱成
-# 一眼读不出的顺序)。按"前三个 / 后三个"排,与俯视图上的左右关系一致。
-GRID_ROWS: list[list[str]] = [
-    ["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"],
-    ["CAM_BACK_LEFT", "CAM_BACK", "CAM_BACK_RIGHT"],
-]
+# 一眼读不出的顺序)。引自 `camera_rig.CAMERA_GRID_ROWS`(六视角行序的**唯一来源**)。
+#
+# ⚠️ **2026-09-28 订正**:这里原先就地写的是 `BACK_LEFT, BACK, BACK_RIGHT` —— 第二行
+# **左右反了**,与 `live_studio.GRID_ROWS`(用户口径)不一致;同一张车、同一个方位,
+# 实时拼图和离线实拍图的第二行左右互换,看图的人会读错。行序现由 `camera_rig` 单点提供。
+GRID_ROWS: list[list[str]] = [list(row) for row in CAMERA_GRID_ROWS]
 
 _COVERAGE_CACHE: dict[str, dict[str, Any]] = {}
 

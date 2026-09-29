@@ -86,6 +86,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from typing import Any
 
 from autodrivedata.utils import geometry as g
@@ -137,6 +138,38 @@ NUS_CAMERA_RIG: dict[str, tuple[tuple[float, float, float], tuple[float, float, 
 # 相机名 → 相对 ego 的偏航(度),CARLA 口径。**历史别名**:`collect_surround.SURROUND_CAMS`
 # 的等价物,供只关心偏航的调用方(`live_common.rig_spec`)直接取用。
 NUS_CAMERA_YAW: dict[str, float] = {name: rig[1][1] for name, rig in NUS_CAMERA_RIG.items()}
+
+# 六视角图的**画布行序**(2 行 × 3 列)—— **所有六视角拼图的唯一来源**。
+#
+# 顺序按**方位绕车走一圈**:左前 → 前 → 右前 / 右后 → 后 → 左后。
+# **不要改回 `NUS_CAMERAS` / `NUS_CAMERA_RIG` 的字典序**:那是
+# `F, FL, FR, B, BL, BR` —— 第一行的左前/前就是反的,第二行按 3 列切出来更是
+# `B, BL, BR`,左右与地理直觉完全相反(这条理由最早写在 `live_studio.GRID_ROWS` 上)。
+#
+# 为什么放在本模块:产出六视角图的地方**都要摆同样的六格**(实时拼图 / 六视角实拍 /
+# 布局对照 / 预测回投 / grid6 实时流 / 标定 A/B),各写一份必然漂移 —— 2026-09-28 实测
+# 六处里**三处是错的**(一份第二行左右反、一份 1×6 字母序、一份干脆把后三路排到了第一行)。
+# 本模块是"环视相机 rig 的唯一来源",方位序天然属于这里,且**纯值**(不 import carla),
+# 故离线脚本也能引用。
+CAMERA_GRID_ROWS: tuple[tuple[str, ...], ...] = (
+    ("CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"),
+    ("CAM_BACK_RIGHT", "CAM_BACK", "CAM_BACK_LEFT"),
+)
+
+
+def camera_grid_rows(cams: Iterable[str] | None = None) -> list[list[str]]:
+    """画布行序的相机名(2×3 分组);给了 `cams` 就只保留其中出现的。
+
+    **六视角拼图的唯一取序入口** —— 别自己 `sorted(...)`,也别直接遍历 `NUS_CAMERA_RIG`
+    (两者的顺序都不是画布顺序,理由见上方 `CAMERA_GRID_ROWS` 注释)。
+    """
+    keep = None if cams is None else set(cams)
+    return [[c for c in row if keep is None or c in keep] for row in CAMERA_GRID_ROWS]
+
+
+def camera_grid_order(cams: Iterable[str] | None = None) -> list[str]:
+    """`camera_grid_rows` 的**展平**版(喂 `compose_grid` 这类一维接口用)。"""
+    return [c for row in camera_grid_rows(cams) for c in row]
 
 
 # ---------------------------------------------------------------- wide rig(见模块头注)

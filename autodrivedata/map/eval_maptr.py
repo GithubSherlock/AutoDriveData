@@ -20,6 +20,42 @@
       --start 200 --out-frames outputs/surround_pred      # → outputs/surround_pred/{token}.json
       --start 200 --out-frames outputs/surround_pred --map-format lanelet2   # 另落 {token}.osm
 
+## 批量推理口径(`--batch`,2026-09-29)
+
+`--batch 1`(**默认**,= 逐帧);`>0` 显式;`0` = 按**空闲**显存自适应实测。
+
+⚠️ **为什么评估的默认不是自适应**(与 `train_maptr --batch 0` 相反):自适应读的是**空闲**显存,
+而空闲显存随机器状态变(有没有别的进程占着)。**训练**用它是对的(要的是吞吐,选出的值记进
+`runlog.highlights.batch`);**评估**用它就错了 —— 同一个权重、同一份数据,换台机器或换个
+并发状态能报出不同的 AP。评估数字必须是**稳定、可比**的,故默认逐帧,要吞吐请显式给 0/N。
+
+⚠️ 另:训练尾部的 `_auto_eval` **直调 `evaluate()`**(不走 `main()`),它的 batch 取决于这里的
+默认值 —— 2026-09-29 修这个默认当天就踩到了:一次训练尾评在显存刚释放时自动选了更大的 batch,
+报出的 mAP 与归档口径不可比。
+
+**闸门**:批量与逐帧**必须给出同一组预测** —— 判据是
+① **`pred` 计数逐类相同**(计数不同 = 真的预测变了,是 bug);
+② **|ΔmAP| ≤ 2e-3**(与 CLAUDE.md 红线的 AP 复现性下限同口径)。
+
+**实测**(`maptr_v2_singleF.pt`、帧级留出 80 帧、`--score-thr 0.2`、TF32 已关):
+
+| batch | mAP | pred/gt(逐类) |
+|---|---|---|
+| 1 | 0.3043 | 1343/907 · 91/99 · 1688/1046 · 2524/2180 |
+| 2 | 0.3043 | **完全相同** |
+| 4 | 0.3044 | **完全相同**(只 centerline 0.3822→0.3825) |
+
+⇒ 计数逐类相同、AP 差 **3e-4 ≪ 2e-3** ⇒ **判为等价**。
+
+⚠️ **但它是随 batch 单调漂的,不是随机抖动**(实测 1/2/4/6 → 0.3043/0.3043/0.3044/0.3045,
+约 +5e-5 每 2 个 batch)。故 **`--batch` 是继 `--score-thr` 之后第二个必须与 AP 一起引用的
+口径参数** —— 跨权重比较时两边必须同 batch,否则那点漂移会混进结论。
+
+⚠️ **别把闸门定成"逐位相同"**:`batch=1` 与 `batch>1` 时 cuDNN 会选**不同的卷积算法**
+(算法启发式看 batch),坐标随之有 ~1e-6 相对差,足以让极少数 chamfer 距离**翻过 0.5/1.0/1.5 m
+阈值**。关 TF32 能让它**变小、不能消掉** —— AutoLabel 那份"关闭后逐位一致"是在它自己的
+模型/数据上测的,本项目实测**不成立**。所以判据取"计数相同 + AP 在复现性下限内"。
+
 **AP 口径的唯一落点**:`evaluate()` 是纯函数形态的实现,`main()` 只是它的 argparse 壳。
 `train_maptr --eval-*` 训练尾部的自动评估**调用同一个 `evaluate()`** ——
 chamfer AP 若抄成第二份,两处必然漂移,而"同一权重在两个脚本里报出不同 AP"是最难查的失效。
@@ -56,6 +92,7 @@ from autodrivedata.map.mapvec_schema import (
     make_instance,
     out_of_window,
 )
+from autodrivedata.runtime.device import disable_tf32, tune_batch_size
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -121,6 +158,30 @@ def _dump_frame_map(gts, fmt: str, base: Path, ckpt: str) -> None:
         f.write(dump_map_text(vecs, fmt))
 
 
+def _stack_batch(items: list[dict], cam_names: list[str], dev: torch.device):
+    """`batch` 个数据集样本 → 模型输入契约。**两种窗口形状不同,必须都认**。
+
+    | 窗口 | `images` | `poses` |
+    |---|---|---|
+    | K=1 | `{cam: (B,3,H,W)}` | `(B, 6)` |
+    | K>1 | `list[K]{cam: (B,3,H,W)}`(旧 → 新) | `(B, K, 6)` |
+
+    形状写错的症状是**堆栈指向模型内部**(`TemporalFusion` 报窗口不匹配 / GKT 报维度),
+    看着像权重坏了 —— 故这里显式按 `item["images"]` 是 list 还是 dict 分派。
+    """
+    if isinstance(items[0]["images"], list):  # 时序
+        k_frames = len(items[0]["images"])
+        images = [
+            {n: torch.stack([it["images"][k][n] for it in items]).to(dev) for n in cam_names}
+            for k in range(k_frames)
+        ]
+        poses = torch.stack([it["poses"] for it in items]).to(dev)
+    else:
+        images = {n: torch.stack([it["images"][n] for it in items]).to(dev) for n in cam_names}
+        poses = torch.stack([it["pose"] for it in items]).to(dev)
+    return images, poses
+
+
 def evaluate(
     *,
     infos: str,
@@ -136,6 +197,8 @@ def evaluate(
     match: str = "auto",
     temporal_window: int | None = None,  # None = 用 checkpoint 自带的,缺省 1
     device: str | None = None,
+    batch: int = 1,  # **默认逐帧**:评估数字不许随机器状态变(见下面「为什么默认不是自适应」)
+    batch_max: int = 16,
     out_pred: str | None = None,
     out_frames: str | None = None,
     map_format: str = "opendrive",  # 逐帧地图的落盘格式(见 mapvec.MAP_FORMATS)
@@ -174,7 +237,11 @@ def evaluate(
     if out_frames:
         out_frames = str(project_path(out_frames))
 
+    # ★ 先钉数值口径再谈别的:TF32 开着时 batch=1 与 batch>1 走不同 cudnn kernel,
+    # 「批量结果 == 逐图结果」这条闸门**根本不成立**(见 runtime/device.py 头注实测表)。
+    disable_tf32()
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    bs_eff = int(batch)
     meta = json.loads(Path(infos).read_text(encoding="utf-8"))
     # 段/帧号选择器先过滤,--start / --frames 再在**过滤后的列表上**截 ——
     # 与 train_maptr 共用 select_frames,保证"训练排除了哪一段"与"评测只评哪一段"
@@ -208,54 +275,70 @@ def evaluate(
     gts_by_class: list[list] = [[] for _ in MAPTR_CLASSES]
     t0 = time.perf_counter()
     n_frame_files = oow_pred = oow_gt = 0
+
+    # 批量推理:模型对**样本间无交互**(BN 走 running stats),故 batch 只该改变速度、
+    # 不该改变结果 —— 那条闸门由 `--batch` 的验收钉住(见 docstring 的批量口径说明)。
+    def _run_batch(bs: int) -> None:
+        """探针:按 batch=bs 跑一次前向(自适应实测用;不写任何产物)。"""
+        with torch.no_grad():
+            imgs, poses = _stack_batch([ds[j] for j in range(min(bs, len(ds)))], ds.cam_names, dev)
+            model(imgs, poses, ds.calibs)
+
+    if bs_eff == 0:
+        bs_eff = tune_batch_size(_run_batch, max_batch=batch_max)
+        print(f"[batch] 自适应实测 ⇒ batch = {bs_eff}(上限 {batch_max})")
+    else:
+        print(f"[batch] 显式指定 batch = {bs_eff}")
+
     with torch.no_grad():
-        for i, item in enumerate(ds):
-            if isinstance(item["images"], list):  # 时序:旧 → 新的 K 帧
-                images = [{n: t[None].to(dev) for n, t in f.items()} for f in item["images"]]
-                pose = item["poses"][None].to(dev)
-            else:
-                images = {n: t[None].to(dev) for n, t in item["images"].items()}
-                pose = item["pose"][None].to(dev)
+        for b0 in range(0, len(ds), bs_eff):
+            grp = list(range(b0, min(b0 + bs_eff, len(ds))))
+            images, pose = _stack_batch([ds[j] for j in grp], ds.cam_names, dev)
             out, _ = model(images, pose, ds.calibs)
-            logits = out["pred_logits"][0].float()  # (Nq, C+1)
-            pts = out["pred_points"][0].float().cpu().numpy()  # (Nq, P, 2)
-            scores = torch.sigmoid(logits).cpu().numpy()
-            frame_preds: list[MapVecInstance] = []
-            for c in range(len(MAPTR_CLASSES)):
-                idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
-                sc_c = scores[idx, c + 1]
-                keep = sc_c > floor
-                inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
-                gts_by_class[c].extend(item["gt"][c])
-                if out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
-                    at_thr = sc_c > score_thr  # 勿叫 sel:外层 sel 是帧下标列表
-                    frame_preds.extend(
-                        make_instance(MAPTR_CLASSES[c], p, s)
-                        for s, p in zip(sc_c[at_thr].tolist(), pts[idx][at_thr], strict=True)
+            logits_b = out["pred_logits"].float().cpu()  # (B, Nq, C+1)
+            pts_b = out["pred_points"].float().cpu().numpy()  # (B, Nq, P, 2)
+            scores_b = torch.sigmoid(logits_b).numpy()
+            # 逐样本后处理(与原逐帧路径逐语句相同,只是把 [0] 换成 [k])
+            for k, i in enumerate(grp):
+                item = ds[i]
+                pts = pts_b[k]  # (Nq, P, 2)
+                scores = scores_b[k]  # (Nq, C+1) —— sigmoid 已在整批上一次做完
+                frame_preds: list[MapVecInstance] = []
+                for c in range(len(MAPTR_CLASSES)):
+                    idx = slice(c * model.num_vec, (c + 1) * model.num_vec)
+                    sc_c = scores[idx, c + 1]
+                    keep = sc_c > floor
+                    inst_by_class[c].extend(zip(sc_c[keep].tolist(), pts[idx][keep], strict=True))
+                    gts_by_class[c].extend(item["gt"][c])
+                    if out_frames:  # 逐帧契约按 --score-thr 出(floor 只服务内部扫描)
+                        at_thr = sc_c > score_thr  # 勿叫 sel:外层 sel 是帧下标列表
+                        frame_preds.extend(
+                            make_instance(MAPTR_CLASSES[c], p, s)
+                            for s, p in zip(sc_c[at_thr].tolist(), pts[idx][at_thr], strict=True)
+                        )
+                if out_frames:
+                    info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
+                    rec = MapVecFramePred(
+                        frame=int(info["frame"]),
+                        token=str(info["token"]),
+                        score_thr=score_thr,
+                        ckpt=ckpt,
+                        preds=tuple(frame_preds),
+                        gts=tuple(
+                            make_instance(MAPTR_CLASSES[c], g)
+                            for c in range(len(MAPTR_CLASSES))
+                            for g in item["gt"][c]
+                        ),
+                        map_format=map_format,
                     )
-            if out_frames:
-                info = ds.infos[i]  # 帧归属:跨帧汇聚产物丢的正是这个
-                rec = MapVecFramePred(
-                    frame=int(info["frame"]),
-                    token=str(info["token"]),
-                    score_thr=score_thr,
-                    ckpt=ckpt,
-                    preds=tuple(frame_preds),
-                    gts=tuple(
-                        make_instance(MAPTR_CLASSES[c], g)
-                        for c in range(len(MAPTR_CLASSES))
-                        for g in item["gt"][c]
-                    ),
-                    map_format=map_format,
-                )
-                dump_frame(rec, out_frames)
-                if map_format != "opendrive":
-                    _dump_frame_map(rec.gts, map_format, Path(out_frames) / rec.token, ckpt)
-                n_frame_files += 1
-                oow_pred += out_of_window(rec)
-                oow_gt += gt_out_of_window(rec)
-            if (i + 1) % 50 == 0:
-                print(f"[infer] {i + 1}/{len(frame_list)} 帧 ({time.perf_counter() - t0:.1f}s)")
+                    dump_frame(rec, out_frames)
+                    if map_format != "opendrive":
+                        _dump_frame_map(rec.gts, map_format, Path(out_frames) / rec.token, ckpt)
+                    n_frame_files += 1
+                    oow_pred += out_of_window(rec)
+                    oow_gt += gt_out_of_window(rec)
+                if (i + 1) % 50 == 0:
+                    print(f"[infer] {i + 1}/{len(frame_list)} 帧 ({time.perf_counter() - t0:.1f}s)")
 
     def _at(thr: float) -> tuple[list[list], list[float], float]:
         """按阈值过滤实例 → (逐类折线, 逐类 AP, mAP)。代价矩阵与阈值无关,每档重算。"""
@@ -350,6 +433,13 @@ def main() -> None:
         help="时序窗口 K:不给 = 用 checkpoint 自带的(旧裸权重 → 1);K>1 时每样本取本帧 + 前 K−1 帧",
     )
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用;GPU 被占用时可 --device cpu)")
+    ap.add_argument(
+        "--batch",
+        type=int,
+        default=1,
+        help="推理批大小:**默认 1(逐帧)**;>0 显式;0 = 按空闲显存自适应实测。批量只提速、不该改结论 —— 与逐帧的判据见模块 docstring",
+    )
+    ap.add_argument("--batch-max", type=int, default=16, help="自适应实测的批大小上限")
     ap.add_argument("--out-pred", default=None, help="预测落盘基路径:写 <path>.json + <path>.png(BEV 目检)")
     ap.add_argument(
         "--out-frames",
@@ -380,6 +470,8 @@ def main() -> None:
             match=args.match,
             temporal_window=args.temporal_window,
             device=args.device,
+            batch=args.batch,
+            batch_max=args.batch_max,
             out_pred=args.out_pred,
             out_frames=args.out_frames,
             map_format=args.map_format,

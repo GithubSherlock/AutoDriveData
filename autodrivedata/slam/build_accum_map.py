@@ -37,6 +37,46 @@ def parse_range(spec: str) -> list[int]:
     return out
 
 
+def render_bev(pts: np.ndarray, rgba: np.ndarray, out_png: Path, stats: dict, cell: float = 0.2) -> Path:
+    """全局语义点云 → BEV 俯视图(每格取**平均语义色**,空网格黑)。
+
+    **不是装饰**:画上帧数/点数/体素/包络,看图 ≈ 读 stats.json。
+    逐格用 `np.bincount` 聚合(N=200 万点时逐点画像素要几分钟,聚合是毫秒级)。
+    """
+    from PIL import Image, ImageDraw
+
+    from autodrivedata.utils import fonts
+
+    xy = pts[:, :2].astype(np.float64)
+    x0, y0 = xy.min(axis=0)
+    x1, y1 = xy.max(axis=0)
+    nx, ny = int((x1 - x0) / cell) + 1, int((y1 - y0) / cell) + 1
+    ix = np.clip(((xy[:, 0] - x0) / cell).astype(np.int64), 0, nx - 1)
+    iy = np.clip(((xy[:, 1] - y0) / cell).astype(np.int64), 0, ny - 1)
+    flat = ix * ny + iy
+    n = nx * ny
+    cnt = np.bincount(flat, minlength=n).astype(np.float64)
+    acc = np.zeros((n, 3), dtype=np.float64)
+    for c in range(3):
+        acc[:, c] = np.bincount(flat, weights=rgba[:, c].astype(np.float64), minlength=n)
+    hit = cnt > 0
+    acc[hit] /= cnt[hit, None]
+    # 行序翻转:x 前向画成"上";**空网格留黑**(密度低的地方本来就该是空的,不补色)
+    img = acc.reshape(nx, ny, 3)[::-1]
+    canvas = Image.fromarray(img.astype(np.uint8))
+    head = (
+        f"累积语义点云 BEV  {stats['input_frames']} 帧 / {stats['downsample_points']} 点"
+        f"(voxel {stats['downsample_voxel_m']} m)  包络 "
+        f"{stats['x_range'][1] - stats['x_range'][0]:.0f}×{stats['y_range'][1] - stats['y_range'][0]:.0f} m"
+    )
+    out = Image.new("RGB", (canvas.width, canvas.height + 32), (0, 0, 0))
+    out.paste(canvas, (0, 32))
+    fonts.draw_text(ImageDraw.Draw(out), (8, 6), head, size=20, fill=(235, 235, 235))
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    out.save(out_png)
+    return out_png
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs/kitti_drive", help="KITTI root(velodyne 所在)")
@@ -84,9 +124,14 @@ def main() -> None:
     ply_path = out / "map.ply"
     write_ply(ply_path, colored)
     (out / "stats.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False))
+    # **JSON/PLY 之外同时落一张图**(用户口径 2026-09-28:检图必须有可视化可比对)。
+    # PLY 要外部工具才看得开,BEV 图开箱即看。
+    png_path = out / "map_bev.png"
+    render_bev(down, colored, png_path, stats)
 
     print(f"[done] 地图 {n_down} 点(voxel {args.voxel}m)→ {ply_path}")
     print(f"  stats: {json.dumps(stats, ensure_ascii=False)}")
+    print(f"  [viz] {png_path}")
 
 
 if __name__ == "__main__":

@@ -7,12 +7,12 @@
 理由:SSH 隧道只需转发一个端口,新增/删除一路流不改网络配置;`/` 出索引页把 N 路
 `<img>` 拼在一页,浏览器端仍是一个连接面。
 
-**rig 口径(两代,必须与权重的训练数据一致 —— 不是"越新越好")**:
+**rig 口径(两套,必须与权重的训练数据一致 —— 不是"越新越好")**:
 
 | rig | 平移 | 偏航(BACK_LEFT / BACK_RIGHT) | 姿态 | 训练数据 |
 |---|---|---|---|---|
-| `nuscenes`(当前) | `SENSOR_MOUNTS[name]` 逐相机 | −108.6 / +110.8 | 逐相机 6DoF(pitch/roll 非 0) | `surround_p3` / `surround_town13` |
-| `legacy`(早期) | 6 路**共用** `SENSOR_OFFSET`(1.2, 0, 1.65) | 235 / 125 | 仅偏航 | `surround_train` / `surround_drive` |
+| `nuscenes`(默认) | `SENSOR_MOUNTS[name]` 逐相机 | −108.6 / +110.8 | 逐相机 6DoF(pitch/roll 非 0) | `surround_p3` / `surround_town13` |
+| `wide` | 后三路挂点后移到车尾 + 轴方位角重排 | 见 `NUS_WIDE_CAMERA_RIG` | 逐相机 6DoF | (候选口径,见 `camera_rig`) |
 
 **`nuscenes` 曾名 `official`,且当时的值是镜像的**(2026-09-22 修):`SURROUND_CAMS` 把官方
 方位角原样抄成正数,漏了 `yaw_carla = −az_nus`(见 `geometry.carla_yaw_to_nus_yaw`)⇒ 四个侧/后
@@ -20,14 +20,13 @@
 因近自逆而"看着对",长期没暴露。真值现由 `autodrivedata/camera_rig.NUS_CAMERA_RIG` 单点提供
 (官方四元数导出),采集器与本文件**同源**。
 
-早期 `view_stream.build_maptr_rig` 给 6 路**共用** `SENSOR_OFFSET` 平移(与逐相机差最多 1.5 m),
-且 BACK_LEFT/BACK_RIGHT 偏航与官方布局**恰好互换**。它**不是无条件 bug**:`maptr_ep512.pt`
-就是在这套 rig 上训出来的,拿 nuscenes 喂它反而是错配。故本文件同时保留两套口径,
-由 `--rig {auto,nuscenes,legacy}` 选(`auto` 按权重文件名查 `LEGACY_CKPTS`)。
+⚠️ **`legacy` 口径已于 2026-09-28 按用户裁决移除**(连同 `resolve_rig` / `LEGACY_CKPTS` /
+`--rig auto`)。它服务的那两个权重(`maptr_ep256/512.pt`)已废弃,保留的代价是"当前用哪套口径"
+不能一眼读出。**镜像 bug 的成因、数字与图冻结在 [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md)** ——
+要查"当年镜像长什么样"看那一份,别在代码里找。
 
-**判据不看图**:`rig_mount_deviation()` 直接量"实挂位姿 vs **该 rig 规格**"的平移/偏航偏差,
-修正前预期 ~1.5 m(旧口径下偏差反而 ~0)。**必须先 tick 再读**(传感器 `get_transform()`
-在 tick 前是全 0 陈旧值,见 Plan.md 红线)。
+**判据不看图**:`rig_mount_deviation()` 直接量"实挂位姿 vs **该 rig 规格**"的平移/偏航偏差。
+**必须先 tick 再读**(传感器 `get_transform()` 在 tick 前是全 0 陈旧值,见 Plan.md 红线)。
 
 **第三方视角**:非 `attach_to` 相机,每 tick 由 `follow_spectator()` 显式 `set_transform`。
 不用 attach 的原因:attach 子 actor 的 `set_transform` 是**相对父位姿**的增量语义,
@@ -60,7 +59,7 @@ from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.gt.core import ActorBox, box_center_world, box_corners_world, box_to_gt_line
 from autodrivedata.gt.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.map.mapviz import calib_from_fov
-from autodrivedata.sim.carla_common import CAM_ATTRS, SENSOR_MOUNTS, SENSOR_OFFSET, loc, rad
+from autodrivedata.sim.carla_common import SENSOR_MOUNTS, loc, rad
 from autodrivedata.utils import fonts
 from autodrivedata.utils.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 
@@ -72,34 +71,23 @@ if TYPE_CHECKING:  # pragma: no cover — 仅类型检查:torch/模型只在 --m
 # ---------------------------------------------------------------- rig 口径表
 
 RIG_NUSCENES = "nuscenes"
-RIG_LEGACY = "legacy"
 # 自定义 wide rig(后移挂点 + 55/110/120 口径,见 `autodrivedata/camera_rig.py` 头注)。
-# 与 legacy 同构:这里只登记**挂点与姿态**,FoV/内参由 `export/nuscenes` 按 rig 分派。
+# 这里只登记**挂点与姿态**,FoV/内参由 `export/nuscenes` 按 rig 分派。
 RIG_WIDE = "wide"
 
-# 早期布局:6 路共用 SENSOR_OFFSET 平移 + 这套偏航(BACK_LEFT/RIGHT 与官方**互换**)
-LEGACY_CAM_YAW: dict[str, float] = {
-    "CAM_FRONT": 0.0,
-    "CAM_FRONT_RIGHT": -55.0,
-    "CAM_FRONT_LEFT": 55.0,
-    "CAM_BACK": 180.0,
-    "CAM_BACK_LEFT": 235.0,
-    "CAM_BACK_RIGHT": 125.0,
-}
-
-# 权重文件名 → 它的训练数据用的是 legacy rig(见 `outputs/maptr_600/map_infos.json`:
-# 帧 0-199 旧布局 / 200-599 官方布局)。新权重一律 nuscenes。
-LEGACY_CKPTS = ("maptr_ep256", "maptr_ep512")
-
-# legacy 画幅/FoV = KITTI 口径那套(**旧权重的口径,勿改**;由 CAM_ATTRS 导出,不手抄)
-LEGACY_FRAME = (int(CAM_ATTRS["image_size_x"]), int(CAM_ATTRS["image_size_y"]))
-LEGACY_FOV = float(CAM_ATTRS["fov"])
+#: 可用的 ring 口径。**`legacy` 已于 2026-09-28 移除**(成因与证据见
+#: [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md))。
+RIGS: tuple[str, ...] = (RIG_NUSCENES, RIG_WIDE)
 
 
 def rig_spec(
     rig: str,
 ) -> tuple[dict[str, tuple[float, float, float]], dict[str, tuple[float, float, float]]]:
-    """rig 名 → (逐相机平移, 逐相机姿态 (pitch,yaw,roll) 度)。`nuscenes` = 采集器口径。"""
+    """rig 名 → (逐相机平移, 逐相机姿态 (pitch,yaw,roll) 度)。`nuscenes` = 采集器口径。
+
+    未知 rig **直接抛**而不是回退到某套口径 —— 静默回退等于"参数写错却很像在工作",
+    正是本项目反复踩的那类失效。
+    """
     if rig == RIG_NUSCENES:
         return dict(SENSOR_MOUNTS), {name: rot for name, (_, rot) in NUS_CAMERA_RIG.items()}
     if rig == RIG_WIDE:  # 后三路挂点后移到车尾 + 轴方位角重排;**前三个与官方逐位相同**
@@ -107,10 +95,7 @@ def rig_spec(
             {name: m for name, (m, _) in NUS_WIDE_CAMERA_RIG.items()},
             {name: rot for name, (_, rot) in NUS_WIDE_CAMERA_RIG.items()},
         )
-    shared = (SENSOR_OFFSET.location.x, SENSOR_OFFSET.location.y, SENSOR_OFFSET.location.z)
-    return {name: shared for name in LEGACY_CAM_YAW}, {
-        name: (0.0, yaw, 0.0) for name, yaw in LEGACY_CAM_YAW.items()
-    }
+    raise ValueError(f"未知 rig {rig!r};可选 {RIGS}")
 
 
 def rig_frame(
@@ -119,40 +104,19 @@ def rig_frame(
     """rig 名 + 可选覆盖 → (画幅 w, h, **逐通道** fov 度)。**实时侧的画幅/FoV 唯一落点**
     (采集侧的对应物 = `collect_surround.SURROUND_CAM_ATTRS` + `export.nuscenes.NUS_CAMERA_FOV`)。
 
-    - `nuscenes` / `wide`:**1600×900** + **逐通道** fov(由该 rig 的 K 导出)。
-      逐通道是硬要求 —— 六路共用 90° 是"声明 ≠ 渲染"(§P-M.7)的第三种形态:模拟器里
-      25° 的视野差会让第 i 路图与权重学过的语义错位,症状比挂点镜像更隐蔽。
-    - `legacy`:1242×375 + 六路共用 90°(**旧权重口径,勿改** —— 它服务的是已废弃的
-      `maptr_ep512`,不是"省带宽的小分辨率档")。
+    **1600×900 + 逐通道 fov**(由该 rig 的 K 导出)。逐通道是硬要求 —— 六路共用 90° 是
+    "声明 ≠ 渲染"(§P-M.7)的第三种形态:模拟器里 25° 的视野差会让第 i 路图与权重学过的
+    语义错位,症状比挂点镜像更隐蔽。
 
     `width/height` 显式传入只换光栅尺寸、**不换 FoV**(FoV 是相机属性,不是光栅属性),
     故仍逐通道;只有显式传 `fov` 才把六路抹平成一个值(纯显示路径)。
     """
     names = list(rig_spec(rig)[1])
-    if rig in (RIG_NUSCENES, RIG_WIDE):
-        w0, h0 = NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT
-        all_fov = camera_fov(rig)
-        fovs = {name: float(all_fov[name]) for name in names}
-    else:
-        w0, h0 = LEGACY_FRAME
-        fovs = dict.fromkeys(names, LEGACY_FOV)
+    all_fov = camera_fov(rig)
+    fovs = {name: float(all_fov[name]) for name in names}
     if fov is not None:
         fovs = dict.fromkeys(names, float(fov))
-    return int(width or w0), int(height or h0), fovs
-
-
-def resolve_rig(choice: str, ckpt: str | None) -> str:
-    """`auto` 按权重文件名定 rig;显式给 `nuscenes`/`legacy` 时不猜。
-
-    **为什么要按权重选**:外参必须与权重**训练时见过的一致**,否则第 i 路图与它学过的
-    语义错位。实测 `maptr_ep512.pt` ← `surround_train`(legacy)、`maptr_600.pt` /
-    `maptr_1000.pt` ← `surround_p3` + `surround_town13`(当时的 nuscenes 前身)。
-    """
-    if choice != "auto":
-        return choice
-    if ckpt and any(tag in Path(ckpt).stem for tag in LEGACY_CKPTS):
-        return RIG_LEGACY
-    return RIG_NUSCENES
+    return int(width or NUS_CAMERA_WIDTH), int(height or NUS_CAMERA_HEIGHT), fovs
 
 
 # ---------------------------------------------------------------- 图像
@@ -471,9 +435,10 @@ def build_surround_rig(
     第 i 路语义错位(**侧后相机镜像**是最隐蔽的一种:早期 235/125 与官方 −108.6/+110.8
     恰好互换)。故这里只认 `rig_spec()` 的两处定义。
 
-    `rig` 选口径:默认 `nuscenes` = 当前采集器(1600×900 + **逐通道** fov);
-    喂旧权重(`maptr_ep512.pt` 一类)必须传 `legacy`(1242×375 + 六路共用 90°),
-    否则图与权重错配(见模块头注的对照表)。画幅/FoV 一律走 `rig_frame`,不在此另立。
+    `rig` 选口径(`live_common.RIGS`):默认 `nuscenes` = 当前采集器(1600×900 + **逐通道** fov)。
+    画幅/FoV 一律走 `rig_frame`,不在此另立。喂**旧权重**必须给与它训练数据一致的口径,
+    否则图与权重错配;`legacy` 那套已随旧权重一起废弃(见
+    [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md))。
 
     `width/height` 缺省 = 该 rig 的原生画幅;纯显示路径(`view_stream --view grid6`
     不带 `--maptr`)可传小分辨率省带宽 —— 挂点与 FoV 不受影响。

@@ -18,6 +18,7 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 | 灯色动态 GT | 灯态 = **独立时序层**,Off/Unknown **不猜**;**不做视觉回归**(镜片 30m 处仅 ~4px) | Plan.md §5.9 |
 | 失效归因 | **尺度主导**(<32px 0.15–0.47 vs ≥32px 0.78–1.00,断崖 ≈21–24px);CARLA **无运动模糊**(退化只能人工注入);天气只**前移断崖** | Plan.md §5.10 |
 | MapTR 矢量管道 | 参考自实现打通。chamfer AP @`--score-thr 0.2`:**0.3043** 帧级留出 / **0.1114** 路线级留出 | [Plan2.md](Plan2.md) §P-M.12 |
+| **时序融合 K=3** | 续训到 256 ep 后**帧级留出 +32%**(0.3043→0.4021)但**路线级留出 −0.0021** —— 两套留出相反,是 §P-M.12 红线的独立复现;**0.0021 落在复现性下限量级 ⇒ 真泛化上无可测收益** | Plan2.md §P-M.17 |
 | **MapQR 移植** | 两个变体(散聚 query / 高度核 BEV 编码器)已实现、**默认关**;阶段 0 通过(单测 + 冒烟 + 显存实测),**消融未跑**;官方权重 404 ⇒ 只能自训,绝对值不可比官方 | [Plan2.md](Plan2.md) §P-M.14 |
 | 8 路实时 studio | 拼图**每格原生像素不缩放**;在线 SLAM **默认同步执行**(worker 被 GIL 饿死,eff 0.04–0.24 vs 同步 0.90–1.00) | Plan2.md §P-L |
 | 环视标定 | **像素约定 = CORNER**;ego 原点 = **后轴**(`NUS_EGO_ORIGIN_X = −1.2563`);ego 姿态 = **全 6DoF** | Plan2.md §P-M.10/.11 |
@@ -64,6 +65,7 @@ autodrivedata/          ★ 主包 —— 按能力面分层,包根只有 __init
 ├── perception/   17  检测 / 单双目 / 雷达 / 语义 / 点云(**不 import carla**)
 ├── gt/            5  动态目标 + 静态目标 + 灯态时序层 + export/ 落盘
 ├── traj/  gs/     3  轨迹组装转换 / 3DGS 训练
+├── runtime/       1  运行时设备/显存/批量超参(**跨能力面的 torch 工具**;放 utils/ 不行,那层禁 torch)
 ├── utils/         4  通用件:geometry.py paths.py fonts.py runlog.py(**无领域语义、无 carla/torch**)
 └── tests/        54  与能力目录镜像(包级守卫 test_layer_guard.py 在根)
 
@@ -174,10 +176,9 @@ python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pytest 之外的路径前缀**
-                                 # 基线:1076 passed + 6 跳过 + 0 失败(2026-09-28 实测,172 s;
-                                 #   --collect-only 报 1079,差额 3 = 模块级 `importorskip` 的三个模块,
-                                 #   收集期不计入。上一版 1071/1074,补齐 sem_bev 与 viz_layout_cmp 的
-                                 #   回归钉后 +5 —— 这两个坑都是"pytest 全绿而 CLI 跑不起来"的那一类)
+                                 # 基线:1092 passed + 6 跳过 + 0 失败(2026-09-29 实测,151 s;
+                                 #   --collect-only 报 1095,差额 3 = 模块级 `importorskip` 的三个模块,
+                                 #   收集期不计入。上一版 1079/1082,并入 runtime/ 设备工具后 +13)
                                  # 基线数**只写在这一处**;加/删用例后回来改这一行,别在多处复述
 ```
 
@@ -186,6 +187,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **A/B 帧级配对是硬门槛**:同 ego 锚定 spawn point 0(yaw=0)、同静置车布局(20/35/50/62m——65m 会卡 GT max_distance 阈值抖动)、只变 weather;GT 数必须相等,否则样本不可比、结论作废。autopilot/TM 路线不可复现,禁用于 A/B
 - **跨机器/跨机型的 AP 不许直接比**:显存变 ⇒ `auto_tune_batch_size` 实测选到**不同的 batch** ⇒ 新旧 AP 不可比。判据看 `logs/*.json` 的 `highlights.batch`,**对不上就别比**;`.log` 头块的 GPU 型号/显存/CUDA/driver + git rev 是归属依据
 - **AP 尾部不注水**:未达 recall=1 段 precision=0(11 点插值,与 compare.ap11 同口径)。旧尾行 `ap += (1-prev_r)*prev_p` 曾把低 recall 吹高(雨夜 0.48 检出报 0.976),已修
+- **MapTR AP 的口径参数现在有三个:阈值 / batch / TF32**。`--batch` 会让 AP **单调漂**(实测 1/2/4/6 → 0.3043/0.3043/0.3044/0.3045,约 +5e-5 每 2 个 batch)—— 跨权重比较两边必须同 batch。**TF32 更隐蔽**:`cudnn.allow_tf32` 在 torch 2.x **默认 True**,而全仓原本无人设置它 ⇒ 归档的 0.3043 是 TF32 关的口径、今天默认开着跑出 0.3048(差 5e-4,`pred/gt` 计数完全一致)。`eval_maptr` 现在**入口即 `disable_tf32()`**(见 `autodrivedata/runtime/device.py` 头注的实测表);**新增 torch 推理入口请照做**
 - **MapTR chamfer AP 必须带 score_thr 引用**;跨权重比较**固定 `--score-thr`**,看曲线用 `--sweep`;**单独报一个 mAP 数字而不写阈值 = 无效结论**
 - **AP 的复现性下限 ≈ 2e-3**:同权重、同数据、同后处理,**换推理设备或换进程**也会让 AP 动 —— 边界实例的 sigmoid 得分跨过 `--score-thr` 就翻面(2026-09-28 实测:路线级 `boundary` **pred 1308@GPU vs 1307@CPU**,帧级留出 mAP 归档 0.3043 / 实测 0.3048,同一配置连跑 4 次则**逐位相同**)。⇒ **跨设备/跨机型的 AP 差 < 2e-3 一律视为不显著**,不许当"涨了/掉了"报;判据是**固定 `--score-thr` + 记录是否 GPU 推理 + `pred/gt` 计数**(计数不等 = 预测真变了,计数相同而 AP 变 = 阈值边界抖动)
 - **carla pyi 桩坑**:`try_spawn_actor` 桩标返回 `Actor`(实为 `Actor|None`)→ 用 Vehicle 方法必须 `cast(carla.Vehicle, v)`;Vector3D 运算结果不能直接进 `carla.Transform`(显式 `carla.Location`);函数签名要 `tuple[float, float, float]` 定长时禁用 tuple 推导(变长 tuple)
@@ -215,6 +217,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
   玩具夹具因此看不出来(本项目同类坑:"yaw≈0 的相机看着正常")。两条都有回归钉。
 - **`--bev-chunk` 不是省显存的手段**:实测分块**不降反升**(23.6 → 29.5 GiB),要压显存调**层数**(每层 ≈ +3.6 GiB @bs2)。见 Plan2 §P-M.14
 - **格式口径已定死**:`[tool.ruff]` 在 pyproject(line-length 110 / select E,F,I,UP,B / ignore E501,E741),`ruff format` 是唯一 formatter;批量纯格式提交要追加到 `.git-blame-ignore-revs`
+- **裸敲 `ruff format` 会走进未跟踪且未被 `.gitignore` 覆盖的目录**:ruff 0.16 **会格式化 Markdown 里的 python 代码块** ⇒ 它对 `weights/`(只有 `*.pt` 被忽略、目录本身没忽略)下手,把**下载来的第三方 README 改了**(2026-09-28 实测:`weights/sam3/README.md`)。已在 pyproject 用 `extend-exclude = ["weights/"]` 堵住。**新开未跟踪目录放外部内容时,同步加进这个 exclude** —— 其余产物目录靠 `.gitignore` 兜住(ruff 默认 `respect-gitignore`)
 
 > **搬目录/改结构时注意** —— 本轮重构实测出 **11 类引用形态**,照单扫一遍再动手(清单与各类实例见
 > [docs/refactor-2026-09.md](docs/refactor-2026-09.md) 的阶段 4 记录):`import X` / `from X import` / `import X as Y` /

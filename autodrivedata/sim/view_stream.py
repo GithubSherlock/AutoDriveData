@@ -11,10 +11,9 @@ MapTR 实时预测 overlay(`--maptr-ckpt`):在同一 tick 的 6 路环视图上�
 BEV 面板。**rig 必须与权重训练数据逐字段对齐**(相机名→挂点平移/偏航 / 内参 / 分辨率),
 故 rig 与 calib 一律走 `autodrivedata/sim/live_common.py` 的 `build_surround_rig` / `surround_calibs`
 (只认 `live_common.rig_spec()` 的两处定义),并做启动自检 `rig_mount_deviation`(平移米 / 偏航度)。
-**两代 rig 并存**:`nuscenes`(逐相机 `SENSOR_MOUNTS` + 官方 6DoF 姿态)对 `maptr_600`/`maptr_1000`;
-`legacy`(共用 `SENSOR_OFFSET` + 235/125)对 `maptr_ep256`/`maptr_ep512` —— `--rig auto` 按权重名选,
-**拿 nuscenes 喂 ep512 是错配**(见 `live_common` 头注对照表)。⚠️ 全部 MapTR 权重已标废弃
-(2026-09-22:训练用的 `official` rig 偏航镜像),保留两代仅为兼容既有产物。
+**rig 口径 = `live_common.RIGS`(`nuscenes` / `wide`)**;`legacy` 已于 2026-09-28 移除
+(连同 `--rig auto` —— 那个"按权重文件名自动选口径"的机制会让"到底用哪套"读不出来)。
+⚠️ 全部早期 MapTR 权重已标废弃(2026-09-22:训练用的 `official` rig 偏航镜像)。
 
 共享件(多槽 MJPEG / 拼图 / GT overlay / 环视 rig / 键盘)在 `autodrivedata/sim/live_common.py`,
 8 路 studio 见 `autodrivedata/sim/live_studio.py`。
@@ -24,7 +23,7 @@ BEV 面板。**rig 必须与权重训练数据逐字段对齐**(相机名→挂�
   python -m autodrivedata.sim.view_stream --view top --map Town13       # 俯视(看街区/NPC)
   python -m autodrivedata.sim.view_stream --view grid6 --npcs           # nuScenes 6 视角 + 静置 NPC
   python -m autodrivedata.sim.view_stream --scene rain_night --speed 8  # 带天气 + 定速直行
-  python -m autodrivedata.sim.view_stream --view grid6 --maptr-ckpt outputs/maptr_ep512.pt --maptr-bev
+  python -m autodrivedata.sim.view_stream --view grid6 --maptr-ckpt outputs/maptr_v2_singleF.pt --maptr-bev
 本地:ssh -L 8080:127.0.0.1:8080 <autodl> → 浏览器 http://127.0.0.1:8080
 
 红线:同步模式下 tick 归本脚本,不能与采集脚本同时运行(抢 tick)。
@@ -41,6 +40,7 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
+from autodrivedata.calib.camera_rig import camera_grid_order
 from autodrivedata.map.mapviz import PRED_COLOR, bev_panel, draw_projected_lines
 from autodrivedata.sim.carla_common import (
     draw_traffic_lights,
@@ -52,6 +52,8 @@ from autodrivedata.sim.carla_common import (
     traffic_light_frame,
 )
 from autodrivedata.sim.live_common import (
+    RIG_NUSCENES,
+    RIGS,
     FrameSlot,
     actor_boxes,
     build_cameras,
@@ -65,7 +67,6 @@ from autodrivedata.sim.live_common import (
     load_maptr,
     maptr_predict,
     overlay_gt,
-    resolve_rig,
     rig_frame,
     rig_mount_deviation,
     start_server,
@@ -112,9 +113,9 @@ def main() -> None:
     ap.add_argument("--maptr-device", default=None, help="推理设备(默认 cuda 若可用;与 CARLA 共享 GPU)")
     ap.add_argument(
         "--rig",
-        choices=("auto", "nuscenes", "legacy"),
-        default="auto",
-        help="环视挂点口径;auto 按权重名选(ep256/ep512=legacy,600/1000=nuscenes)",
+        choices=RIGS,
+        default=RIG_NUSCENES,
+        help="环视挂点口径(legacy 已于 2026-09-28 移除,见 docs/legacy-rig-archive.md)",
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--sim-port", type=int, default=2000)
@@ -159,7 +160,7 @@ def main() -> None:
     vel = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
 
     maptr = load_maptr(args.maptr_ckpt, args.maptr_device) if args.maptr_ckpt else None
-    rig = resolve_rig(args.rig, args.maptr_ckpt)
+    rig = args.rig
     calibs: dict[str, dict] = {}
     if maptr:
         # rig 原生画幅(nuscenes = 1600×900,legacy = 1242×375)+ 逐通道 fov;显示侧只缩放
@@ -218,7 +219,13 @@ def main() -> None:
             tiles: list[Image.Image] = []
             raw_tiles: list[Image.Image] = []
             n_seg = 0
-            for name, (cam, k) in cams.items():
+            # 画布行序走**唯一取序入口**(`camera_rig.camera_grid_order`)。`cams` 的字典序
+            # 来自 `rig_spec` = `F, FL, FR, B, BL, BR`,按 3 列切出来第一行左右就是反的、
+            # 第二行全是后相机(2026-09-28 实测)。**网格外的名字追加在后面而不是静默丢掉**。
+            cam_order = camera_grid_order(cams)
+            cam_order += [n for n in cams if n not in set(cam_order)]
+            for name in cam_order:
+                cam, k = cams[name]
                 cam_t = cam.get_transform()
                 cam_loc, cam_rot = loc(cam_t), rad(cam_t.rotation)
                 raw = raw_by_name[name]
@@ -235,7 +242,7 @@ def main() -> None:
             if maptr:
                 tiles = [t.resize((disp_w, disp_h)) for t in tiles]
                 raw_tiles = [t.resize((disp_w, disp_h)) for t in raw_tiles]
-            frame_img = compose_grid(tiles, list(cams), disp_w, disp_h) if args.view == "grid6" else tiles[0]
+            frame_img = compose_grid(tiles, cam_order, disp_w, disp_h) if args.view == "grid6" else tiles[0]
             if maptr and args.maptr_bev:
                 b = min(260, disp_h)  # 右下角贴 BEV 面板(实时无地图 GT:GT 在 A 阶段矢量库,不在 CARLA)
                 frame_img.paste(
@@ -243,7 +250,7 @@ def main() -> None:
                 )
             if args.dump and not dumped:
                 raw_img = (
-                    compose_grid(raw_tiles, list(cams), disp_w, disp_h)
+                    compose_grid(raw_tiles, cam_order, disp_w, disp_h)
                     if args.view == "grid6"
                     else raw_tiles[0]
                 )

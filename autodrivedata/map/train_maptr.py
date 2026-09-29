@@ -9,10 +9,10 @@ D 阶段 chamfer AP。**闸门按实际训练样本数判**(见 `is_single_frame
 
 匹配(匈牙利)在 CPU 上做(每步 detach 后),不进入训练图——与官方训练流程一致。
 
-batch 口径:--batch 0(默认)= 自适应实测(空闲显存 × 0.85 / 每样本训练步增量,
+batch 口径:--batch 0(默认)= 自适应实测(空闲显存 × `runtime.device.SAFETY_FACTOR` / 每样本训练步增量,
 上限 --max-batch;参考 AutoLabel tools/device.py);--batch N>0 = 显式指定
 (显式 > 实测)。自适应探针 = 完整训练步 ×2(batch 1 warmup + batch 2 增量),
-含 optimizer.step,见 autodrivedata/map/maptr/device.py。
+含 optimizer.step,见 autodrivedata/runtime/device.py。
 
 用法:
   python -m autodrivedata.map.train_maptr --infos outputs/surround_drive/map_infos.json \
@@ -41,10 +41,10 @@ from autodrivedata.map.maptr.dataset import (
     parse_segs,
     select_frames,
 )
-from autodrivedata.map.maptr.device import SAFETY_FACTOR, auto_tune_batch_size, get_gpu_free_memory_gb
 from autodrivedata.map.maptr.head import maptr_loss, match_assign
 from autodrivedata.map.maptr.model import MapTR, load_map_weights
 from autodrivedata.map.maptr.variants import resolve_variant, save_map_checkpoint, variant_names
+from autodrivedata.runtime.device import SAFETY_FACTOR, get_gpu_free_memory_gb, tune_train_batch_size
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -290,7 +290,10 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     ).to(dev)
     if args.init_ckpt:
         missing = load_map_weights(model, args.init_ckpt, dev)
-        print(f"[model] 从 {args.init_ckpt} 续训(优化器重置)")
+        # **别在这里断言"优化器重置"**:力矩载不载由 `_load_opt_sidecar` 按 `<init-ckpt>.opt`
+        # 是否存在决定,那一步在后面。原打印两行自相矛盾(先"重置"后"力矩不重置",
+        # 2026-09-29 实测),会让人误判续训的起步动力学。
+        print(f"[model] 从 {args.init_ckpt} 续训(优化器状态见下方 [opt] 行)")
         if missing:
             print(f"[model] 融合层 {len(missing)} 个权重缺失 ⇒ 从零初始化(单帧权重热启动)")
     n_params = sum(p.numel() for p in model.parameters())
@@ -320,7 +323,7 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
             _train_batch(model, opt, dev, ds, collate([ds[i % len(ds)] for i in range(bs)]))
 
         free_gb = get_gpu_free_memory_gb()
-        batch_size = auto_tune_batch_size(probe_step, max_batch=args.max_batch)
+        batch_size = tune_train_batch_size(probe_step, max_batch=args.max_batch)
         free_str = "?" if free_gb is None else f"{free_gb:.1f} GiB"
         print(f"[gpu] batch = {batch_size}(自适应实测:空闲 {free_str} × {SAFETY_FACTOR:.2f} / 每样本增量)")
     loader = DataLoader(

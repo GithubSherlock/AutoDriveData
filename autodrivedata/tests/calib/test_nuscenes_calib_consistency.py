@@ -559,12 +559,6 @@ class TestSurroundRigMatchesStudio:
             for r_got, r_want in zip(got, want, strict=True):  # approx 不支持嵌套 list,逐行比
                 assert r_got == pytest.approx(r_want, abs=1e-12), cam
 
-    def test_legacy_rig_is_untouched(self):
-        """`legacy`(**旧权重口径**)仍 1242×375 + 六路共用 90° —— 它服务已废弃的 ep512,不许被改。"""
-        w, h, fovs = lc.rig_frame(lc.RIG_LEGACY)
-        assert (w, h) == (1242, 375)
-        assert set(fovs.values()) == {90.0}
-
     def test_rig_frame_overrides_only_the_raster(self):
         """显式 `width/height` 只换光栅、**不换 FoV**;显式 `fov` 才抹平六路。
 
