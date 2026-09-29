@@ -24,7 +24,7 @@ env/
 *.onnx
 *.safetensors
 *.ckpt
-/models/
+/weights/
 lightning_logs/
 /logs/
 auto3dlabel/weights/
