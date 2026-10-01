@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,33 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.utils import fonts
+
+
+@dataclass(frozen=True)
+class Px:
+    """平面 → 像素的**批量**仿射:`px = ox + x·sx`、`py = oy + y·sy`(sy 通常为负 = 上下翻转)。
+
+    定义在本模块(**依赖序最低的那个绘制模块**)而不是使用方:点云底图([bev_base](bev_base.py))
+    与 BEV 面板([bev_panel](#bev_panel))都要它,谁定义谁就得被对方 import —— 放这里两边都只往下看。
+
+    做成值对象而非调用方闭包,是为了让点云走**一次 numpy** —— 拼接大图的累积点云是百万量级,
+    逐点 `to_px(...)` 的 Python 循环要几十秒。顺带根治了 `stitch_temporal` 里
+    "循环内定义闭包会绑住当轮参数"(ruff B023)的隐患:值对象没有绑定时机可言。
+    """
+
+    sx: float
+    sy: float
+    ox: float
+    oy: float
+
+    def __call__(self, x: float, y: float) -> tuple[float, float]:
+        return (self.ox + x * self.sx, self.oy + y * self.sy)
+
+    def arr(self, xy: np.ndarray) -> np.ndarray:
+        """(N,2) → (N,2) 像素。"""
+        a = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        return np.stack([self.ox + a[:, 0] * self.sx, self.oy + a[:, 1] * self.sy], axis=1)
+
 
 PRED_COLOR = (255, 0, 255)  # 品红:路面场景罕见
 GT_COLOR = (0, 255, 255)  # 青绿:同罕见(植被绿与其可区分)
@@ -154,6 +182,17 @@ def bev_px(x: float, y: float, size: tuple[int, int]) -> tuple[float, float]:
     return (x - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w, (BEV_Y[1] - y) / (BEV_Y[1] - BEV_Y[0]) * h
 
 
+def bev_px_transform(size: tuple[int, int]) -> Px:
+    """`bev_px` 的**批量**版本(`bev_base.Px`)。两者必须同式 —— 由单测钉住。
+
+    点云底图走这条:一帧 64 线 LiDAR 上万点,逐点调 `bev_px` 的 Python 循环会白烧几百毫秒。
+    """
+    w, h = size
+    sx = w / (BEV_X[1] - BEV_X[0])
+    sy = -h / (BEV_Y[1] - BEV_Y[0])
+    return Px(sx=sx, sy=sy, ox=-BEV_X[0] * sx, oy=BEV_Y[1] * -sy)
+
+
 def bev_window_mask(pts: np.ndarray) -> np.ndarray:
     """点 (N,2|3) 是否落在 BEV 窗口内 `(N,) bool`。
 
@@ -235,18 +274,25 @@ def bev_panel(
     points: np.ndarray | None = None,
     traj: np.ndarray | None = None,
     stats: dict[str, int] | None = None,
+    base: Image.Image | None = None,
 ) -> Image.Image:
     """BEV 面板:pred 品红 / GT 青绿 / SLAM 地图点浅灰 / 轨迹青绿;窗口 BEV_X × BEV_Y。
 
     `gts=None` 供实时流用(线上无地图 GT:GT 来自 A 阶段矢量库,不在 CARLA 里)。
     `points`/`traj` 供在线 SLAM 重建叠加(ego 系,窗口外的点不画)。
 
+    `base` = **底图**(LiDAR/Radar 点云层,由 `bev_base.base_layer` 造)。它替代默认底色
+    画在最下面 —— 矢量与轨迹都压在其上。**它只是上下文**:MapTR/MapQR 是纯相机模型,
+    点云不进网络(见 `bev_base` 头注),别把这张图读成多模态融合的结果。
+
     `stats` 给定时**就地填入绘制计数**(`n_points` / `n_traj_seg` / `n_points_total`),
     供调用方做**数值自证**(画上没画上不靠目检)。做成 out-param 而非改返回值:
     现有调用方(`view_stream` / 测试)不必跟着改签名。
     """
     w, h = size
-    img = Image.new("RGB", (w, h), (20, 20, 20))
+    img = base.copy() if base is not None else Image.new("RGB", (w, h), (20, 20, 20))
+    if base is not None and base.size != (w, h):
+        raise ValueError(f"底图尺寸 {base.size} ≠ 面板 {size} —— 两张图不同源,叠上去会整体错位")
     draw = ImageDraw.Draw(img)
 
     def px(x: float, y: float) -> tuple[float, float]:

@@ -58,10 +58,13 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw
 
+from autodrivedata.gt.export.nuscenes import NUS_RADAR_CHANNELS
 from autodrivedata.map.mapvec import MAPTR_CLASSES
 from autodrivedata.map.mapvec_schema import MapVecFramePred, load_frame
+from autodrivedata.map.mapviz import Px
 from autodrivedata.map.stitch import DEDUP_CELL as DEDUP_CELL_M
 from autodrivedata.map.stitch import _dedup
 from autodrivedata.utils import fonts, runlog
@@ -135,16 +138,22 @@ def poses_from_slam(traj: Path, tokens: list[str]) -> dict[str, list[float]]:
 
 
 def frame_to_world(
-    rec: MapVecFramePred, ego: list[float]
+    rec: MapVecFramePred, ego: list[float], which: str = "pred"
 ) -> list[tuple[str, list[tuple[float, float]], float]]:
-    """该帧的预测(ego 系)→ 世界系折线 `(类, 20×(x,y), score)`。**GT 不参与拼接**。"""
+    """该帧的**预测或真值**(ego 系)→ 世界系折线 `(类, 20×(x,y), score)`。
+
+    `which="gt"` 时取同一帧的 GT —— 用于把"预测拼出来是什么样"与"真值拼出来该是什么样"
+    并排看。⚠️ GT 是**逐帧窗口裁剪后的并集**,不是完整地图矢量:同一条路被不同帧各裁到
+    一段,拼起来才接近完整的;窗口外的部分**本来就不在 GT 里**(不是漏检)。
+    """
+    src = rec.gts if which == "gt" else rec.preds
     cos, sin = math.cos(math.radians(ego[3])), math.sin(math.radians(ego[3]))
     out = []
-    for inst in rec.preds:
+    for inst in src:
         if not inst.points:
             continue
         pts = [(ego[0] + x * cos - y * sin, ego[1] + x * sin + y * cos) for x, y in inst.points]
-        out.append((inst.cls, pts, float(inst.score if inst.score is not None else 0.0)))
+        out.append((inst.cls, pts, float(inst.score) if inst.score is not None else 0.0))
     return out
 
 
@@ -232,6 +241,7 @@ def stitch_segments(
     fusion: str,
     tol: float,
     heading_tol_deg: float,
+    which: str = "pred",
 ) -> dict:
     """逐段拼接(段间不合并,见模块头注)。`fusion` = `overlay` / `dedup` / `cluster`。"""
     by_seg: dict[str, list[MapVecFramePred]] = {}
@@ -245,7 +255,7 @@ def stitch_segments(
             ego = poses.get(r.token)
             if ego is None:
                 raise SystemExit(f"位姿里没有 token {r.token} —— `--infos` 与契约帧集不一致")
-            insts.extend((i, cls, pts, sc) for cls, pts, sc in frame_to_world(r, ego))
+            insts.extend((i, cls, pts, sc) for cls, pts, sc in frame_to_world(r, ego, which))
 
         n_in = len(insts)
         if fusion == "overlay":
@@ -283,36 +293,100 @@ def _span(all_pts: list[list[tuple[float, float]]]) -> list[float]:
     return [round(max(xs) - min(xs), 1), round(max(ys) - min(ys), 1)]
 
 
-def _panel_transform(x0: float, yy1: float, scale: float, ox: float, oy: float):
+def _panel_transform(x0: float, yy1: float, scale: float, ox: float, oy: float) -> Px:
     """世界系 (x, y) → 面板像素 的变换。
 
     **做成模块级工厂而不是在渲染循环里定义闭包**:循环内定义会绑住当轮的
     `scale/ox/oy/x0/yy1`(ruff B023)。本轮内调用跑起来是对的,但那是巧合 ——
-    一旦改成"先收集变换再统一画"就会全体静默用最后一轮的参数。挪出循环即可根治。
+    一旦改成"先收集变换再统一画"就会全体静默用最后一轮的参数。
+
+    现在返回 `mapviz.Px`(值对象)而不是闭包:点云底图要**批量**换算(百万点走 numpy),
+    闭包做不到;顺带那条 B023 隐患也从"记得挪出循环"变成"结构上不可能"。
     """
-
-    def to_px(x: float, y: float) -> tuple[float, float]:
-        return ox + (x - x0) * scale, oy + (yy1 - y) * scale
-
-    return to_px
+    return Px(sx=scale, sy=-scale, ox=ox - x0 * scale, oy=oy + yy1 * scale)
 
 
-def render(stats: dict, *, pose_source: str, fusion: str, out_png: Path, panel_h: int = 520) -> Path:
-    """逐段一栏可视化 + 图例 + 自证信息(**不是装饰**:看图 ≈ 读判据)。"""
+def segment_world_points(
+    recs: list[MapVecFramePred],
+    poses: dict[str, list[float]],
+    seg_of: dict[str, str],
+    root: Path,
+    channels: list[str],
+    max_points: int,
+) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+    """逐段把点云累积到**世界系**(拼接大图的底图)。
+
+    ★ 点数上限是**显式**的:全段 240 帧 × 6.4 万点 = 1500 万点,逐点提交给 PIL 要十几 GB
+    的 Python 对象。超限时按**均匀步长**抽样,并把 `dropped` 数返回给调用方**写进产物** ——
+    静默截断会让人把"没画全"读成"这里就没有点"(项目对"静默上限"的既有纪律)。
+
+    返回 `({seg: (N,3) float32}, {seg: 被丢弃的点数})`。
+    """
+    from autodrivedata.map import bev_base
+
+    by_seg: dict[str, list[MapVecFramePred]] = {}
+    for r in recs:
+        by_seg.setdefault(seg_of.get(r.token, "?"), []).append(r)
+
+    out: dict[str, np.ndarray] = {}
+    dropped: dict[str, int] = {}
+    for seg, rs in sorted(by_seg.items()):
+        chunks: list[np.ndarray] = []
+        for r in rs:
+            ego = poses.get(r.token)
+            if ego is None:
+                raise SystemExit(f"位姿里没有 token {r.token} —— `--infos` 与契约帧集不一致")
+            lid, rad = bev_base.frame_points(root, int(r.frame), channels)
+            chunks.append(bev_base.to_world(np.concatenate([lid, rad], axis=0), ego))
+        pts = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 3), dtype=np.float64)
+        if len(pts) > max_points:
+            keep = np.linspace(0, len(pts) - 1, max_points).astype(np.int64)
+            dropped[seg] = len(pts) - max_points
+            pts = pts[keep]
+        else:
+            dropped[seg] = 0
+        out[seg] = pts.astype(np.float32)
+    return out, dropped
+
+
+def render(
+    stats: dict,
+    *,
+    pose_source: str,
+    fusion: str,
+    out_png: Path,
+    panel_h: int = 520,
+    base: dict[str, np.ndarray] | None = None,
+    base_dropped: dict[str, int] | None = None,
+    which: str = "pred",
+) -> tuple[Path, dict[str, int]]:
+    """逐段一栏可视化 + 图例 + 自证信息(**不是装饰**:看图 ≈ 读判据)。
+
+    `base` = 逐段的世界系点云底图(LiDAR+Radar)。**它只是上下文** —— 模型是纯相机的,
+    点云不进网络(见 `bev_base` 头注)。返回 `({seg: 画出的点数})` 供调用方做数值自证。
+    """
+    from autodrivedata.map import bev_base
+
     segs = [s for s in sorted(stats) if stats[s]["insts"]]
     if not segs:
         raise SystemExit("没有可画的段 —— 拼接结果为空")
     panel_w = 1180
     canvas = Image.new("RGB", (panel_w, panel_h * len(segs) + 96), (16, 16, 20))
     d = ImageDraw.Draw(canvas)
+    drawn: dict[str, int] = {}
 
     for i, seg in enumerate(segs):
         st = stats[seg]
         y0 = 96 + i * panel_h
-        # 该段的世界系包络 → 面板像素(等比,按较大的一维适配)
+        # 该段的世界系包络 → 面板像素(等比,按较大的一维适配)。
+        # **底图点也参与包络** —— 否则底图会被面板裁掉一半,看着像"那里没点"。
         pts = [p for _, ip, _, _ in st["insts"] for p in ip]
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
+        bx = base.get(seg) if base else None
+        if bx is not None and len(bx):
+            xs = [*xs, float(bx[:, 0].min()), float(bx[:, 0].max())]
+            ys = [*ys, float(bx[:, 1].min()), float(bx[:, 1].max())]
         x0, x1, yy0, yy1 = min(xs), max(xs), min(ys), max(ys)
         span = max(x1 - x0, yy1 - yy0, 1e-6)
         scale = (panel_h - 76) / span
@@ -322,24 +396,36 @@ def render(stats: dict, *, pose_source: str, fusion: str, out_png: Path, panel_h
         to_px = _panel_transform(x0, yy1, scale, ox, oy)
 
         d.rectangle([10, y0 - 30, panel_w - 10, y0 + panel_h - 46], outline=(60, 60, 70))
+        # 底图先画(矢量压在上面);`scatter_world` 已按高度分两层着色
+        if bx is not None and len(bx):
+            drawn[seg] = bev_base.scatter_world(d, bx, to_px)
+        else:
+            drawn[seg] = 0
+        n_drop = (base_dropped or {}).get(seg, 0)
         head = (
             f"[{seg}]  {st['n_frames']} 帧  实例 {st['n_in']} → {len(st['insts'])}"
             f"({FUSION_LABEL.get(fusion, fusion)})  包络 {st['span_m'][0]}×{st['span_m'][1]} m"
+            + (f"  底图 {drawn[seg]} 点(抽样丢弃 {n_drop})" if bx is not None and len(bx) else "")
         )
-        d.rectangle([10, y0 - 30, 620, y0 - 4], fill=(0, 0, 0))
+        d.rectangle([10, y0 - 30, 760, y0 - 4], fill=(0, 0, 0))
         fonts.draw_text(d, (16, y0 - 27), head, size=19, fill=(230, 230, 230))
         for cls, ip, _sc, _n in st["insts"]:
             col = CLASS_COLOR.get(cls, (200, 200, 200))
             d.line([to_px(x, y) for x, y in ip], fill=col, width=2)
 
-    # 图例 + 自证(位姿源必须写在图上 —— 同一份预测换位姿源就是另一张图)
+    # 图例 + 自证(位姿源/预测还是 GT 必须写在图上 —— 换任一项就是另一张图)
     fonts.draw_text(
-        d, (16, 14), "时序拼接:逐帧 BEV 矢量预测 → 全局矢量图(按 seg 独立拼)", size=26, fill=(255, 255, 255)
+        d,
+        (16, 14),
+        f"时序拼接:逐帧 BEV 矢量{'预测' if which == 'pred' else '真值'} → 全局矢量图(按 seg 独立拼)",
+        size=26,
+        fill=(255, 255, 255),
     )
     fonts.draw_text(
         d,
         (16, 48),
-        f"位姿源 = {pose_source}   融合 = {FUSION_LABEL.get(fusion, fusion)}   容差 {TEMPORAL_DEDUP_TOL} m   段数 {len(segs)}",
+        f"位姿源 = {pose_source}   融合 = {FUSION_LABEL.get(fusion, fusion)}   容差 {TEMPORAL_DEDUP_TOL} m"
+        f"   段数 {len(segs)}" + ("   底图 = LiDAR+Radar(不参与模型)" if base else ""),
         size=20,
         fill=(190, 190, 200),
     )
@@ -348,10 +434,21 @@ def render(stats: dict, *, pose_source: str, fusion: str, out_png: Path, panel_h
         yy = 16 + j * 24
         d.rectangle([lx, yy + 4, lx + 18, yy + 18], fill=col)
         fonts.draw_text(d, (lx + 26, yy), cls, size=19, fill=(210, 210, 210))
+    if base:
+        for j, (lbl, col) in enumerate(
+            [
+                ("lidar 地面", bev_base.LIDAR_GROUND_COLOR),
+                ("lidar 离地", bev_base.LIDAR_OBJECT_COLOR),
+                ("radar", bev_base.RADAR_COLOR),
+            ]
+        ):
+            yy = 16 + (j + len(CLASS_COLOR)) * 24
+            d.rectangle([lx, yy + 4, lx + 18, yy + 18], fill=col)
+            fonts.draw_text(d, (lx + 26, yy), lbl, size=19, fill=(210, 210, 210))
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_png)
-    return out_png
+    return out_png, drawn
 
 
 def main() -> None:
@@ -368,6 +465,25 @@ def main() -> None:
     )
     ap.add_argument("--tol", type=float, default=TEMPORAL_DEDUP_TOL, help="融合容差(米)")
     ap.add_argument("--heading-tol", type=float, default=30.0, help="cluster 模式的朝向门(度)")
+    ap.add_argument(
+        "--which",
+        choices=("pred", "gt"),
+        default="pred",
+        help="拼哪一份:`pred` = 模型预测(默认)/ `gt` = 同帧真值。⚠️ GT 是**逐帧窗口裁剪后的并集**,不是完整地图矢量",
+    )
+    ap.add_argument(
+        "--lidar-root",
+        default=None,
+        help="LiDAR/Radar 点云根目录(**必须与 --infos/--frames 同一段数据**,按 `frame` 对齐)"
+        "⇒ 拼接大图加一层世界系点云底图。⚠️ 底图只是给人看的上下文:模型是纯相机的,点云不进网络",
+    )
+    ap.add_argument("--no-radar-base", action="store_true", help="底图只画 LiDAR 不画雷达")
+    ap.add_argument(
+        "--base-max-points",
+        type=int,
+        default=4_000_000,
+        help="底图点数上限(超出按均匀步长抽样);丢弃量会写进 JSON 与图上标题 —— 不静默截断",
+    )
     ap.add_argument("--out", required=True, help="输出基路径(落 <out>.json + <out>.png)")
     ap.add_argument("--no-runlog", action="store_true")
     args = ap.parse_args()
@@ -387,18 +503,35 @@ def main() -> None:
                 raise SystemExit("--pose slam 需要 --slam-traj")
             poses = poses_from_slam(project_path(args.slam_traj), [r.token for r in recs])
 
-        stats = stitch_segments(recs, poses, seg_of, args.fusion, args.tol, args.heading_tol)
+        stats = stitch_segments(recs, poses, seg_of, args.fusion, args.tol, args.heading_tol, args.which)
         out = project_path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
+
+        # 底图:同一段数据的点云按**同一个位姿源**累到世界系(`--pose slam` 时用 SLAM 轨迹)。
+        # ⚠️ 用 GT 位姿画底图、SLAM 位姿画矢量(或反过来)会得到"两张各自都对、叠起来错位"的图。
+        base: dict[str, np.ndarray] | None = None
+        base_dropped: dict[str, int] = {}
+        if args.lidar_root:
+            base, base_dropped = segment_world_points(
+                recs,
+                poses,
+                seg_of,
+                project_path(args.lidar_root),
+                [] if args.no_radar_base else list(NUS_RADAR_CHANNELS),
+                args.base_max_points,
+            )
 
         doc = {
             "source": {
                 "frames": args.frames,
                 "infos": args.infos,
                 "pose": args.pose,
+                "which": args.which,
                 "fusion": args.fusion,
                 "tol_m": args.tol,
                 "heading_tol_deg": args.heading_tol,
+                "lidar_root": args.lidar_root,
+                "base_max_points": args.base_max_points if args.lidar_root else None,
             },
             "classes": list(MAPTR_CLASSES),
             "segments": {
@@ -412,22 +545,48 @@ def main() -> None:
                 }
                 for seg, st in stats.items()
             },
+            "base_layer": None,  # 真值在下面渲染完再填(drawn 计数要等画完才有)
         }
         # **别用 `with_suffix`**:`--out a/b/k3_v1.0` 的 `.0` 会被当成扩展名吃掉,
         # 产物静默变成 `k3_v1.json`(实测踩到)。一律**追加**后缀。
         out_json = Path(str(out) + ".json")
-        out_json.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-
         out_png = Path(str(out) + ".png")
-        render(stats, pose_source=args.pose, fusion=args.fusion, out_png=out_png)
+        # 先画图(拿到 drawn 计数)再落 JSON —— 计数要进 JSON,顺序不能反
+        _, drawn = render(
+            stats,
+            pose_source=args.pose,
+            fusion=args.fusion,
+            out_png=out_png,
+            base=base,
+            base_dropped=base_dropped,
+            which=args.which,
+        )
+        doc["base_layer"] = (
+            None
+            if base is None
+            else {
+                "note": "LiDAR/Radar 仅为视觉上下文,不参与模型(纯相机)",
+                "per_segment": {
+                    seg: {"n_drawn": n, "n_dropped": base_dropped.get(seg, 0), "n_total": int(len(base[seg]))}
+                    for seg, n in drawn.items()
+                },
+            }
+        )
+        out_json.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
 
         n_in = sum(st["n_in"] for st in stats.values())
         n_out = sum(len(st["insts"]) for st in stats.values())
         print(f"[stitch] {len(recs)} 帧 / {len(stats)} 段 | 实例 {n_in} → {n_out}")
         for seg, st in sorted(stats.items()):
+            extra = ""
+            if base is not None:
+                extra = (
+                    f"  底图 {int(len(base[seg]))} 点 → 画 {drawn.get(seg, 0)}"
+                    f"(丢弃 {base_dropped.get(seg, 0)})"
+                )
             print(
                 f"  {seg}: {st['n_frames']} 帧  实例 {st['n_in']} → {len(st['insts'])}"
-                f"  包络 {st['span_m'][0]}×{st['span_m'][1]} m"
+                f"  包络 {st['span_m'][0]}×{st['span_m'][1]} m{extra}"
             )
         print(f"→ {out_json}\n→ {out_png}")
         rl.highlight("pose_source", args.pose)
@@ -437,6 +596,10 @@ def main() -> None:
         rl.highlight("n_instances_in", n_in)
         rl.highlight("n_instances_out", n_out)
         rl.highlight("tol_m", args.tol)
+        rl.highlight("which", args.which)
+        if base is not None:
+            rl.highlight("base_points_drawn", sum(drawn.values()))
+            rl.highlight("base_points_dropped", sum(base_dropped.values()))
         rl.artifact(out_json, "temporal-map-json")
         rl.artifact(out_png, "temporal-map-png")  # 图与 JSON 同列一份,别只报数据
 

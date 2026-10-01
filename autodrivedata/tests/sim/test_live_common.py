@@ -352,3 +352,60 @@ class TestUnknownStreamIs404NotACrash:
         finally:
             srv.shutdown()
             srv.server_close()
+
+
+class TestRigRegistriesAgree:
+    """★ **两张 rig 注册表必须一致** —— 2026-10-01 真被这个咬过一次。
+
+    `gt/export/nuscenes.NUS_RIGS`(管采集/导出)与 `sim/live_common.RIGS`(管实时渲染)
+    是**两张**注册表(历史原因)。加 nuCarla 时我只接了前者,于是
+    `verify_nus_calib --rig nucarla` 在 live 段**当场 `ValueError: 未知 rig 'nucarla'`**
+    —— 而单测全绿,因为没有任何东西要求两张表对齐。
+
+    **靠"记得两处都改"是不可靠的**;这条把它变成机械判据。
+    """
+
+    def test_rig_name_sets_are_equal(self):
+        from autodrivedata.gt.export.nuscenes import NUS_RIGS
+        from autodrivedata.sim.live_common import RIGS
+
+        assert set(RIGS) == set(NUS_RIGS), (
+            f"两张注册表漂了:live_common={RIGS} vs export.nuscenes={NUS_RIGS} —— "
+            "加 rig 时两处都要接(或把其中一处改成派生)"
+        )
+
+    def test_unknown_rig_still_raises_on_both(self):
+        """两边都要"未知就报错",不许静默回退到某套口径。"""
+        import pytest as _pytest
+
+        from autodrivedata.gt.export.nuscenes import camera_fov
+        from autodrivedata.sim.live_common import rig_spec
+
+        with _pytest.raises(ValueError):
+            rig_spec("definitely_not_a_rig")
+        with _pytest.raises(ValueError):
+            camera_fov("definitely_not_a_rig")
+
+    def test_nuscenes_mounts_unchanged(self):
+        """`rig_spec` 改表驱动后,官方 rig 的挂点必须**逐位**仍等于 `SENSOR_MOUNTS`。
+
+        (那是把 nuscenes 分支从 `SENSOR_MOUNTS` 换成 `NUS_CAMERA_RIG` 的**唯一**风险 ——
+        两者恰好同源,但不能靠"恰好"。)
+        """
+        import numpy as np
+
+        from autodrivedata.sim.carla_common import SENSOR_MOUNTS
+        from autodrivedata.sim.live_common import rig_spec
+
+        mounts, _rots = rig_spec("nuscenes")
+        assert set(mounts) == set(SENSOR_MOUNTS)
+        for name, m in mounts.items():
+            np.testing.assert_allclose(m, SENSOR_MOUNTS[name], atol=0.0, err_msg=name)
+
+    def test_nucarla_has_flat_65_fov_on_the_live_side(self):
+        """实时侧也要认 nuCarla 的口径(FOV 由 `camera_fov(rig)` 派发,不能各写一份)。"""
+        from autodrivedata.sim.live_common import rig_frame, rig_spec
+
+        mounts, _ = rig_spec("nucarla")
+        _w, _h, fovs = rig_frame("nucarla")
+        assert len(mounts) == 6 and set(fovs.values()) == {65.0}

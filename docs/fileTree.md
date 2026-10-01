@@ -2,7 +2,7 @@
 
 > **本文档的用处**:仓库的**文件级索引**——"某个文件是干什么的、该改哪、产物落在哪"。
 > 定位是**导航**,不是事实源:当前状态与红线看 [CLAUDE.md](../CLAUDE.md),目录结构的**决策依据**看
-> [docs/refactor-2026-09.md](refactor-2026-09.md),方案定案看 [Plan.md](../Plan.md),新计划/待办看 [Plan2.md](../Plan2.md),
+> [docs/refactor-2026-09.md](refactor-2026-09.md),方案定案看 [Plan.md](../Plan.md),新计划/待办看 [Plan4.md](../Plan4.md),主线外的外部数据集对照看 [Plan3.md](../Plan3.md),
 > 里程碑看 [milestone.md](milestone.md) / [milestone2.md](milestone2.md)。
 >
 > **用法**:
@@ -20,7 +20,7 @@
 ```txt
 AutoDriveData/
 ├── CLAUDE.md / README.md            # AI 协作入口 / 对外简介
-├── Plan.md(冻结)· Plan2.md(新计划)
+├── Plan.md(冻结)· Plan2.md(冻结 · §P-M.1–P-M.20)· Plan3.md(主线外:外部数据集对照)· Plan4.md(新计划制定地)
 ├── pyproject.toml                   # 包定义 + [tool.ruff] + [tool.pytest.ini_options] testpaths
 ├── requirements.txt / .envrc / .gitignore
 │
@@ -46,7 +46,7 @@ AutoDriveData/
 | `perception/` | 17 | 检测 / 单双目 / 雷达 / 语义 / 点云 | **不 import carla** |
 | `gt/` | 5 | 动态目标 + 静态目标 + 灯态 + 落盘导出 | **纯值** |
 | `traj/` `gs/` | 3 | 轨迹组装转换 / 3DGS 训练 | 许 torch,禁 carla |
-| `runtime/` | 1 | 设备探测 / TF32 口径 / 显存体检 / 批量超参实测 | 许 torch,禁 carla |
+| `runtime/` | 3 | 设备探测 / TF32 口径 / 显存体检 / 批量超参实测 + **训练早停判据** + **jsonl→TensorBoard 转换** | 许 torch,禁 carla |
 | `utils/` | 4 | `geometry` `paths` `fonts` `runlog` | **纯值** |
 | `tests/` | 60 | 与能力目录镜像(见 §3) | 不设限 |
 
@@ -78,7 +78,8 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `route.py` | **闭环路线纯值**:`find_cycle`(路网 BFS 最短有向环,吃 `successors` 回调,可在合成图上单测)/ `make_successors`(CARLA `wp.next()` → 节点键 `(road_id, lane_id, round(s/step))` 的适配层,只吃 duck-typed `WaypointLike` ⇒ **零 carla**)/ `pure_pursuit`(前视点 + 单调进度 + 打舵符号)/ `lap_budget` + `speed_ceiling`(**一圈帧数 ≥ 250 帧 ⇒ 速度上限**,采集前的第一道闸)。零 carla,供 `collect_slam --route loop` |
 | `collect_kitti.py` | 静态采集:ego 静止 + 摆 NPC + 同步模式 → KITTI root(raw + GT) |
 | `collect_drive.py` | 动态采集:ego autopilot + TM 车流 + 行人 → KITTI 序列 |
-| `collect_ab_route.py` | P1 A/B 专用:ego 定速直行 + 路侧静置车(固定位置,帧级配对) |
+| `occlusion.py` | **静态遮挡 A/B 的纯几何**(零 carla,§P-V12):`sight_line_occluders`(遮挡物排在**相机→车 的视线**上、长轴垂直于视线 —— 排 ego 正前方会因视差在车内侧漏一条**全高**的缝,实测占车宽 18.3%)/ `required_span`(车宽投到遮挡物所在**深度**上的跨度)/ `visible_fraction` + `project`(挡完还剩多少 px)/ `occluder_depth`(深度闭式解)。**两个约定混一个数就全错**:成像吃**深度**(沿光轴)不吃斜距 —— 20 m 处整框 49.7 vs 58.6 px。资产尺寸只吃 `OCCLUDER_DIMS` 一份声明,采集时另起 **yaw=0 探针**读回对表 |
+| `collect_ab_route.py` | P1 A/B 专用:ego 定速直行 + 路侧静置车(固定位置,帧级配对)。**`--occluders {none,partial,full}`**(§P-V12)+ `--occluder-cars {all,nearest}` + `--occluder-gap`:只用 `static.prop.*` 道具 ⇒ **结构上进不了 `label_2`**(GT 过滤器只认 `vehicle*`/`walker*`)⇒ 同目标、逐帧 GT 相等、单一变量。⚠️ 它**不读 `scene.traffic`**,`--scene dense_rush` 会静默退化成 day_clear。逐帧落 `training/pose/`(A/B 轨迹配对的机械判据) |
 | `collect_nus.py` | nuScenes 迷你集:6 相机 + LiDAR + 5 雷达。**全传感器标定「渲染位姿 = 声明位姿」同源**(2026-09-23,§P-M.7):相机走 `NUS_CAMERA_RIG`(逐相机 6DoF 挂点)+ 逐通道蓝图 `fov`;LiDAR 走官方挂点 + 由四元数**导出**的姿态(`LIDAR_ROT` 不手抄);雷达偏航 `−az_nus` **由 `NUS_RADAR_OFFSETS` 导出**。历史缺陷(已删 `CAM_YAW_OFFSET` 镜像表 / 雷达猜测表 / LiDAR 无 rotation)见模块头注的对照表。判据复现器 = `autodrivedata/calib/verify_nus_calib.py`。**挂点原点**:位置/姿态全走 `geometry.nus_ego_translation` + `nus_ego_rotation`(后轴,§P-M.10);挂传感器前先让车静置收敛(`ego_settle`,实测 8 tick),`ego_pose` 写全 6DoF |
 | `collect_surround.py` | 环视 6 相机采集(nuScenes 布局)→ 图像 + 内外参 + 逐帧 ego 位姿 |
 | `collect_surround_lidar.py` | **多传感器采集:6 环视相机 + LiDAR + 5 雷达 + ego 真值位姿,一次过落进同一个 root**。存在的理由:两条下游链各要各的,而**磁盘上没有任何一份数据集同时有两者**(`collect_surround` 只挂相机 / `collect_slam` 只挂 LiDAR)⇒ 「逐帧环视预测 + SLAM 位姿」这种组合**无数据可跑**(`map/stitch_temporal --pose slam` 就卡在这)。落盘**三份布局**(**刻意不统一**:各走各自已有消费方的形状)—— ① `cam_*/` + `calib.json` + `ego_pose.json`(喂 `assemble_maptr`)② `training/velodyne/` + `training/pose/`(喂 `slam_odometry` / `eval_slam`)③ `samples/RADAR_*/*.pcd`(devkit 18 字段,喂 AutoLabel 雷达线)。雷达有**相位空 tick**(~7%)⇒ 非阻塞 drain + 空 pcd,`--no-radar` 可关。定速照 `collect_ab_route` 红线(清制动残留 + **逐帧反算实测速度自证**) |
@@ -100,7 +101,7 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 | `carla_common.py` | 采集公共件:位姿换算 / NPC 摆放 / 传感器参数 / 同步模式 / 灯态归一与绘制 |
 | `smoke_radar_collect.sh` | 雷达采集冒烟 |
 
-### `runtime/` — 运行时设备工具(1)
+### `runtime/` — 运行时设备工具(3)
 
 **为什么单独立档**:这些是**跨能力面**的 torch 运行时问题(map 用它调训练 batch、eval 用它调推理
 batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE`、**禁 torch**,有守卫强制。
@@ -108,6 +109,9 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | 文件 | 职责 |
 |---|---|
 | `device.py` | 设备探测(`get_device`/`print_device`)、**TF32 口径**(`disable_tf32`)、显存体检(`check_gpu_headroom`)、批量超参实测(`tune_batch_size` 通用核心 + 训练/推理两个薄封装)。**最有价值的是 TF32**:`cudnn.allow_tf32` 在 torch 2.x 默认 True 而全仓原本无人设置 ⇒ 归档 AP 是 TF32 关的口径、今天默认开着跑出 0.3048 vs 归档 0.3043(`pred/gt` 计数完全一致)。合并自 AutoLabel `auto2dlabel/tools/device.py` + 原 `map/maptr/device.py`,三处改动见模块头注 |
+
+| `early_stop.py` | **训练早停:两段式平台检测**(2026-09-29,**纯值**,不 import torch/carla ⇒ 判据可离线单测)。`PlateauDetector` 判 loss **相对**改善是否停滞(相对而非绝对:loss 尺度随配置变,实测时序 15→2.68 / 单帧要求 →0),且**触发理由分型** `converged` / `lr_exhausted`(后者也停,但该去调 lr 计划重跑 —— Plan2 明写「平台是 lr 归零不是收敛」);`EarlyStopper` 在平台候选上按 `confirm_every` 节流调**注入的** `confirm_fn` 复核 AP,`confirm_fn` 返回 None(复核做不了)⇒ **不敢停**。本模块**不知道 AP 是什么**,那是 `train_maptr` 注入的 |
+| `tb_export.py` | **`logs/*.jsonl` → TensorBoard event(离线转换,2026-09-30)**。**不在训练里实时写** `SummaryWriter`:jsonl 已是逐迭代的唯一口径,再开一路 event 就是两份记录(本项目的既有过敏:`SAFETY_FACTOR` 两处不同值),且实时写对**已在跑的** run 无效。转换器**不认任何训练语义** —— `runlog.metric(step, **kv)` 是全仓契约,一份代码同时能画 `loss` / `ATE` / `closure`。两个必处理的坑:**标签稀疏**(早停复核行同 step 但没有 `loss/lr` ⇒ 逐行"有什么写什么",补 0 会拉出假台阶)、**一个名字配多个 jsonl 必须拆成多个 run**(合并 = 两段训练交替进同一条曲线且 x 轴互相覆盖,而曲线看着正常)。另记:TB scalar 存 **float32**(`18.04` 读回 `18.040000915527344`)⇒ 图与 jsonl 不逐位一致,要精读回到 jsonl;event 是**快照**,刷新要重跑 |
 
 ### `calib/` — 标定(13)
 
@@ -128,6 +132,7 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | `verify_nus_calib.py` | **`collect_nus` 验收判据的复现器**(全数值,不目检;落 `outputs/nus_calib_check/report.json`)。`--offline`(不需 CARLA):③ 雷达点落进**自身 FOV** 占比(以官方 R 为锚 —— 点云在传感器自身系,+x 即光轴,不转到 ego 系再比就是恒真)、④ LiDAR 复现 `num_lidar_pts`(官方集 1.0000 vs 单位阵消融 0.1684)、⑤ 相机内参 vs 该 rig 声明表;`--live`:① 相机实挂 vs 声明(`live_common.mount_deviation_of`,**必须先 tick**)、② 雷达实挂 vs 官方 az、⑥ 渲染 FOV vs 蓝图 fov(复用 `probe_calib` 的锥体/掩膜回归,**不另写实例分割解码**)、⑦⑧ 转 `rig_check.instance_probe`。**⑥ 两个实测坑**:每 tick 必须**抽干全部相机队列**(否则未测相机积压陈旧帧 ⇒ 掩膜恒 0,症状是"只有第一个相机测得出"且与距离无关)、Z 取**阶梯** `(20,14,10,8,6)`(地图遮挡随出生点变,写死会假失败)。**明令禁止 `num_radar_pts` 作判据**(跨 5 通道求和,官方 R 也只复现 0.6279)。**+ ⑨⑩(§P-M.10)**:⑨ 世界系链(`declared = 落盘表 ⊕ **实测**后轴位姿` vs `rendered = CARLA 实挂经共轭`,12 路逐位比 —— ①② 相对同一个 ego,**对原点误差在结构上盲**,必须有它);⑩ 独立复测后轴(双偏航自解,**不读常量**,防常量腐化静默错位)。`--rig {nuscenes,wide}`:③④ 与相机无关原样适用,其余换该 rig 的声明表;默认落点按 rig 分叉(`nus_mini[_wide]` / `report[_wide].json`,**不互相覆盖**) |
 | `rig_check.py` | **判据 ⑦⑧ 的唯一执行点**(`RigCameras` 按任一 rig 的**声明位姿/FoV** spawn 6 路 instance_seg,1600×900):⑦ 逐像素数 **ego 自己的 actor id**(对照:**修正前**官方 rig `CAM_BACK 619189 px = 42.9992%`;§P-M.10 原点修正后**两代 rig 六路全 0 px** ⇒ 该判据不再是 wide 的区分度,wide 的取舍是 FoV spec 换覆盖率);⑧ 往重叠区正中摆施工锥,两路掩膜都命中才算共视。**两条边界写死在模块里**:锥心抬 `COVIS_Z_LIFT=0.45 m`(否则擦车顶被自车挡,读数变成"有没有被自车挡")、几何重叠 < `MIN_COVIS_OVERLAP_DEG=5°` 的对**如实 `skipped`**。★ `common_band()` 是核心订正:**方位轴重叠(无穷远)≠ 有限距离下的共同可见**(挂点视差最多 1.7°,官方 `FL↔BL` 11.20° → 12 m 处 4.838°) |
 | `viz_rig_check.py` | **rig 的两件目检交付物**(`--rig`,`--live` 需 CARLA;落 `outputs/calib_check/`):`rig_layout_{rig}.png`(纯值配置图,`rigviz.draw_rig_layout`)、`views_{rig}.png`(六视角**原生像素**拼图 + 逐格 `az ± fov/2` 与 ego 像素读数 + 底部**线性方位尺**:逐相机一条泳道 ⇒ 竖线穿过的行数 = 该方位被几路覆盖;ego 像素**就地染品红**,0 px 时是空操作)、`report_{rig}.json`。**图不能替代 `verify_nus_calib`**:"声明 ≠ 渲染"在图上看不见(§P-M.7)。两个踩坑:`360.0 % 360 == 0` 会让 `rectangle` 抛 `ValueError`(跨 0° 扇区必须钳,不取模)、`np.asarray(PIL)` 是只读视图(染色必须 `np.array` 拷贝再 `Image.fromarray`) |
+| `probe_rig_cmp.py` | **多 rig 数值对照 + 自证**(2026-10-01):同一个 ego 上三套相机口径(`nuscenes`/`wide`/`nucarla`)逐通道列 fov/fx/cx + 方位覆盖/盲区,并**跑该 rig 的独立复算**报 `max|Δ|`(nuCarla 走四元数链对矩阵链,实测 **0.00e+00**)。落 `.json` + `.md` |
 
 ### `map/` — 地图矢量 + MapTR(19)
 
@@ -135,22 +140,23 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 |---|---|
 | `opendrive.py` | OpenDRIVE 1.4 解析(planView/lanes/objects/signals/junction)。`_geo_at` 有 `strict` 档:默认对 `s ∉ [0,length]` raise(**抓调用方 bug** 的守卫,不是物理约束);`strict=False` 才**有界外推**(上限 10 m) |
 | `stitch.py` | **跨图拼接**(§P-M.16):`Placement` 表 + `place()`(刚体,**恒等原样返回**)+ `stitch()`(并集 / 多图加 id 前缀 / **跨图**去重)+ `seams()`(接缝候选**报告**)。⚠️ 官方 Town 无真值相对位姿,placement 是**人为摆位**;⚠️ `MapVec` 不带道路图 ⇒ 接不了 link;⚠️ 合并图**对 MapTR 训练无用**(训练仍逐帧 `BEV_RANGE` 裁剪)。两条实测逼出来的判据:**同图内部不去重**(不同 road 的中心线会恰好重合)、**单点要素(信号灯)必须参与去重** |
-| `stitch_temporal.py` | **时序拼接**:逐帧 BEV 矢量预测按位姿拼成全局矢量图。与 `stitch.py`(跨**图**、人为摆位)分工不同,它跨**帧**、位姿来自轨迹(`--pose gt` 上界 / `--pose slam` 车载口径)。几何层复用 `stitch.place`(正好 = ego→world)与 `_dedup`;**融合**另有 `--fusion cluster`(Chamfer + 朝向门 + 簇内平均)—— 实测 `_dedup` 的 Hausdorff 对跨帧是错配(tol 0.5 m 只合掉 0.7%)。**按 seg 分段是硬约束**(段缝位移 56.8–109.6 m)。产物 **JSON + PNG 两份** |
+| `stitch_temporal.py` | **时序拼接**:逐帧 BEV 矢量预测按位姿拼成全局矢量图。与 `stitch.py`(跨**图**、人为摆位)分工不同,它跨**帧**、位姿来自轨迹(`--pose gt` 上界 / `--pose slam` 车载口径)。几何层复用 `stitch.place`(正好 = ego→world)与 `_dedup`;**融合**另有 `--fusion cluster`(Chamfer + 朝向门 + 簇内平均)—— 实测 `_dedup` 的 Hausdorff 对跨帧是错配(tol 0.5 m 只合掉 0.7%)。**按 seg 分段是硬约束**(段缝位移 56.8–109.6 m)。`--which {pred,gt}` 决定拼预测还是同帧 GT(⚠️ GT 是逐帧窗口裁剪后的并集,不是完整地图矢量)。`--lidar-root` 给世界系点云底图(**必须与 `--infos` 同一段数据**,且用**同一个 `--pose` 源** —— 一边 GT 位姿一边 SLAM 位姿会得到两张各自都对、叠起来错位的图);点数上限 `--base-max-points` 超限按均匀步长抽样,**丢弃量写进 JSON 与图上标题**(不静默截断)。产物 **JSON + PNG 两份** |
 | `lanelet2.py` | **Lanelet2(.osm XML)适配器,双向**(§P-M.15):**标准 OSM 结构**(`<node id lat lon ele>` + `<way><nd ref>`;早先把坐标内联进 `<nd>`,真实 reader 会**读成空图**)+ **高程走 `ele`** + `autodrivedata:seq` 还原顺序;六类要素→`way`/`node`(标线级,`divider`→`line_thin`、`boundary`→`line_thick`、`ped_crossing`→`crosswalk`…);坐标系是**米**而 .osm 存 lat/lon ⇒ **等距圆柱投影**,`origin` 默认取质心并**写进文件注释**(外部工具忽略、自己读得回 ⇒ 往返不依赖文件外的隐式约定)。保真走自定义 tag `autodrivedata:cls`/`:id`/`:src` + `attrs:<key>`(**重复键**加 `:N` 后缀);读回**优先自定义 tag、回退语义标签** ⇒ 也能尽力读第三方。**只到标线级**;升级到真 lanelet 需要什么见模块头注 |
 | `apollo.py` | **Apollo HD Map(text-format protobuf)适配器,双向**(§P-M.15):`ped_crossing`/`stop_line`/`traffic_light` → `crosswalk`/`stop_line`/`signal`(**天然对应**);⛔ **`divider`/`boundary`/`centerline` 在 Apollo `Map` 里没有落点** ⇒ 降级为借 `lane.central_curve` 承载(**把标线当车道**),类名编进 `id.id`。保真 ≈ 无 KV 槽 ⇒ `attrs`/`id`/`src`/顺序全编进 `id.id`(保留键 `@id`/`@src` 带 `@`,与 quote 后的 attr 键不可能撞名)。走 text-format 是因为**本机无 `.proto`**、免 protoc。升级到真 lane 需要什么见模块头注 |
 | `mapvec.py` | 地图矢量 GT 提取与采样(MapTR 口径:六类要素 + 裁剪 + 重采样)。**object 轮廓走非严格外推**(斑马线/停车线摆在路段起止处会合法溢到相邻路段,实测最多 2.44 m)⇒ 修前 Town03/04/05/06 **整张图提不出来**(12/20),现 **20/20**;越界实例在 attrs 里带 `s_extrapolated`,未越界的**不加该键**(⇒ 本来就好的图产出逐位不变) |
 | `mapvec_schema.py` | 矢量预测对外契约 `mapvec_pred/1`(schema 校验/JSON 往返)。`map_format` 是**可选加字段**(缺省 `opendrive`)⇒ 旧文件照收,**不 bump 版本号**(§P-M.15) |
 | `mapviz.py` | 矢量投影与绘制:ego 系折线 → 相机像素 + BEV 面板。`intrinsics_from_k` **直读 K 的 cx/cy**(不重算);`calib_from_fov` 是**全仓唯一 fov→fx 落点**(主点 = 索引约定中心 `(w−1)/2`) |
+| `bev_base.py` | **BEV 底图**:同段序列的 LiDAR/Radar 点云按位姿投到**与矢量同一平面系**,叠在图下当上下文。⚠️ **不是多模态融合** —— 模型纯相机,点云不进网络(头注首段)。三层坐标系显式化(`B`=CARLA actor 原点 / velodyne / nus sensor),换算全走**已有常量**(`slam_eval.LIDAR_LEVER`、`NUS_RADAR_OFFSETS`),两条链各有**对表自证**(`tests/map/test_bev_base.py`);分层阈值 `OBJECT_Z_MIN = 0.4` 由实测 z 直方图的天然谷定(路面 38140 点 z∈[0,0.2),谷在 0.2–0.6)。`Px`(批量仿射)定义在 `mapviz`(依赖序最低) |
 | `chamfer_ap.py` | MapTR 评估纯值:Chamfer 距离匹配 + 多阈值 AP(官方口径) |
 | `assemble_maptr.py` | 环视采集 + 地图矢量 → MapTRv2 infos 同构 json。`--surround`(单段,旧用法)/ `--segs-dir`(多段,收 `seg*`)**二选一**;多段按帧带 `seg` / `frame_in_seg`,`token` = `{seg}_{i:06d}`(**全局唯一**,`--out-frames` 拿它做文件名)。`roots_and_prefixes()` 决定 `data_path` 前缀:单段**空**(与旧产物逐帧等价,实测只有 3 个键变)、多段 `segK/`(§P-M.12) |
 | `merge_train_infos.py` | 拼接多组环视训练数据 → 合并 infos(帧号连续重排) |
 | `convert_mapvec.py` | 地图矢量 → MapTRv2 annotation 口径 |
 | `export_mapvec.py` | 地图矢量导出全量/帧级裁剪 json + BEV overlay。`--lanelet2`/`--apollo` **追加**写该格式(**互斥**);`--from {opendrive,lanelet2,apollo}` 反向读回当 GT 源。**默认路径逐位不变**(`vecs_dump` 没动,实测 sha256 与改动前相同) |
 | `prepare_official_dataset.py` | 环视数据 → 官方栈可直吃的 nuScenes 形状数据集(已终止线) |
-| `train_maptr.py` | MapTR 训练入口(单帧过拟合 = 正确性锚点;多帧 = 常规训练)。`--seg` / `--exclude-seg` / `--keep-in-seg` 走 `select_frames`(`--frames 0` = 筛后不截断);`--temporal-window K` = MapTRv2 时序版(与 `eval_maptr.py` **必须同值**),训练集丢弃数经 `ds.dropped` 上报;**长训一律 `--lr-halve 0`** —— 默认 12 会让 128 ep 后半程 lr 归零,平台是 lr 死掉不是收敛;过拟合闸门由 `is_single_frame_anchor(n_samples)` 判定,**按实际训练样本数而不是 `--frames` 标志**(`--frames 0` 是"不截断",按标志判会把 400 帧训练误判成单帧锚点并打假 FAIL + 退出码 1,见 §P-M.12) · 落 `logs/` 三件套 |
+| `train_maptr.py` | MapTR 训练入口(单帧过拟合 = 正确性锚点;多帧 = 常规训练)。`--seg` / `--exclude-seg` / `--keep-in-seg` 走 `select_frames`(`--frames 0` = 筛后不截断);`--temporal-window K` = MapTRv2 时序版(与 `eval_maptr.py` **必须同值**),训练集丢弃数经 `ds.dropped` 上报;**长训一律 `--lr-halve 0`** —— 默认 12 会让 128 ep 后半程 lr 归零,平台是 lr 死掉不是收敛;过拟合闸门由 `is_single_frame_anchor(n_samples)` 判定,**按实际训练样本数而不是 `--frames` 标志**(`--frames 0` 是"不截断",按标志判会把 400 帧训练误判成单帧锚点并打假 FAIL + 退出码 1,见 §P-M.12) · 落 `logs/` 三件套 |。**逐类留出 AP 落时间序列**(2026-09-30):`holdout_class_tags` 把 `evaluate()` 已经在算的 `aps`/`n_pred`/`n_gt` 逐类写成 jsonl 标签 `confirm_AP/<类>` 等 —— `rl.highlight` 是**末次覆盖**(`_highlights[k]=v`),逐类 AP 每次复核都盖掉上一次、时间序列整个丢失,不分类就看不出来「一类到顶、另一类还在涨」互相抵消。**收尾顺序(2026-09-30 修)**:best-AP 恢复**必须是最后一次写 `--out`**。恢复块之后不许再有 `save_map_checkpoint`/`_save_opt_sidecar`,权重类 `rl.artifact` 也必须排在恢复之后(它**调用时立刻 sha256**)。修前的 bug:恢复后被无条件存盘盖回触发时刻的权重,日志却照写「已恢复」(Plan2 §P-M.20);判据见 `tests/map/test_maptr_select.py::TestCheckpointFinalizeOrder`。**回评对照(2026-09-30)**:收尾那次 `_auto_eval` 评的正是**恢复后的 `--out`**,于是拿它的 mAP 与日志声称的 `best_ap` 比对(`_restore_mismatch`,容差 2e-3)—— **零额外 GPU 成本**就把「产物与自述不一致」变成自动检查;不一致则响亮报错并 `exit 1`(权重已在盘上,raise 不丢东西)。三种「判不了」各自落 `restore_verified` 的三个取值,**「没验」与「验过且通过」必须可区分**
 | `eval_maptr.py` | MapTR 评估:权重 → 逐帧推理 → 四类 chamfer AP(+ 逐帧契约落盘)。选择器与 `train_maptr` **同一份实现**(`select_frames`),`--start` / `--frames` 在**过滤后**的列表上再截(§P-M.12) · 落 `logs/` 三件套 |
 | `eval_official_metric.py` | A′ 口径复算:并排算"自实现 chamfer AP"与"官方 eval_map" · 落 `logs/` 三件套 |
-| `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板 · 落 `logs/` 三件套 |
+| `viz_maptr_pred.py` | 预测回投目检:预测/GT 折线 → 6 相机 overlay + BEV 面板。`--bev-pair` 额外落 `bev/frame_XXXX_{pred,gt}.png`(拼图里两者叠加,分开才看得出「谁多谁少」);`--lidar-root` 给每帧 BEV 加 LiDAR/Radar 底图(同帧 ego 系,零点是**判据**) · 落 `logs/` 三件套 |
 | `probe_mapvec_oracle.py` | 离线 xodr 解析 vs CARLA 运行时几何对账(0.00cm 验收) · 落 `logs/` 三件套 |
 | `probe_mapvec_proj.py` | 矢量投影回 6 视角图像的路面性验收(数值诊断) |
 | `assemble_and_merge.sh` | 组装 + 合并 infos 的批量编排 |
@@ -242,7 +248,7 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 
 | 文件 | 职责 |
 |---|---|
-| `core.py`(原 `gt.py`) | CARLA actor → KITTI label_2 GT 行 |
+| `core.py`(原 `gt.py`) | CARLA actor → KITTI label_2 GT 行。**`MIN_BOX_SIDE_PX = 1.0`**(§P-V12):投影框两维都要 ≥ 1 px 才出框 —— 车**擦过镜头**时会投出**零面积**框,它与任何预测的 IoU 恒为 0(白送一次漏检,P1 每份数据 11/194,recall 天花板被压到 94.3%),且进出由**亚帧抖动**决定(A/B 的 GT 逐帧条数会不等) |
 | `static_gt.py` | 静态目标/道路特征 GT(地图查询源:P2) |
 | `traffic_light.py` | 交通信号灯状态 GT(动态时序层:状态归一/前向判据/相位查表) |
 
@@ -282,6 +288,8 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | **层守卫** | `test_layer_guard.py` | **包纪律的可执行版本**(docs/refactor-2026-09.md §3):`LAYER_RULES` = 目录 → 禁止 import 的三方名,最长前缀匹配。旧版(`test_paths.py` 的整包禁令)的两个洞已堵:**马甲库**(`ultralytics`/`mmdet3d`/`mmcv`/`lightning` 会拉起 torch 但字面无 torch)、**字面量动态导入**(`importlib.import_module("x")`)。`TestPackageLayers` 扫真实包 + 强制新子目录必须显式声明;`TestLayerGuardSelfCheck` 用**合成源码注入**做立论自证(12 条:抓得住三类违规,且规则能区分、不是"见 carla 就红") |
 | **文档守卫** | `test_docs.py` | **「文档/入口不腐」的可执行判据**(2026-09-26 重构后补 —— 那次 21 条引用失效**全是静默的**,只有照着做的人拿到 `FileNotFoundError`;失效模式与 `paths.py::parents[1]` 同族:写的时候对、挪了之后静默错)。三类:① `CLAUDE.md`/`README.md`/`docs/fileTree.md` 的 markdown 链接目标必须存在;② 同三份文档里的 `python -m autodrivedata.<...>` 必须 `find_spec` 可解析;③ **包内 `.py` docstring 的 markdown 链接**必须存在。**第三类是第一版的漏网** —— 只扫 `.md` 时,`utils/fonts.py` 等处的 **16 条**坏链在「全文档坏链 0」的结论下整体逃检 ⇒ **判据的覆盖范围本身也是判据的一部分**。每条各带一条**扫描器自证**(防正则腐化后空过)。只判机械可判者:docstring 里的裸文件名不算路径;形如**方括号后紧跟圆括号单位**的**单位注记**(如米/像素、度、yaw=0)由后缀白名单滤掉(不加会多 9 条假阳性)。**`.`md` 侧不加白名单** —— 那里 `]` + `(` 就是 Markdown 链接,写它就是真坏链(本行的初版用实例演示,当场把守卫测红) |
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
+| **多传感器采集器 + BEV 底图(2026-09-30)** | `tests/sim/test_collect_surround_lidar.py` `tests/map/test_bev_base.py` | 两条都补的是**「不报错、只是数偏」**类失效。采集器那组:① `SENSOR_OFFSET` 必须 == `slam_eval.LIDAR_LEVER`(挂点错 ⇒ `eval_slam` 补错杆臂,ATE 静默偏);② LiDAR `spawn_actor` 的位姿实参**用 AST 判**必须是 `SENSOR_OFFSET`(纯文本扫会被注释里那句 `carla.Transform()` 骗过);③ `calib.json` 的**自述字段**(`provenance()`,纯函数):`--autopilot` 的 run 不许写成 `const_speed` + 具体速度 —— 那份假溯源会把人引去做红线禁止的 A/B;另有「spawn 侧与自述侧必须由**同一个** `AUTOPILOT_SPEED_PCT` 导出」与「`provenance()` 真的被 `main()` 调用」两条。底图那组:两条换算链各把**传感器原点**映回**已验证的表**(`SENSOR_OFFSET` / `NUS_RADAR_MOUNTS_CARLA` 翻号),外加**非原点处**一致(否则删掉 `R_yaw` 也照样绿)、五雷达原点必须互不相同、PCD 读侧与写侧逐位往返、空点云(NaN 哨兵)读成 0 点、`Px.arr` 与 `Px.__call__` 逐点一致 |
+| **静态遮挡 A/B(§P-V12)** | `tests/sim/test_occlusion.py`(35)`tests/sim/test_collect_ab_route.py`(22) | 这一档的失败模式**全是不可见的**:墙摆偏/矮/离车道近一点,采集照样跑完、GT 照样相等、图看着也对,只有"效果比预期小"——而那与"模型对遮挡鲁棒"长得一模一样。纯值组:**几何锚**(净空 > 0、部分遮挡落 21–24 px 断崖、`full` 恒 0、`gap` 单调性方向)、**深度 ≠ 斜距**(两种口径相差 8%,`label_2` 实测 58.6 px 才对得上)、**视线摆放 vs ego 正前方**(正前方漏 18.3% 车宽的**全高**缝)、摆位代数(同一平面 / 对称 / 首尾相接铺满 / 长轴垂直)。结构组:**GT 过滤器与道具 id 无交集**(AST 读源码前缀集对表,不是"读代码确认过了")、`--occluders` 默认 `none`、`--occluder-gap` 默认**引用**模块常量、`is_cleanup_target` 清场与收尾同源、`dims_match` 反例(长厚互换必须红) |
 | 教程能力线 | `test_mono_depth.py` `test_stereo.py` `test_multilidar.py` `test_slam.py` `test_accum.py` `test_ground.py` `test_cluster.py` `test_collect_rig.py` | 各含手算锚点;`collect_rig` 兼作采集器回归先例 |
 | SLAM 精度/在线线 | `test_slam_eval.py` `test_live_slam.py` | `slam_eval`:ATE/RPE 手算锚点 + 杆臂方向(不补杆臂 ATE 2.44×);`live_slam`:与离线 `slam_odometry` **逐帧同输入同输出**(<1e-12)+ `SlamWorker` 滞后有界/止损/同步模式 |
 | 闭环路线(§P-H.3) | `tests/sim/test_route.py` | **回环数据源的可离线验证部分**(纯值,零 carla)。三条手算钉:① 方框图 → 4 节点最短环、`A→B→A` 掉头被 `min_len` 拒、`max_nodes` 兜住无限链;② ★ **进度单调**(前视点索引不许回退 —— 纯追踪最经典的失败是车在起点附近来回蹭,而它"看着像在开")+ ★ **打舵符号**(目标在右 ⇒ `steer` 为正;符号反了车朝反方向冲出去)+ 双踏板恒互斥;③ **路网键适配**(`TestMakeSuccessors`,**合成 Waypoint**):4 段×30 m ⇒ 40 节点环、单圈几何 **120.0 m**(=39×3 + 收尾那 3 m,同时钉住"键里必须有 `s`"与"闭环长度要算收尾段")、闭合容差必须按**采样步长**给、回调吐出的键当次就进缓存。外加 `lap_budget`/`speed_ceiling`:**一圈 ≥250 帧 ⇒ 速度上限**(200 m 环 8.0 m/s、120 m 环只有 4.8 —— 开快了两次到访帧差不够,**回环必然不触发**) |
@@ -342,7 +350,8 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | 目录 | 装什么 | 产出者 |
 |---|---|---|
 | `kitti_*` | KITTI root 结构数据集(`image_2` / `velodyne` / `calib` / `label_2`):`kitti_day_clear` `kitti_drive` `kitti_sweep_*` 等 | `collect_drive.py` / `collect_kitti.py` |
-| `kitti_ab_*` | P1 A/B 帧级配对序列(day_clear / sunset_glare / rain_night / dense_fog) | `collect_ab_route.py` |
+| `kitti_ab_epic_*` | P1 A/B 帧级配对序列,Epic 质量档重采(day_clear / sunset_glare / rain_night / dense_fog / wet_road)。⚠️ **GT 含退化框、AP 带 ≈ −0.08 折扣**(§P-V12) | `collect_ab_route.py` |
+| `kitti_ab_occl2_*` | **P1-6b 静态遮挡 A/B**(§P-V12):`none_all`(基线)/ `partial_all` / `full_all`(阳性对照)/ `partial_nearest`。⚠️ 跑在**修退化 GT 之后**,GT 总数 **183** 而非 194,须与 `kitti_ab_epic_*` 分开读 | `collect_ab_route.py --occluders ...` |
 | `kitti3d_ab_*` | 上列 A/B 的 3D 伪标签输出(AutoLabel 消费) | `auto3dlabel run` + `eval_kitti.py` |
 | `surround_*` | 环视 6 相机数据集(`surround_train` / `surround_p3` / `surround_town13` / `surround_pred` 逐帧契约)。**`surround_v2` = §P-M.12 的 1600×900 官方口径训练集**:5 段 × 100 帧(stride 5,合计路线 1280.7 m),`seg0..seg4` 各为一段独立路线 + `map_infos.json`(500 帧,带 `seg`/`frame_in_seg`);`collect.log` 为采集计时 | `collect_surround.py` / `assemble_maptr.py` / `eval_maptr.py` |
 | `traj_town*` | 多 agent 轨迹数据集(HiVT 输入) | `collect_traj.py` / `assemble_traj_pt.py` |

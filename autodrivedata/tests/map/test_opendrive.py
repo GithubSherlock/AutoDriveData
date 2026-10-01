@@ -342,10 +342,21 @@ HAS_CARLA = os.path.isdir(CARLA_MAPS)
 pytestmark_real = pytest.mark.skipif(not HAS_CARLA, reason="本机无 CARLA 官方图")
 
 
+#: CARLA **运行时**会写进官方地图目录的文件名 —— 不是随包发布的图。
+#: 实测(2026-10-01):跑过 `client.generate_opendrive_world(...)` 之后,
+#: `Maps/OpenDrive/OpenDriveMap.xodr` 会凭空出现(就是刚生成那份的回写),
+#: 于是本测试的计数**凭空多出一份 Town10HD_Opt**(line +458 / arc +149)而红。
+#: ⇒ **CARLA 安装目录不是只读的**:凡是 glob 地图目录的判据都要把这类运行时产物排掉,
+#:    否则测试结果取决于"这台机器跑过什么",而不是"随包发了什么"。
+_RUNTIME_ARTIFACTS = frozenset({"OpenDriveMap.xodr"})
+
+
 def official_xodr_files() -> list[str]:
-    return sorted(glob.glob(os.path.join(CARLA_MAPS, "OpenDrive", "*.xodr"))) + sorted(
+    """随包发布的官方图 xodr(**排除 CARLA 运行时写进来的那些**)。"""
+    found = sorted(glob.glob(os.path.join(CARLA_MAPS, "OpenDrive", "*.xodr"))) + sorted(
         glob.glob(os.path.join(CARLA_MAPS, "*", "OpenDrive", "*.xodr"))
     )
+    return [p for p in found if os.path.basename(p) not in _RUNTIME_ARTIFACTS]
 
 
 class TestRealFiles:

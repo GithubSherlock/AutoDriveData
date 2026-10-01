@@ -89,7 +89,10 @@ import math
 from collections.abc import Iterable
 from typing import Any
 
+import numpy as np
+
 from autodrivedata.utils import geometry as g
+from autodrivedata.utils.geometry import NUS_EGO_ORIGIN_X
 
 # 官方 nuScenes 6 相机 calibrated_sensor(translation 米, rotation 四元数 w,x,y,z)——
 # 照 nuscenes_mini 实测(每通道取第一条记录)。**nusScenes 全局系**(y 左)。
@@ -115,18 +118,23 @@ NUS_CAMERAS: tuple[str, ...] = (
 
 def nus_camera_rig(
     calibs: dict[str, tuple[tuple[float, float, float], tuple[float, float, float, float]]] | None = None,
+    *,
+    origin_x: float = NUS_EGO_ORIGIN_X,
 ) -> dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]]:
     """nuScenes 侧标定 → CARLA 侧 rig:`{相机名: (挂点 (x,y,z) 米, 姿态 (pitch,yaw,roll) 度)}`。
 
     平移走 `geometry.nus_mount_to_carla`(**x 加 ego 系原点差 + y 翻号**,唯一换算点);
     姿态走 `geometry.nus_camera_rotation_to_carla` → `rotation_matrix_to_carla`(弧度转度)。
+
+    `origin_x` 见 `nus_mount_to_carla` 的说明 —— **换一辆车就要换它**;复现第三方数据集时必须用
+    对方的值(见下方 `NUS_CAMERA_RIG_NUCARLA`)。
     """
     out: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {}
     for name, (t_nus, q_nus) in (calibs or NUS_CAMERA_CALIBS).items():
         r_carla = g.nus_camera_rotation_to_carla(q_nus)
         pitch, yaw, roll = g.rotation_matrix_to_carla(r_carla)
         out[name] = (
-            g.nus_mount_to_carla(t_nus),
+            g.nus_mount_to_carla(t_nus, origin_x),
             (math.degrees(pitch), math.degrees(yaw), math.degrees(roll)),
         )
     return out
@@ -134,6 +142,134 @@ def nus_camera_rig(
 
 # 官方 rig 的 CARLA 侧展开表(由上方函数在导入时导出;改官方标定即自动跟随)
 NUS_CAMERA_RIG: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = nus_camera_rig()
+
+# ---------------------------------------------------------------- nuCarla rig(第三方数据集口径)
+#
+# **用途**:nuCarla(arXiv 2511.13744,CARLA **0.9.16** / UE4 —— 与本项目逐位同版本)发布了四个
+# BEV 检测模型的预训练权重(免训 300 GPU-h)。要在**我们的图**上跑泛化,就必须用**它的 rig** 采我们的图
+# —— §P-L.1 红线:「rig 必须与权重训练数据一致」(错配代价实测 122711 vs 135989 px)。
+#
+# **来源**:`nuCarla` 仓库 `data` 分支 `config.yaml` 的 sensors 段 **逐字抄录**,
+# **不拿我们的 `NUS_CAMERA_CALIBS` 代抄** —— 两者不等价,差在三处(2026-10-01 实测):
+#
+# | # | 差异 | 量 |
+# |---|---|---|
+# | ① | **四元数精度**:他们的 config 是**全精度官方值**;我们的 `NUS_CAMERA_CALIBS` 是**手抄 4 位小数**(|Δq| 3–5e-05,即本模块头注记的那次舍入) | 等价,但**不是同一份数** |
+# | ② | **CAM_FRONT 的 x 比官方大 0.2 m**(其余五路与官方**逐位相同**) | 0.2 m |
+# | ③ | **ego 原点常量**:他们的 `center_to_wheelbase = 1.317`(config 注明 **nissan micra 专用**);我们的 `NUS_EGO_ORIGIN_X = 1.2563` 是**实测 a2 后轴** | 0.0607 m |
+#
+# ⚠️ **最大的一处差是 FOV,不在表里**:
+#
+# | | 五路 | **CAM_BACK** |
+# |---|---|---|
+# | nuCarla | **65.0°** 统一 | **65.0°** |
+# | 官方 n015 / 我们 | 64.31–64.96° | **89.34°** |
+#
+# **CAM_BACK 差 24.3°** —— 内参由 FOV 导出,**BEV 模型的几何直接依赖它**
+# ⇒ 拿我们的 CAM_BACK 喂它的模型必然是错的。故 FOV 单独一张表。
+NUCARLA_EGO_ORIGIN_X: float = -1.3170
+
+#: nuCarla 六路**统一 65.0°**(与官方逐通道口径不同;见上表)。
+#: ⚠️ **官方 FOV 表不在本模块** —— 它在 `gt/export/nuscenes.NUS_CAMERA_FOV`(采集/导出共用
+#: 的历史落点)。nuCarla 这张落在这里,是因为它只服务「复现别人的 rig」这一件事,
+#: 与挂点表同生共死。比对两套口径时**从两处取**,别以为本模块有全部。
+NUCARLA_CAMERA_FOV: dict[str, float] = dict.fromkeys(NUS_CAMERAS, 65.0)
+
+#: nuCarla 的 nuScenes 侧标定(`(平移 nus 系, 四元数)`),**逐字抄自**其 `data` 分支 config.yaml。
+NUCARLA_CAMERA_CALIBS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float, float]]] = {
+    "CAM_FRONT": (
+        (1.90079118954, 0.0159456324149, 1.51095763913),
+        (0.4998015430569128, -0.5030316162024876, 0.4997798114386805, -0.49737083824542755),
+    ),
+    "CAM_BACK": (
+        (0.0283260309358, 0.00345136761476, 1.57910346144),
+        (0.5037872666382278, -0.49740249788611096, -0.4941850223835201, 0.5045496097725578),
+    ),
+    "CAM_BACK_LEFT": (
+        (1.03569100218, 0.484795032713, 1.59097014818),
+        (0.6924185592174665, -0.7031619420114925, -0.11648342771943819, 0.11203317912370753),
+    ),
+    "CAM_FRONT_LEFT": (
+        (1.52387798135, 0.494631336551, 1.50932822144),
+        (0.6757265034669446, -0.6736266522251881, 0.21214015046209478, -0.21122827103904068),
+    ),
+    "CAM_FRONT_RIGHT": (
+        (1.5508477543, -0.493404796419, 1.49574800619),
+        (0.2060347966337182, -0.2026940577919598, 0.6824507824531167, -0.6713610884174485),
+    ),
+    "CAM_BACK_RIGHT": (
+        (1.0148780988, -0.480568219723, 1.56239545128),
+        (0.12280980120078765, -0.132400842670559, -0.7004305821388234, 0.690496031265798),
+    ),
+}
+
+
+def _nucarla_camera_rotation(q_nus: tuple[float, float, float, float]) -> tuple[float, float, float]:
+    """nuCarla `sensors.py` 的姿态换算 —— **逐行复现,含它的约定**。
+
+    ```
+    q_new = yaw_q(−90°) · roll_q(−90°) · q_nus⁻¹      (pyquaternion)
+    yaw, pitch, roll = q_new.yaw_pitch_roll           (右手 Z-Y-X)
+    carla.Rotation(pitch=..., yaw=..., roll=...)
+    ```
+
+    ★ **不能换成 `nus_camera_rotation_to_carla`** —— 两条链**不等价**,差在 pitch/roll:
+
+    | 通道 | 本函数 (pitch, yaw, roll) | `NUS_CAMERA_RIG` 的链 |
+    |---|---|---|
+    | CAM_BACK | (−0.2292, −179.8612, **0.9594**) | (**0.9594**, −179.8574, −0.2292) |
+
+    **yaw 六路逐位一致,pitch↔roll 互换且一侧反号** ——
+    因为 `sensors.py` 把 **pyquaternion 的右手 Z-Y-X** 角**直接喂进 `carla.Rotation`(UE 左手)**,
+    而我们的链走的是**经过验证的** UE 口径(§P-M.10 ③ 实测:正确是 `Rz(−yaw)·Ry(−pitch)·Rx(+roll)`,
+    `carla_rotation_matrix` 是左手阵,因子分解的右手假设会把 pitch/roll 弄反 —— 那条当时**极隐蔽**,
+    因为 yaw 项照样对得上)。
+
+    **为什么仍要用它**:模型学的是**他们渲染出来的图**。他们的相机若有 ~0.4° 的俯仰偏差,
+    我们必须**原样复现**,否则凭空多一个域差 —— 这正是 §P-L.1「rig 必须与权重训练数据一致」的极端形态:
+    **一致到"连对方的约定偏差也要一致"**。
+    """
+    yaw_q = _quat_axis_angle((0.0, 0.0, 1.0), -90.0)
+    roll_q = _quat_axis_angle((1.0, 0.0, 0.0), -90.0)
+    q_new = _quat_mul(_quat_mul(yaw_q, roll_q), _quat_conj(np.asarray(q_nus, dtype=float)))
+    w, x, y, z = q_new
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * x - y * z))))
+    roll = math.atan2(2 * (w * y + x * z), 1 - 2 * (x * x + y * y))
+    return (math.degrees(pitch), math.degrees(yaw), math.degrees(roll))
+
+
+def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """(w,x,y,z) 哈达玛积 —— 只在本模块复现 nuCarla 的数学,不外露。"""
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+
+
+def _quat_conj(q: np.ndarray) -> np.ndarray:
+    return np.array([q[0], -q[1], -q[2], -q[3]])
+
+
+def _quat_axis_angle(axis: tuple[float, float, float], deg: float) -> np.ndarray:
+    a = np.asarray(axis, dtype=float)
+    a = a / np.linalg.norm(a)
+    h = math.radians(deg) / 2.0
+    return np.array([math.cos(h), *(a * math.sin(h))])
+
+
+#: nuCarla rig 的 CARLA 侧展开表。**平移**走 `nus_mount_to_carla`(同一个唯一换算点,只是换
+#: 原点常量);**姿态**走 `_nucarla_camera_rotation`(见它为什么不能复用我们的链)。
+NUS_CAMERA_RIG_NUCARLA: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    ch: (g.nus_mount_to_carla(t_nus, NUCARLA_EGO_ORIGIN_X), _nucarla_camera_rotation(q_nus))
+    for ch, (t_nus, q_nus) in NUCARLA_CAMERA_CALIBS.items()
+}
 
 # 相机名 → 相对 ego 的偏航(度),CARLA 口径。**历史别名**:`collect_surround.SURROUND_CAMS`
 # 的等价物,供只关心偏航的调用方(`live_common.rig_spec`)直接取用。

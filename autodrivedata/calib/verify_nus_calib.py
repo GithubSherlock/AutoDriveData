@@ -72,7 +72,12 @@ import numpy as np
 
 # 进包后不再需要 sys.path 引导(旧 bin/ 非包布局的产物)
 from autodrivedata.calib import selfcheck as sc
-from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG  # noqa: E402
+from autodrivedata.calib.camera_rig import (  # noqa: E402
+    NUCARLA_EGO_ORIGIN_X,
+    NUS_CAMERA_RIG,
+    NUS_CAMERA_RIG_NUCARLA,
+    NUS_WIDE_CAMERA_RIG,
+)
 from autodrivedata.gt.export.nuscenes import (  # noqa: E402
     NUS_CAMERAS,
     NUS_LIDAR_CALIB,
@@ -93,8 +98,55 @@ RIG: str = "nuscenes"
 
 
 def rig_cameras() -> dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]]:
-    """当前 rig 的 CARLA 侧逐相机 (挂点, 姿态)(pitch/yaw/roll 度)。"""
-    return NUS_WIDE_CAMERA_RIG if RIG == "wide" else NUS_CAMERA_RIG
+    """当前 rig 的 CARLA 侧逐相机 (挂点, 姿态)(pitch/yaw/roll 度)。
+
+    ★ **表驱动,不许写成两分支 `if`** —— 2026-10-01 加 nuCarla 时踩过:
+    原实现是 `NUS_WIDE_CAMERA_RIG if RIG == "wide" else NUS_CAMERA_RIG`,
+    **任何第三个 rig 都静默回落到官方**。症状:判据① 的**实挂侧**挂的是官方 rig、
+    声明侧却是 nuCarla ⇒ `dev = 0.1393 m`(= CAM_FRONT 的 x 差),看着像"接错了",
+    实际是"spawn 用错了表"。
+    **与 `live_common.rig_spec` 同一处病**(那处也是两分支),两处都改成查表。
+    """
+    table = {
+        "nuscenes": NUS_CAMERA_RIG,
+        "wide": NUS_WIDE_CAMERA_RIG,
+        "nucarla": NUS_CAMERA_RIG_NUCARLA,
+    }.get(RIG)
+    if table is None:
+        raise ValueError(f"未知 rig {RIG!r};可选 {sorted(NUS_RIGS)}")
+    return table
+
+
+#: rig 名 → 该 rig 的 **ego 原点常量**(CARLA actor 系,后轴相对车身中点的 x)。
+#: 我们自己采的口径用**实测 a2 后轴**;第三方口径用它**自己声明的车**(nuCarla 的
+#: `config.yaml` 注明是 nissan micra,`center_to_wheelbase = 1.317`)。
+#: ⚠️ 判据⑨ 的链子必须按**本 rig 的**原点展开 —— 用错就整体偏一个固定杆臂
+#: (实测:nucarla 用我们的常量 ⇒ 六路齐刷刷 0.060704 m,恰是 |1.317 − 1.2563|)。
+_RIG_ORIGIN_X: dict[str, float] = {
+    "nuscenes": g.NUS_EGO_ORIGIN_X,
+    "wide": g.NUS_EGO_ORIGIN_X,
+    "nucarla": NUCARLA_EGO_ORIGIN_X,
+}
+
+
+#: rig 名 → **是否为本项目自己的口径**(即标定表与实挂由同一套换算导出)。
+#: `False` 表示它是**复现第三方**的口径:此时判据⑨ 的 FAIL **未必是我们的问题** ——
+#: 实测 nuCarla 就自己「声明≠渲染」(它落盘原始 nus 四元数,却按 pyquaternion 的
+#: **右手 Z-Y-X** 直接喂 `carla.Rotation`,两者不是互逆换算,pitch/roll 差 **≤1.55°**)。
+#: 报告必须把这一层写出来,否则 FAIL 会被读成"我们接线错了"。
+_RIG_IS_OURS: dict[str, bool] = {"nuscenes": True, "wide": True, "nucarla": False}
+
+
+def rig_is_ours() -> bool:
+    return _RIG_IS_OURS.get(RIG, True)
+
+
+def rig_origin_x() -> float:
+    """当前 rig 的 ego 原点常量(判据⑨ 的链子基准)。表驱动,未知 rig 报错。"""
+    try:
+        return _RIG_ORIGIN_X[RIG]
+    except KeyError:
+        raise ValueError(f"未知 rig {RIG!r};可选 {sorted(NUS_RIGS)}") from None
 
 
 def rig_intrinsics() -> dict[str, tuple[float, float, float]]:
@@ -717,7 +769,20 @@ def run_live(
             t_r, yaw_r = NUS_RADAR_OFFSETS[ch]
             declared_nus[ch] = (t_r, g.yaw_to_quat(yaw_r))
         sensors: dict[str, Any] = {**cams, **radars, "LIDAR_TOP": lidar}
-        chain = world_pose_chain(sensors, ego, declared_nus, axles["rear_x_m"])
+        # ★ 用**本 rig 的**原点常量,不是"实测 a2 后轴" —— 后者只对**我们自己的车**成立。
+        # 判据⑩ 仍然单独把守"实测后轴 vs `NUS_EGO_ORIGIN_X`"那条(它才是常量本身的判据)。
+        chain = world_pose_chain(sensors, ego, declared_nus, rig_origin_x())
+        if not rig_is_ours():
+            # ★ 别让 FAIL 被误读成"我们接错了"。第三方 rig 上本判据的 FAIL 有两种来源,
+            # 必须分开说:① 我们复现得不对;② **对方自己**声明≠渲染。
+            # 判据:平移若收敛到 ~1e-06 m 而只剩旋转差 ⇒ 挂点复现无误,差在**换算约定**,
+            # 而那正是"复现渲染还是复现元数据"的选择(我们选渲染 —— 模型学的是图)。
+            chain["third_party_note"] = (
+                f"rig={RIG!r} 是**复现第三方**的口径 ⇒ 本判据的 FAIL **未必是我们的问题**。"
+                "分解看:**平移 ~1e-06 m 表示挂点复现无误**;若只剩旋转差,那是对方的**声明≠渲染**"
+                "(它落盘的 extrinsic 与它实挂用的换算不是互逆的)。"
+                "本项目**有意**复现对方的**渲染**(模型学的是图),而不是它的**元数据**。"
+            )
         rep["criterion_9_world_pose_chain"] = chain
         rep["criterion_6_rendered_fov"] = _rendered_fov(world, ego, pc)
 

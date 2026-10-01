@@ -41,6 +41,28 @@ TF32 关闭的口径下测的,今天的默认值把它**静默改掉了**。`pre
 ⇒ **`disable_tf32()` 不是"精度洁癖",是把口径钉死的一步**。批量推理尤其依赖它:
 TF32 会让 batch=1 与 batch>1 走**不同的 cudnn kernel**,于是"批量结果 == 逐图结果"
 这条闸门在不关它时**根本不成立**。**新增批量推理入口时,先调它。**
+
+## ⚠️ 自适应 batch 的第二个静默坑:峰值**不过原点**(2026-09-30 修)
+
+原公式 `bs = 1 + floor(空闲×安全系数 / 每样本增量)` 把 batch=1 当成"已驻留、不占预算",
+而 `_bs_from_budget` 里的 `empty_cache()` 恰恰把它归还给了空闲计量。实测(MapQR、
+`train_maptr --variant mapqr`、RTX 3090 48 GiB):
+
+| batch | 实测峰值 reserved | 增量 |
+|---|---|---|
+| 1 | 12.98 GiB | — |
+| 2 | 25.39 GiB | +12.41 |
+| 3 | 37.77 GiB | +12.40 |
+| 4 | **OOM** | (需 ≈50 GiB,只有 47.41) |
+
+旧公式:`per = r2 − r1 = 12.41`,`bs = 1 + floor(46.7×0.95/12.41) = **4**` ⇒ **一跑就崩**。
+根因是 `batch=1` 那 **12.98 GiB 的常驻足迹**(参数 + 优化器状态 + cudnn workspace + 一份激活)
+没从预算里扣。现公式 `bs = 1 + floor((空闲×安全系数 − batch1足迹) / 每样本增量)`:
+`1 + floor((44.4 − 12.98)/12.41) = **3**` —— 与实测峰值 37.77 ≤ 47.41 相符。
+⇒ 探针的返回值从 `(每单位增量, 探针 batch)` 扩成**三元组**,第三个量就是 `batch1足迹`。
+
+凡"改了 batch 就换结果"的既有纪律(AP 与 batch 绑定、跨机不可比)都依赖这里选得**对且可复现**;
+选出一个一跑就 OOM 的 batch 比选小了更坏 —— 长训会在第 N 个 epoch 崩掉。
 """
 
 from __future__ import annotations
@@ -177,12 +199,22 @@ def _probe_two_largest(image_paths: list[str]) -> list[str]:
     return unique
 
 
-def _linear_increment(run: Callable[[int], None]) -> tuple[int, int] | None:
+def _linear_increment(run: Callable[[int], None]) -> tuple[int, int, int] | None:
     """增量法公共骨架:`memory_reserved` 只增不减,只测差值、从不 reset。
 
-    `run(k)` 跑一次 batch=k 的负载(训练步或推理)。warmup(batch=1)同时驻留优化器状态 /
-    cudnn kernel,B 步的线性增量 = 每单位成本。B 步 OOM → 返回 (batch=1 全量增量, 1)
-    作保守上界(调用方回退 batch=1)。无 CUDA / warmup OOM / 增量 ≤ 0 → None。
+    `run(k)` 跑一次 batch=k 的负载(训练步或推理)。返回
+    **`(每单位增量, 探针 batch, batch=1 的常驻足迹)`**。
+
+    ★ 第三个量是为了修一个**真实的过估**:峰值并不线性过原点。实测(2026-09-30,MapQR,
+    `batch` 1→4,RTX 3090 48G):12.98 / 25.39 / 37.77 / **OOM** GiB ——
+    即 `峰值(bs) ≈ batch1足迹 + (bs−1)·每单位增量`,`batch1足迹 ≈ 12.98 GiB`(参数 + 优化器
+    状态 + cudnn workspace + 一份激活)。**这个足迹不是"已驻留所以不占预算"**:
+    `_bs_from_budget` 里的 `empty_cache` 会把它归还给空闲计量,于是预算看着有 44 GiB,
+    而真正跑 batch=4 时它要重新占 13 GiB ⇒ 44/12.41 算出 bs=4,实际需要 50 GiB。
+    **旧公式只凭 r0/r1 是做不出这个判断的**,所以第三个量必须由这里带出去。
+
+    OOM 与退化分支:batch=2 步 OOM → 返回 `(batch=1 全量增量, 1, 同值)` 作保守上界
+    (调用方见 probe_batch==1 即回退 `min_batch`)。无 CUDA / warmup OOM / 增量 ≤ 0 → None。
     """
     try:
         import torch
@@ -200,6 +232,7 @@ def _linear_increment(run: Callable[[int], None]) -> tuple[int, int] | None:
             return None
         raise
     r1 = torch.cuda.memory_reserved(0)
+    base = r1 - r0  # batch=1 相对"模型已就位但还没跑过一步"的净增
 
     try:
         run(2)
@@ -207,23 +240,32 @@ def _linear_increment(run: Callable[[int], None]) -> tuple[int, int] | None:
     except RuntimeError as e:
         if _is_oom(e):
             torch.cuda.empty_cache()
-            return (r1 - r0, 1)
+            return (base, 1, base)
         raise
     r2 = torch.cuda.memory_reserved(0)
 
     per = r2 - r1
     if per <= 0:
         return None
-    return per, 2
+    return per, 2, base
 
 
-def _bs_from_budget(per_unit: int, min_batch: int, max_batch: int, safety_factor: float) -> int:
-    """`bs = 1 + floor(空闲×安全系数 / 每单位)`(batch=1 已驻留),钳到 [min, max]。"""
+def _bs_from_budget(
+    per_unit: int, base_bytes: int, min_batch: int, max_batch: int, safety_factor: float
+) -> int:
+    """`bs = 1 + floor((空闲×安全系数 − batch1足迹) / 每单位)`,钳到 [min, max]。
+
+    **必须减掉 `base_bytes`** —— 见 `_linear_increment` 的实测表。不减就是"预算里算了
+    batch=1,却忘了 batch=1 本身也要占地方",症状是**选出的 batch 一跑就 OOM**
+    (实测:算出 4、真跑 4 需要 50 GiB / 只有 47.4 GiB)。`max(0, …)` 兜住
+    "batch=1 就快撑满"的档 —— 此时 `room=0` ⇒ 回落到 `min_batch`(通常 1)。
+    """
     import torch
 
     torch.cuda.empty_cache()
     budget = torch.cuda.mem_get_info(0)[0] * safety_factor
-    return max(min_batch, min(max_batch, 1 + int(budget // per_unit)))
+    room = max(0.0, budget - base_bytes)
+    return max(min_batch, min(max_batch, 1 + int(room // per_unit)))
 
 
 def tune_batch_size(
@@ -244,17 +286,20 @@ def tune_batch_size(
     measured = _linear_increment(run)
     if measured is None:
         return min_batch
-    per_unit, probe_batch = measured
+    per_unit, probe_batch, base_bytes = measured
     if probe_batch == 1:
         return min_batch
-    return _bs_from_budget(per_unit, min_batch, max_batch, safety_factor)
+    return _bs_from_budget(per_unit, base_bytes, min_batch, max_batch, safety_factor)
 
 
-def measure_train_batch_memory(step_fn: Callable[[int], None]) -> tuple[int, int] | None:
-    """实测每样本**训练步**显存增量(forward + backward + step)。
+def measure_train_batch_memory(step_fn: Callable[[int], None]) -> tuple[int, int, int] | None:
+    """实测**训练步**显存:`(每样本增量, 探针 batch, batch=1 足迹)`。
 
     训练与推理的每单位成本**不是一回事**:训练要驻留激活梯度与优化器状态,推理不要。
     故两个探针分开,别拿推理的公式去猜训练的 batch。
+
+    返回值从 2 元组变 3 元组(2026-09-30):调用方若只取 `[1]` 判断"探针是否退化",
+    行为不变;新加的第三个量见 `_linear_increment` 的实测表。
     """
     return _linear_increment(step_fn)
 
@@ -271,8 +316,8 @@ def tune_train_batch_size(
 
 def measure_infer_batch_memory(
     infer_fn: Callable[[list[str]], Any], image_paths: list[str]
-) -> tuple[int, int] | None:
-    """实测每张图**推理**显存增量;返回 `(per_img_bytes, probe_batch)`。
+) -> tuple[int, int, int] | None:
+    """实测**推理**显存;返回 `(每张图增量, 探针 batch, batch=1 足迹)`(口径同训练侧)。
 
     未指定路径后缀过滤 —— 显存只取决于尺寸,取面积最大的两张即最保守(AutoLabel 口径)。
     """

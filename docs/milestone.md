@@ -1,6 +1,6 @@
 # AutoDriveData 里程碑
 
-CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实源 = 根目录 Plan.md**(方案定案/执行细节/待办);本文档 = 里程碑时间线与验收结论速览;踩坑与测试记录 = [testLog.md](testLog.md)。
+CARLA 0.9.16 → AutoLabel 数据输出流水线的迭代记录。**单一事实源 = 根目录 [Plan4.md](../Plan4.md)**(2026-09-30 起;[Plan.md](../Plan.md) 与 [Plan2.md](../Plan2.md) 均已冻结);本文档 = 里程碑时间线与验收结论速览;踩坑与测试记录 = [testLog.md](testLog.md)。
 
 ## 时间线概览(2026-09-06 → 2026-09-08)
 

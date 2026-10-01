@@ -4,7 +4,7 @@
 > 是目录重构前的口径(现已不存在)。当前路径见 [fileTree.md](fileTree.md)。
 
 > 16 篇 Carla 仿真教程(docs/Carla_Sim_Tutorial_01..16.md)能力在本仓栈的落地记录。
-> 路线图与待办见 [Plan2.md](../Plan2.md);**2026-09-19 起新计划一律在 Plan2.md 制定**,
+> 路线图与待办见 [Plan4.md](../Plan4.md)(2026-09-30 起;此前在 [Plan2.md](../Plan2.md),该档已冻结),**新计划一律在 Plan4.md 制定**,
 > [Plan.md](../Plan.md) 转为方案定案 + 历史执行记录(冻结)。
 
 ## ✅ HiVT-CARLA 轨迹预测主线(教程 02 升级——多智能体轨迹预测)
@@ -628,10 +628,13 @@ torch 不认识的 `10.3`,改 `8.9` 后撞上 `/root/miniconda3/include/cuda_run
       帧级留出(过预测更多:1.74× vs 1.21×)⇒ §5.11 的「泛化间隙 3.9×」不能用它复算;③ 帧级留出还叠了
       **GT 密度**混淆(11.34 实例/帧 vs 训练 7.87,各段尾段恰是路口)。类别级:`ped_crossing` 同街 0.2125
       → 未训路线 **0.0000**(pred 8/gt 139)⇒ 靠位置记忆。详见 Plan2.md §P-M.12
-- [ ] **时序建图(online HD mapping)** —— **代码 + 单测已就绪**(`maptr_impl/temporal.py`、
+- [x] **时序建图(online HD mapping)** —— **代码 + 单测已就绪**(`maptr_impl/temporal.py`、
       `--temporal-window`,相关 74 用例过;**运行时序暂不训练 = 用户 2026-09-24 裁决**,不准当顺手跑的
       下一步自动接上)。实现优先序 = **MapQR 或 MapTRv2 的时序版本**(用户已降级 StreamMapNet /
       MapTracker);窗口 = **3 帧 (t, t−1, t−2)**(用户裁决),历史帧走 `no_grad` 编码;窗口守卫的边界是
       **切分**不是段(帧级切分画在段内部,否则留出帧 80/81 的历史 79/78 在训练集里 = 泄漏 8/80 帧);
       与单帧基线**同段划分、同 score_thr** 出 AP
-- [ ] **AutoLabel 接逐帧契约** `mapvec_pred/1`(`eval_maptr.py --out-frames` 已就绪)
+- [x] **AutoLabel 接逐帧契约** `mapvec_pred/1` —— ✅ **早已接了**(2026-09-30 对账:AutoLabel **v0.4** 实现了
+      `schema/mapvec{,_proj}.py` + `tools/mapvec_compare.py` + `export/mapvec_report.py` + `auto3dlabel mapvec-report` CLI + 25 用例)。
+      ⚠️ **对账同时发现它那条交叉验证测试已 ERROR 4 天**(本仓 2026-09-26 重构挪了模块路径)
+      —— 那是复制版契约唯一的漂移保护网。已修 + 产出方加机械判据,见 [Plan4.md](../Plan4.md) §P-V3

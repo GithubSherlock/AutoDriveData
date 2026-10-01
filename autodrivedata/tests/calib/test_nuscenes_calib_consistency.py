@@ -458,7 +458,9 @@ class TestWideIntrinsics:
             assert ne.camera_intrinsic(cam)[0][0] == pytest.approx(fx, abs=1e-9), cam
             assert ne.camera_intrinsic(cam) == ne.camera_intrinsic(cam, "nuscenes"), cam
         assert ne.NUS_RIG_DEFAULT == "nuscenes"
-        assert set(ne.NUS_RIGS) == {"nuscenes", "wide"}
+        # 三套口径并存:官方(默认)/ wide(自定义宽视口)/ nucarla(复现第三方数据集,2026-10-01 加)
+        # —— 判据是"官方**仍是默认**且**逐位未变**",不是"只有两条"
+        assert set(ne.NUS_RIGS) == {"nuscenes", "wide", "nucarla"}
 
 
 class TestCollectNusRigSelection:

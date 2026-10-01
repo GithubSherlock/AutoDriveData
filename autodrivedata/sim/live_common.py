@@ -54,12 +54,16 @@ import carla
 import numpy as np
 from PIL import Image, ImageDraw
 
-from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.calib.camera_rig import (
+    NUS_CAMERA_RIG,
+    NUS_CAMERA_RIG_NUCARLA,
+    NUS_WIDE_CAMERA_RIG,
+)
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
 from autodrivedata.gt.core import ActorBox, box_center_world, box_corners_world, box_to_gt_line
 from autodrivedata.gt.export.nuscenes import NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH, camera_fov
 from autodrivedata.map.mapviz import calib_from_fov
-from autodrivedata.sim.carla_common import SENSOR_MOUNTS, loc, rad
+from autodrivedata.sim.carla_common import loc, rad
 from autodrivedata.utils import fonts
 from autodrivedata.utils.geometry import carla_rotation_matrix, rotation_matrix_to_carla, world_to_cam
 
@@ -77,7 +81,23 @@ RIG_WIDE = "wide"
 
 #: 可用的 ring 口径。**`legacy` 已于 2026-09-28 移除**(成因与证据见
 #: [docs/legacy-rig-archive.md](../../docs/legacy-rig-archive.md))。
-RIGS: tuple[str, ...] = (RIG_NUSCENES, RIG_WIDE)
+RIG_NUCARLA = "nucarla"
+
+#: rig 名 → CARLA 侧展开表 `{相机名: (挂点, (pitch,yaw,roll) 度)}`。**表驱动**而不是
+#: 一条条 `if` —— 2026-10-01 加 nuCarla 时,只接了 `export.nuscenes.NUS_RIGS` 那一张注册表,
+#: 实时侧漏接 ⇒ `verify_nus_calib --rig nucarla` 当场 `ValueError`。改成查表之后,
+#: 加一套 rig 只需在这里加一行。
+#:
+#: ⚠️ **本表与 `gt/export/nuscenes.NUS_RIGS` 是两张注册表**(历史原因:一个管"采集/导出",
+#: 一个管"实时渲染")。两者**必须一致** —— 由 `tests/sim/test_live_common.py` 的
+#: `test_rig_registries_agree` 机械钉住,别再靠"记得两处都改"。
+_RIG_TABLES: dict[str, dict] = {
+    RIG_NUSCENES: NUS_CAMERA_RIG,
+    RIG_WIDE: NUS_WIDE_CAMERA_RIG,
+    RIG_NUCARLA: NUS_CAMERA_RIG_NUCARLA,
+}
+
+RIGS: tuple[str, ...] = tuple(_RIG_TABLES)
 
 
 def rig_spec(
@@ -88,14 +108,16 @@ def rig_spec(
     未知 rig **直接抛**而不是回退到某套口径 —— 静默回退等于"参数写错却很像在工作",
     正是本项目反复踩的那类失效。
     """
-    if rig == RIG_NUSCENES:
-        return dict(SENSOR_MOUNTS), {name: rot for name, (_, rot) in NUS_CAMERA_RIG.items()}
-    if rig == RIG_WIDE:  # 后三路挂点后移到车尾 + 轴方位角重排;**前三个与官方逐位相同**
-        return (
-            {name: m for name, (m, _) in NUS_WIDE_CAMERA_RIG.items()},
-            {name: rot for name, (_, rot) in NUS_WIDE_CAMERA_RIG.items()},
-        )
-    raise ValueError(f"未知 rig {rig!r};可选 {RIGS}")
+    table = _RIG_TABLES.get(rig)
+    if table is None:
+        raise ValueError(f"未知 rig {rig!r};可选 {RIGS}")
+    # 三个 rig 统一走表。`RIG_NUSCENES` 原先取 `carla_common.SENSOR_MOUNTS` —— 那**就是**
+    # `NUS_CAMERA_RIG` 的挂点别名(实测逐位相同),故换成本表**不改行为**;
+    # 由 `tests/sim/test_live_common.py::test_nuscenes_mounts_unchanged` 钉住。
+    return (
+        {name: m for name, (m, _rot) in table.items()},
+        {name: rot for name, (_m, rot) in table.items()},
+    )
 
 
 def rig_frame(

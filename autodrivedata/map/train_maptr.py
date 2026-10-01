@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,7 @@ from autodrivedata.map.maptr.head import maptr_loss, match_assign
 from autodrivedata.map.maptr.model import MapTR, load_map_weights
 from autodrivedata.map.maptr.variants import resolve_variant, save_map_checkpoint, variant_names
 from autodrivedata.runtime.device import SAFETY_FACTOR, get_gpu_free_memory_gb, tune_train_batch_size
+from autodrivedata.runtime.early_stop import EarlyStopper, PlateauDetector
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -106,7 +108,40 @@ def _load_opt_sidecar(opt: torch.optim.Optimizer, args: argparse.Namespace, dev:
     print(f"[opt] 载入优化器状态 {path}(存盘于 epoch {side.get('epoch', '?')},力矩不重置)")
 
 
-def _auto_eval(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
+#: 回评对照的容差。取 **2e-3 = 项目记录的复现性下限**(CLAUDE.md 红线):
+#: 同一份权重、同一批帧、同一条评测脚本,换进程也不该动超过这个量。
+#: 之所以敢这么紧:回评的输入与复核时被评的那份**逐字节相同**(`copyfile` 是原样拷贝)。
+RESTORE_TOL = 2e-3
+
+
+def _restore_mismatch(claimed: float | None, measured: float | None, tol: float = RESTORE_TOL) -> str | None:
+    """回评对照的**判据**(纯值,可单测):返回 `None` = 通过,否则返回人读的失败描述。
+
+    ★ **这是防 §P-M.20 那一类的唯一机械手段。** 那次「恢复 best-AP 权重」被后面的无条件存盘
+    静默覆盖:日志照写 0.1557、盘上却是 0.1243,**任何一处的输出都看不出** ——
+    唯一的发现方式是手工回评字节、再逐位比 `pred/gt` 计数,纯属凑巧(复核点恰好落在同一 epoch)。
+
+    判据是「**回评值 == 声称值**」,不是「回评值高不高」—— 它防的是**产物与自述不一致**,
+    与模型好坏无关。
+
+    三种"判不了"的情形都返回 `None`(**不误报**),由调用方各自明说:
+    `claimed is None`(没成功复核过,没有声称值可对)、`measured is None`(回评没做/失败)、
+    两者皆非有限数。**"判不了"与"通过"必须由调用方区分开记** —— 静默把判不了当通过,
+    就是本函数要消灭的那类误读。
+    """
+    if claimed is None or measured is None:
+        return None
+    if not (math.isfinite(claimed) and math.isfinite(measured)):
+        return None
+    if abs(measured - claimed) <= tol:
+        return None
+    return (
+        f"落盘权重回评 {measured:.4f} ≠ 日志声称的 best-AP {claimed:.4f}"
+        f"(差 {abs(measured - claimed):.4f} > 容差 {tol:g})—— **产物与自述不一致**"
+    )
+
+
+def _auto_eval(args: argparse.Namespace, rl: runlog.RunLogger) -> dict | None:
     """训练尾部的留出集评估 —— **转发给 `eval_maptr.evaluate()` 那一份实现**。
 
     chamfer AP 若在这里抄成第二份,两处必然漂移,而"同一权重在两个脚本里报出不同 AP"
@@ -114,21 +149,24 @@ def _auto_eval(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
 
     **没给选择器就不评,并且明说** —— 静默跳过会让"这次有日志"被读成"这次有 mAP",
     而这正是引入日志要消灭的那类误读。`--no-eval` 是主动关,措辞与"没给选择器"分开。
+
+    返回 `res`(未评则 `None`)给调用方做**回评对照** —— 这里评的正是**恢复后的 `--out`**,
+    所以那次对照**不需要额外再评一遍**(零 GPU 成本)。
     """
     if args.no_eval:
         rl.note("--no-eval:训练结束未评 mAP")
         print("[runlog] --no-eval ⇒ 不自动评 mAP")
-        return
+        return None
     if not (args.eval_seg or args.eval_keep_in_seg or args.eval_exclude_seg):
         msg = "未给 --eval-seg/--eval-keep-in-seg/--eval-exclude-seg ⇒ 不自动评 mAP"
         rl.note(msg)
         print(f"[runlog] {msg}(要评就补选择器;`--no-eval` 可显式关)")
-        return
+        return None
     print(f"[runlog] 训练结束 → 留出集评估(score_thr={args.eval_score_thr})")
     res = evaluate(
         infos=args.infos,
         root=args.root,
-        ckpt=args.out,  # 评的就是刚落盘的这份权重
+        ckpt=args.out,  # 评的就是刚落盘的这份权重(恢复之后)
         frames=args.eval_frames,
         seg=args.eval_seg,
         exclude_seg=args.eval_exclude_seg,
@@ -139,6 +177,163 @@ def _auto_eval(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
         highlight_prefix="holdout_",  # 训练日志里的 mAP 必须一眼看出是留出集的
     )
     rl.note(f"留出评估 {res['n_frames']} 帧,score_thr={res['score_thr']},后端 {res['backend']}")
+    return res
+
+
+def holdout_class_tags(res: dict, prefix: str = "confirm_") -> dict[str, float]:
+    """留出评估的**逐类**结果 → jsonl 的稀疏标签(给曲线用的时间序列)。
+
+    ★ **为什么必须另做这一步**:`evaluate()` 已经把逐类 AP 经 `rl.highlight` 写出去,但
+    `runlog.highlight` 是**末次覆盖**(`self._highlights[k] = v`)⇒ 每次复核都盖掉上一次,
+    **最后只剩最后那一次的逐类 AP**,时间序列整个丢失,TensorBoard 里什么也看不到。
+    整体 mAP 平台完全可能是"一类到顶、另一类还在涨"互相抵消 —— 那不分类就看不出来,
+    而"分类别看"正是本项目 P1 主线的核心问题。
+
+    逐类 `n_pred` / `n_gt` 一并带上:它们是 AP 归属判据的第三条(计数不等 = 预测真变了,
+    计数相同而 AP 变 = 阈值边界抖动),此前连 highlight 都没写。
+
+    键名带 `/` 是为了在 TensorBoard 里按前缀分组;`classes` 为空(如 `res={}`)⇒ 返回空字典,
+    调用方 `**tags` 摊开是安全的。
+    """
+    classes = res.get("classes") or []
+    if not classes:
+        return {}
+    tags: dict[str, float] = {}
+    for cls_name, ap_ in zip(classes, res["aps"], strict=True):
+        tags[f"{prefix}AP/{cls_name}"] = round(float(ap_), 4)
+    for cls_name, n in zip(classes, res["n_pred"], strict=True):
+        tags[f"{prefix}n_pred/{cls_name}"] = int(n)
+    for cls_name, n in zip(classes, res["n_gt"], strict=True):
+        tags[f"{prefix}n_gt/{cls_name}"] = int(n)
+    return tags
+
+
+def _build_early_stopper(args, ds, model, rl) -> EarlyStopper | None:
+    """建早停器。**不适用时返回 None 并把原因打出来** —— 静默不启用等于没人知道它为什么没停。"""
+    if not args.early_stop:
+        print("[early-stop] 关闭(--no-early-stop)")
+        return None
+    if is_single_frame_anchor(len(ds)):
+        print("[early-stop] 单帧过拟合锚点 ⇒ **不启用**(那一段是故意跑到 loss→0 的正确性自证)")
+        return None
+    if not (args.eval_seg or args.eval_keep_in_seg or args.eval_exclude_seg):
+        print("[early-stop] 未给 --eval-* 留出选择器 ⇒ 没有 AP 可复核(两段式缺第二段)⇒ 不启用")
+        rl.note("early_stop:未启用 —— 没有留出选择器可供复核")
+        return None
+
+    best_ckpt = Path(str(args.out) + ".best")
+
+    def confirm(epoch: int) -> float | None:
+        """复核:把**当前**权重落成临时 ckpt → 评留出 AP → 创新高才留档。
+
+        `evaluate()` 要一个可加载的 ckpt 路径,故必须先落盘(这就是复核的固定成本 ~134 MB 写)。
+        留档用"先临时、创高才改名"而不是每次直接覆盖 `.best`:
+        否则最后一次复核若 AP 回落,`.best` 存的就是**较差**的那份,与该名字相反。
+        """
+        tmp = Path(str(args.out) + f".tmp{epoch}")
+        save_map_checkpoint(model, str(tmp))
+        try:
+            res = evaluate(
+                infos=args.infos,
+                root=args.root,
+                ckpt=str(tmp),
+                frames=args.eval_frames,
+                seg=args.eval_seg,
+                exclude_seg=args.eval_exclude_seg,
+                keep_in_seg=args.eval_keep_in_seg,
+                score_thr=args.eval_score_thr,
+                temporal_window=args.temporal_window,
+                batch=1,  # **复核必须逐帧**:自适应读空闲显存 ⇒ 数字会随机器状态变
+                rl=rl,
+                highlight_prefix="earlystop_",
+            )
+        except Exception as e:  # 复核失败 ⇒ 判据缺失 ⇒ 不敢停(见 early_stop 模块头注)
+            print(f"[early-stop] 复核失败({type(e).__name__}: {e}) ⇒ 不敢停,继续跑")
+            tmp.unlink(missing_ok=True)
+            return None
+        # 逐类结果落**时间序列**(整体 mAP 由调用方那行写)。
+        # 就地发而非挂在 `StopDecision` 上:`confirm` 就是评估发生的地方,`res` 只在
+        # 这里存在;绕一圈回调用方要多穿一层(detail 字段 / 附加属性),而多穿一层的
+        # 每一处都是"哪天有人改了那一层,这里就静默不发"的机会。
+        rl.metric(epoch, **holdout_class_tags(res, "confirm_"))
+        ap = float(res["mAP"])
+        prev = getattr(confirm, "best", None)
+        if prev is None or ap - prev >= args.ap_min_improve:
+            confirm.best = ap  # type: ignore[attr-defined]
+            tmp.replace(best_ckpt)
+            print(f"[early-stop] epoch {epoch} 复核 mAP={ap:.4f} 创新高 ⇒ 留档 {best_ckpt.name}")
+        else:
+            tmp.unlink(missing_ok=True)
+            print(f"[early-stop] epoch {epoch} 复核 mAP={ap:.4f}(未超 {prev:.4f}+{args.ap_min_improve})")
+        return ap
+
+    stopper = EarlyStopper(
+        PlateauDetector(patience=args.patience, min_improve=args.min_improve, warmup=args.warmup),
+        confirm,
+        confirm_every=args.confirm_every,
+        ap_min_improve=args.ap_min_improve,
+    )
+    print(
+        f"[early-stop] 启用:patience {args.patience} / loss 相对门槛 {args.min_improve} / "
+        f"AP 门槛 {args.ap_min_improve} / 复核间隔 {args.confirm_every}"
+    )
+    return stopper
+
+
+def _plot_early_stop(
+    hist: list[float],
+    lrs: list[float],
+    confirms: list[tuple[int, float]],
+    stop_epoch: int | None,
+    reason: str,
+    out_png: Path,
+) -> Path | None:
+    """早停过程图(**不是装饰**):loss 曲线 + lr 变化点 + 复核点 + 触发点。
+
+    为什么必须有这张图:2026-09-29 我凭 `--epochs` 用尽就判 K=3 "训好了",实际 loss 斜率
+    仍是 −0.0255(还在降)—— **"停在平台"和"停在半山腰"从数字列表上读不出来**,图上是一眼的事。
+    用英文标签:matplotlib 不认项目那把 CJK 字体,中文会静默画成方框(与 PIL 那边同款坑)。
+    """
+    if not hist:
+        return None
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ep = list(range(1, len(hist) + 1))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    ax.plot(ep, hist, "-", color="tab:blue", lw=1.6, label="train loss (epoch mean)")
+    # lr 变化点:lr 衰减造成的"平台"不是收敛(见 early_stop 模块头注的分型)
+    for i in range(1, len(lrs)):
+        if lrs[i] != lrs[i - 1]:
+            ax.axvline(ep[i], color="0.7", ls=":", lw=1.0)
+            ax.annotate(f"lr→{lrs[i]:.1e}", (ep[i], max(hist)), fontsize=8, color="0.4", rotation=90)
+    if confirms:
+        cx = [c[0] for c in confirms]
+        cy = [c[1] for c in confirms]
+        ax2 = ax.twinx()
+        ax2.plot(cx, cy, "o-", color="tab:green", lw=1.4, ms=5, label="holdout mAP (confirm)")
+        ax2.set_ylabel("holdout mAP", color="tab:green")
+        ax2.tick_params(axis="y", labelcolor="tab:green")
+    if stop_epoch is not None:
+        ax.axvline(stop_epoch, color="tab:red", lw=2.0)
+        ax.annotate(
+            f"early stop @{stop_epoch}\n{reason}",
+            (stop_epoch, max(hist)),
+            color="tab:red",
+            fontsize=10,
+            ha="right",
+        )
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("loss")
+    ax.set_title(f"early-stop trace (final: {'stopped ' + reason if stop_epoch else 'ran to --epochs'})")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=110)
+    plt.close(fig)
+    return out_png
 
 
 def is_single_frame_anchor(n_samples: int) -> bool:
@@ -174,6 +369,19 @@ def main() -> None:
         "--lr-halve", type=int, default=12, help="lr 每 N epochs 减半(0=不衰减;长训必须关,否则 lr 提前归零)"
     )
     ap.add_argument("--warmup", type=int, default=0, help="前 N epochs lr 线性升温(重启续训防尖峰;0=关)")
+    ap.add_argument(
+        "--early-stop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="两段式早停(默认开):loss 平台作候选 → 留出 AP 复核 → 都没升才停。"
+        "**单帧锚点 / 没给留出选择器时自动不启用**(见运行时的 [early-stop] 行)",
+    )
+    ap.add_argument("--patience", type=int, default=20, help="loss 连续多少 epoch 无明显改善算平台")
+    ap.add_argument("--min-improve", type=float, default=1e-3, help="loss 的**相对**改善门槛(低于它不算改善)")
+    ap.add_argument(
+        "--ap-min-improve", type=float, default=1e-2, help="AP 复核的改善门槛(须远宽于 2e-3 噪声下限)"
+    )
+    ap.add_argument("--confirm-every", type=int, default=20, help="平台区内两次 AP 复核的最小间隔(epoch)")
     ap.add_argument("--no-opt", action="store_true", help="不读写优化器状态侧车 <out>.opt")
     ap.add_argument("--batch", type=int, default=0, help="0 = 自适应实测(默认);>0 = 显式指定")
     ap.add_argument("--max-batch", type=int, default=16, help="自适应实测的批大小上限")
@@ -344,7 +552,12 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
         rl.highlight("bev_encoder_layers", args.bev_encoder_layers)
         rl.highlight("bev_encoder_heads", args.bev_encoder_heads)
         rl.highlight("bev_chunk", args.bev_chunk)
+    stopper = _build_early_stopper(args, ds, model, rl)
     hist: list[float] = []
+    lrs: list[float] = []
+    confirms: list[tuple[int, float]] = []
+    stop_epoch: int | None = None
+    stop_reason = ""
     for epoch in range(1, args.epochs + 1):
         # 阶梯衰减:每 --lr-halve epochs 减半(0 = 不衰减;长训必须关,
         # 否则 400-epoch 跑的后半程 lr 已衰减到 ~1e-8,平台是 lr 归零不是收敛)
@@ -374,6 +587,22 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
             pts=round(ep["pts"] / steps, 6),
             lr=lr,
         )
+        lrs.append(lr)
+        if stopper is not None:
+            d = stopper.update(epoch, hist[-1], lr)
+            if d.confirm_ap is not None:
+                confirms.append((epoch, d.confirm_ap))
+                rl.metric(epoch, confirm_mAP=round(d.confirm_ap, 6), best_ap=round(d.best_ap or 0.0, 6))
+            if d.should_stop:
+                # **先存盘再退**:`--save-every N` 是周期性的,不补这一刀最后 N 个 epoch 白跑
+                save_map_checkpoint(model, args.out)
+                _save_opt_sidecar(opt, args, epoch)
+                stop_epoch, stop_reason = epoch, d.reason
+                print(
+                    f"[early-stop] **触发** epoch {epoch}:{d.reason}"
+                    f"(best AP {d.best_ap:.4f} @ epoch {d.best_ap_epoch},共 {stopper.n_confirms} 次复核)"
+                )
+                break
         if args.save_every and epoch % args.save_every == 0:
             Path(args.out).parent.mkdir(parents=True, exist_ok=True)
             save_map_checkpoint(model, args.out)
@@ -385,17 +614,91 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
                 f"cls={ep['cls'] / steps:.4f} pts={ep['pts'] / steps:.4f}"
             )
 
+    last_epoch = len(hist)
+    best_ckpt = Path(str(args.out) + ".best")
+    if stopper is not None:
+        rl.highlight("early_stop_enabled", True)
+        rl.highlight("early_stop_epoch", stop_epoch if stop_epoch is not None else last_epoch)
+        rl.highlight("early_stop_reason", stop_reason or "ran_to_epochs")
+        rl.highlight("early_stop_confirms", stopper.n_confirms)
+        if stopper.best_ap is not None:
+            rl.highlight("early_stop_best_ap", round(stopper.best_ap, 6))
+            rl.highlight("early_stop_best_ap_epoch", stopper.best_ap_epoch)
+        png = _plot_early_stop(
+            hist,
+            lrs,
+            confirms,
+            stop_epoch,
+            stop_reason,
+            Path(str(args.out) + ".early_stop.png").with_suffix(".png"),
+        )
+        if png is not None:
+            rl.artifact(png, "early-stop-trace")
+            print(f"[early-stop] 过程图 → {png}")
+
     final = float(np.mean(hist[-20:]))
     print(f"[done] 最后 20 步平均 total = {final:.4f}")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     save_map_checkpoint(model, args.out)
-    _save_opt_sidecar(opt, args, args.epochs)
+    _save_opt_sidecar(opt, args, last_epoch)
     print(f"[save] {args.out}")
     rl.highlight("final_loss", round(final, 4))
+
+    # ★★ best-AP 恢复 —— **必须是最后一次写 `--out`**,故放在上面那次无条件存盘**之后**。
+    #
+    # **这里踩过一次真 bug(2026-09-30)**:恢复块原先在存盘**之前**,于是
+    #   ① `copyfile(best, out)` 把 ep296 的权重放上去,
+    #   ② 紧接着 `save_map_checkpoint(model, out)` 把内存里的 **ep329** 又盖回去 ——
+    # 日志照写"已把 best-AP 权重恢复",盘上却是触发时刻那份(留出 mAP **0.1557 → 0.1243**)。
+    # 更糟的是 `best_ckpt.unlink()` 已删掉唯一副本,而 `--save-every` 覆盖同一个 `--out`、
+    # **不留历史** ⇒ 那份权重**不可恢复**。
+    #
+    # 判据不能靠"看图/看日志"(两处都写着 296),只能靠**源码顺序**,见
+    # `tests/map/test_maptr_select.py::TestCheckpointFinalizeOrder`。
+    opt_artifact = str(args.out) + ".opt"
+    if stop_epoch is not None and best_ckpt.exists():
+        import shutil
+
+        if stopper is not None and stopper.best_ap_epoch not in (None, last_epoch):
+            shutil.copyfile(best_ckpt, args.out)
+            # **`.opt` 与权重不再同源**:侧车记的是另一 epoch 的 Adam 力矩。
+            # 留着同名会让"同名即同源"的假设静默破裂 ⇒ 改名留档并明说。
+            side = Path(opt_artifact)
+            if side.exists():
+                opt_artifact = f"{opt_artifact}.stale-ep{last_epoch}"
+                side.rename(opt_artifact)
+                print(f"[early-stop] `.opt` 侧车(epoch {last_epoch})与恢复的权重不同源 ⇒ 已改名留档")
+            print(f"[early-stop] 已把 best-AP 权重(epoch {stopper.best_ap_epoch})恢复为 {args.out}")
+        best_ckpt.unlink(missing_ok=True)
+
+    # **产物表在恢复之后才登记**:`rl.artifact` 是**调用时立刻 sha256**(`_digest`),
+    # 放在恢复前登记,记下的是**被覆盖掉的那份**的哈希 —— 与本节同一个坑的另一面。
     rl.artifact(args.out, "model")
     if not args.no_opt:
-        rl.artifact(str(args.out) + ".opt", "optimizer-state")
-    _auto_eval(args, rl)
+        rl.artifact(opt_artifact, "optimizer-state")
+
+    # ★★ **回评对照**:`_auto_eval` 评的正是恢复后的 `--out` ⇒ 拿它的结果与日志声称的
+    # best-AP 比对,**零额外 GPU 成本**就把 §P-M.20 那类"产物与自述不一致"变成自动检查。
+    # (那次只能靠手工回评 + 逐位比 `pred/gt` 计数才发现,纯属凑巧。)
+    holdout = _auto_eval(args, rl)
+    measured = (holdout or {}).get("mAP")
+    claimed = stopper.best_ap if (stop_epoch is not None and stopper is not None) else None
+    # 三种"判不了"各自留痕 —— **"没验"必须与"验过且通过"可区分**(否则等于没验)
+    if measured is None:
+        rl.highlight("restore_verified", "unavailable(未评 mAP ⇒ 无法回评对照)")
+    elif claimed is None:
+        rl.highlight("restore_verified", "n/a(未发生 best-AP 恢复,无声称值可对)")
+    else:
+        bad = _restore_mismatch(claimed, measured)
+        if bad is not None:
+            # 权重**已经在盘上**,raise 不会丢东西 —— 它只是"这次交付不成立"的信号。
+            # 与单帧锚点的过拟合 FAIL 同一处置(产物已存,退出码非零)。
+            rl.note(f"回评对照 **FAIL**:{bad}")
+            print(f"\n❌ [verify] {bad}")
+            print("   ⇒ 恢复后的 `--out` 与日志声称的 best-AP 不是同一份权重,交付不成立。")
+            raise SystemExit(1)
+        rl.highlight("restore_verified", f"ok(回评 {measured:.4f} vs 声称 {claimed:.4f})")
+
     if not is_single_frame_anchor(len(ds)):
         return  # 多帧训练无过拟合判据(损失收敛量级看 D 阶段 AP)
     if final < 0.5:

@@ -52,7 +52,11 @@ from typing import cast
 import carla
 import numpy as np
 
-from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_WIDE_CAMERA_RIG
+from autodrivedata.calib.camera_rig import (
+    NUS_CAMERA_RIG,
+    NUS_CAMERA_RIG_NUCARLA,
+    NUS_WIDE_CAMERA_RIG,
+)
 from autodrivedata.gt.core import ActorBox, box_center_world, box_heading_world, classify_nus
 from autodrivedata.gt.export.nuscenes import (
     NUS_CAMERA_CALIBS,
@@ -107,6 +111,11 @@ def rig_tables(rig: str) -> tuple[dict, dict, dict]:
     if rig == "wide":
         # 后两表由 `export/nuscenes` 按同一 rig 名派发(wide 的 K 由 FoV 反推,见其注释)
         return NUS_WIDE_CAMERA_RIG, camera_calibs(rig), camera_fov(rig)
+    if rig == "nucarla":
+        # **复现第三方数据集口径**(nuCarla,CARLA 0.9.16):挂点/姿态/内参**逐行照抄**它那边,
+        # 连它的约定差也一起复现 —— 否则拿它训出来的权重跑我们的图会凭空多一个域差。
+        # 三处差(姿态换算 / CAM_FRONT x+0.2 / 六路统一 65° + center 主点)见 `camera_rig` 的注。
+        return NUS_CAMERA_RIG_NUCARLA, camera_calibs(rig), camera_fov(rig)
     raise ValueError(f"未知相机 rig:{rig!r}(可选 {NUS_RIGS})")
 
 
@@ -211,7 +220,7 @@ def main() -> None:
         "--rig",
         choices=NUS_RIGS,
         default="nuscenes",
-        help="相机口径:nuscenes=官方标定(默认)/ wide=自定义宽视口(见 camera_rig 头注)",
+        help="相机口径:nuscenes=官方标定(默认)/ wide=自定义宽视口 / nucarla=复现 nuCarla 数据集口径(第三方权重要用它采;见 camera_rig 头注)",
     )
     args = ap.parse_args()
 

@@ -24,12 +24,17 @@ import torch
 from PIL import Image, ImageDraw
 
 from autodrivedata.calib.camera_rig import camera_grid_order
+from autodrivedata.gt.export.nuscenes import NUS_RADAR_CHANNELS
+from autodrivedata.map import bev_base
 from autodrivedata.map.maptr.dataset import MAPTR_CLASSES, MapTRDataset
 from autodrivedata.map.maptr.variants import load_map_model, read_map_meta
 from autodrivedata.map.mapviz import (
+    BEV_X,
+    BEV_Y,
     GT_COLOR,
     PRED_COLOR,
     bev_panel,
+    bev_px_transform,
     cam_pose,
     draw_projected_lines,
     intrinsics_from_k,
@@ -64,6 +69,20 @@ def main() -> None:
     ap.add_argument("--score-thr", type=float, default=0.2, help="实例得分阈值(sigmoid)")
     ap.add_argument("--device", default=None, help="推理设备(默认 cuda 若可用)")
     ap.add_argument("--out-dir", required=True, help="拼图输出目录(每帧一张 png)")
+    ap.add_argument(
+        "--bev-pair",
+        action="store_true",
+        help="每帧**额外**落两张纯 BEV:`bev/frame_XXXX_pred.png`(只画预测)/ `_gt.png`(只画真值)。拼图里两者是同图叠加的,分开才能逐帧看「谁多谁少」",
+    )
+    ap.add_argument(
+        "--lidar-root",
+        default=None,
+        help="LiDAR/Radar 点云根目录(**与 --root 同一段数据**)⇒ BEV 面板加一层底图。"
+        "⚠️ 底图只是给人看的上下文:模型是纯相机的,点云不进网络",
+    )
+    ap.add_argument(
+        "--no-radar-base", action="store_true", help="底图只画 LiDAR 不画雷达(雷达点稀疏,有时反而碍眼)"
+    )
     ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
 
@@ -125,6 +144,29 @@ def main() -> None:
                 # `ds.infos[i]` 两种窗口下都是该样本自己的帧记录。
                 rec = ds.infos[i]
                 fid = int(rec["frame"])
+                # 底图(**必须在同帧的 ego 系里取**):`fid` 是数据集的帧号,不是 `ds` 的下标 ——
+                # window>1 时两者会错位(同上面 `ds.infos[i]` 那条)。
+                base = None
+                n_lid = n_rad = 0
+                if args.lidar_root is not None:
+                    lid_B, rad_B = bev_base.frame_points(
+                        project_path(args.lidar_root),
+                        fid,
+                        None if args.no_radar_base else list(NUS_RADAR_CHANNELS),
+                    )
+                    base, bst = bev_base.base_layer(
+                        lid_B,
+                        rad_B,
+                        bev_px_transform((_BEV_W, _BEV_H)),
+                        (_BEV_W, _BEV_H),
+                        (BEV_X, BEV_Y),
+                    )
+                    n_lid, n_rad = bst["n_lidar_drawn"], bst["n_radar_drawn"]
+                    if n_lid == 0:
+                        # 0 点是**判据**不是噪声:要么 --lidar-root 不是同一段数据,要么窗口/换算错了
+                        print(
+                            f"  [warn] 帧 {fid} 底图 0 点(总点数 {bst['n_lidar_total']})—— 检查 --lidar-root"
+                        )
                 eg = rec["ego2global"]
                 info_cams = rec["cams"]
                 cells: list[tuple[str, Image.Image]] = []
@@ -143,12 +185,31 @@ def main() -> None:
 
                 canvas = _collage(
                     cells,
-                    bev_panel(preds, item["gt"], f"frame {fid} pred {n_pred} / gt {n_gt}", (_BEV_W, _BEV_H)),
+                    bev_panel(
+                        preds,
+                        item["gt"],
+                        f"frame {fid} pred {n_pred} / gt {n_gt}",
+                        (_BEV_W, _BEV_H),
+                        base=base,
+                    ),
                 )
                 path = out_dir / f"frame_{fid:04d}.png"
                 canvas.save(path)
+                if args.bev_pair:
+                    # 纯 BEV 各一张:同一份 preds / gt,分别关掉另一半。
+                    # `bev_panel` 对空列表安全(`for gc in gts or []`),不必加特判。
+                    bd = out_dir / "bev"
+                    bd.mkdir(parents=True, exist_ok=True)
+                    empty: list[list] = []
+                    bev_panel(preds, empty, f"PRED  frame {fid}", (_BEV_W, _BEV_H), base=base).save(
+                        bd / f"frame_{fid:04d}_pred.png"
+                    )
+                    bev_panel(empty, item["gt"], f"GT  frame {fid}", (_BEV_W, _BEV_H), base=base).save(
+                        bd / f"frame_{fid:04d}_gt.png"
+                    )
                 print(
-                    f"[viz] {path.name} pred {n_pred} / gt {n_gt} / 段 {n_seg} ({time.perf_counter() - t0:.1f}s)"
+                    f"[viz] {path.name} pred {n_pred} / gt {n_gt} / 段 {n_seg}"
+                    f" / 底图 L{n_lid} R{n_rad} ({time.perf_counter() - t0:.1f}s)"
                 )
                 # 逐帧一行:`n_seg`(投到画面上的**线段数**)是"图看着画出来了"与
                 # "投影真落了位"的分界 —— 前者不构成投影正确的证据,后者才是。

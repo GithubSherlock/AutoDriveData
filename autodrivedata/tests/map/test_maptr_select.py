@@ -333,3 +333,170 @@ class TestOverfitGate:
             and any(isinstance(c, ast.Constant) and isinstance(c.value, int) for c in node.comparators)
         ]
         assert not bad, "过拟合闸门不许按 --frames 标志判定(应当按实际训练样本数)"
+
+
+class TestCheckpointFinalizeOrder:
+    """★ 恢复 best-AP 权重必须是**最后一次写 `--out`**(2026-09-30 踩到的真 bug)。
+
+    ## 症状(不报错、不崩溃,只是产物悄悄错)
+
+    收尾顺序曾是:恢复(`copyfile(best, out)`)→ ... → **无条件的 `save_map_checkpoint(model, out)`**。
+    第二次存盘把内存里**触发时刻**的权重又盖了回去,于是:
+
+    - 日志照写「已把 best-AP 权重(epoch 296)恢复为 …」——**这句话是假的**;
+    - 盘上实际是 epoch 329,留出 48 帧 mAP **0.1557 → 0.1243(−20%)**
+      (拿存盘权重回评,`pred/gt` 计数与 ep329 那次复核**逐位相同**,才定位到);
+    - `best_ckpt.unlink()` 已删掉唯一副本,而 `--save-every` 覆盖同一个 `--out`、**不留历史**
+      ⇒ 那份最优权重**不可恢复**。
+
+    这条把 §P-M.18 的核心设计(「停时恢复 best-AP 权重,不是停在触发时刻」)整个废掉,
+    而**任何一处的输出都看不出**。
+
+    ## 为什么判据是源码顺序
+
+    这是"两次写同一个文件"的时序问题。行为测试要跑一次 127M 参数的真训练(12 h),
+    不现实;而唯一的机械判据就是**语句顺序**:`train()` 里所有写 `--out` /
+    `--out.opt` 的调用,行号必须**全部早于** `copyfile`。
+    """
+
+    @staticmethod
+    def _train_fn():
+        import ast
+        import inspect
+
+        from autodrivedata.map import train_maptr
+
+        tree = ast.parse(inspect.getsource(train_maptr))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "train")
+        return fn
+
+    @staticmethod
+    def _called(node) -> str | None:
+        """被调函数名:`save_map_checkpoint(...)` 是 `Name`、`shutil.copyfile(...)` 是 `Attribute`。
+
+        **两种形态都要认** —— 只查 `.attr` 会让裸函数调用全部落空,判据于是"没找到存盘"
+        而**静默通过**(首版就是这么写的,被自证断言当场拦下)。
+        """
+        import ast
+
+        f = node.func
+        if isinstance(f, ast.Name):
+            return f.id
+        if isinstance(f, ast.Attribute):
+            return f.attr
+        return None
+
+    @classmethod
+    def _line_of_call(cls, fn, names: set[str]) -> list[int]:
+        """`train()` 体内对 `names` 的调用行号(只按被调函数名匹配,不看实参)。"""
+        import ast
+
+        return [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and cls._called(n) in names]
+
+    def test_restore_happens_after_every_save(self):
+        fn = self._train_fn()
+        saves = self._line_of_call(fn, {"save_map_checkpoint", "_save_opt_sidecar"})
+        restores = self._line_of_call(fn, {"copyfile"})
+        # **自证**:判据必须真的找到了两类语句,否则"空集 < 空集"会静默通过
+        assert saves, "没找到任何存盘调用 —— 判据本身失效了(函数/方法名改过?)"
+        assert restores, "没找到恢复调用 —— 判据本身失效了"
+        assert max(saves) < min(restores), (
+            f"恢复(copyfile,行 {min(restores)})之后还有存盘(行 {sorted(saves)})"
+            " —— 恢复会被静默盖回去,`--out` 落到触发时刻的权重上"
+        )
+
+    #: 权重类产物 —— 只有这些的登记必须排在恢复之后。
+    #: 早停过程图(`early-stop-trace`)与恢复无关,拿它一起比会**假红**(首版就是这么写的)。
+    _WEIGHT_KINDS = {"model", "optimizer-state"}
+
+    def test_weight_artifact_is_registered_after_the_restore(self):
+        """`rl.artifact` **调用时立刻 sha256**(`_digest`)⇒ 权重类登记必须排在恢复之后。
+
+        排在前面登记的是**被覆盖掉的那份**的哈希 —— 同一个坑的另一面:
+        产物表里写着「model = 这份 sha256」,而盘上已经不是那份了。
+        """
+        import ast
+
+        fn = self._train_fn()
+        restores = self._line_of_call(fn, {"copyfile"})
+        weight_artifacts = [
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and self._called(n) == "artifact"
+            and len(n.args) >= 2
+            and isinstance(n.args[1], ast.Constant)
+            and n.args[1].value in self._WEIGHT_KINDS
+        ]
+        assert restores and weight_artifacts, "判据没找到语句 —— 自证失败"
+        assert min(weight_artifacts) > max(restores), (
+            f"权重产物登记(行 {sorted(weight_artifacts)})早于恢复(行 {max(restores)})"
+            " —— 记下的 sha256 属于被覆盖掉的那份权重"
+        )
+
+
+class TestRestoreVerify:
+    """★ **回评对照**:落盘权重回评一遍,断言它确实是日志里那个数。
+
+    2026-09-30 的 §P-M.20:恢复 best-AP 权重被后面的无条件存盘静默覆盖 ——
+    日志写 0.1557、盘上 0.1243,**任何一处的输出都看不出**。唯一的发现方式是手工回评字节
+    再逐位比 `pred/gt` 计数,而那纯属凑巧(复核点恰好落在同一 epoch)。
+
+    这条判据把那次手工过程变成**自动的**:收尾的 `_auto_eval` 评的正是恢复后的 `--out`,
+    与日志声称的 `best_ap` 一比即可 —— **零额外 GPU 成本**。
+
+    判据是「回评值 == 声称值」,不是「回评值高不高」:它防的是**产物与自述不一致**。
+    """
+
+    @staticmethod
+    def _mismatch(*a, **kw):
+        from autodrivedata.map.train_maptr import _restore_mismatch
+
+        return _restore_mismatch(*a, **kw)
+
+    def test_matching_value_passes(self):
+        assert self._mismatch(0.1557, 0.1557) is None
+        # 复现性下限 2e-3 之内都算同一份权重(同进程回评应逐位相同,这里留松)
+        assert self._mismatch(0.1557, 0.1549) is None
+
+    def test_clobbered_weight_is_caught(self):
+        """★ 复算 §P-M.20 那次的真实数字:**必须报,且报出两个数与差**。"""
+        msg = self._mismatch(0.155728, 0.124342)
+        assert msg is not None
+        assert "0.1243" in msg and "0.1557" in msg and "0.0314" in msg, msg
+        assert "产物与自述不一致" in msg
+
+    def test_just_outside_tolerance_is_caught(self):
+        """边界:恰好超过容差就该报 —— 判据不许"差不多就行"。"""
+        assert self._mismatch(0.1557, 0.1557 + 3e-3) is not None
+        assert self._mismatch(0.1557, 0.1557 + 1e-3) is None
+
+    def test_cannot_judge_returns_none_not_pass(self):
+        """★ **"判不了"返回 `None`,但调用方必须与"通过"分开记**。
+
+        函数这里只能返回"没发现问题";区分"没验"与"验过"是**调用方**的责任
+        (`train_maptr` 落 `restore_verified` 的三种取值)。若这里返回一个像失败的东西,
+        调用方会 raise —— 那会在"没评 mAP"时把一次正常的训练判死。
+        """
+        assert self._mismatch(None, 0.1557) is None  # 没发生恢复,无声称值
+        assert self._mismatch(0.1557, None) is None  # 没评 mAP,无法对照
+        assert self._mismatch(None, None) is None
+        assert self._mismatch(float("nan"), 0.1557) is None
+        assert self._mismatch(0.1557, float("inf")) is None
+
+    def test_call_site_is_wired(self):
+        """★ 端到端接线钉:函数写好了但没人调 = 零价值。判据看 `train()` 里真的用了它。"""
+        import ast
+        import inspect
+
+        from autodrivedata.map import train_maptr
+
+        tree = ast.parse(inspect.getsource(train_maptr))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "train")
+        called = {
+            (n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, "attr", None))
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+        }
+        assert "_restore_mismatch" in called, "`_restore_mismatch` 定义了却没被 `train()` 调用"
+        assert "_auto_eval" in called

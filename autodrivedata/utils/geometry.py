@@ -221,17 +221,26 @@ def carla_yaw_to_nus_yaw(yaw_carla: float) -> float:
 NUS_EGO_ORIGIN_X: float = -1.2563
 
 
-def nus_mount_to_carla(t_nus: tuple[float, float, float]) -> tuple[float, float, float]:
+def nus_mount_to_carla(
+    t_nus: tuple[float, float, float], origin_x: float = NUS_EGO_ORIGIN_X
+) -> tuple[float, float, float]:
     """**声明→渲染**的唯一换算:nuScenes 系挂点(原点=后轴)→ CARLA actor 系挂点。
 
     两步,别再手抄第二份(§P-M.7 的"表对了、图错了"就是手抄出来的):
-    ① `x += NUS_EGO_ORIGIN_X`(原点从后轴挪到车身中点);
+    ① `x += origin_x`(原点从后轴挪到车身中点);
     ② `y → −y`(nus 系 y 左 → CARLA 系 y 右)。
 
     ⚠️ z **不动** —— 两个系的原点都在**地面**(实测 a2 包围盒底 z=0.0073、顶 1.5563,
     与实车 A2 高 1.553 m 吻合;官方 nus 的 z 同样是离地高度)。
+
+    `origin_x` 可注入(**默认即本项目的实测值**,调用方别自己传一个"看起来更整"的数):
+    第三方数据集可能用**另一种车**、因而另一个原点常量 —— 例如 nuCarla 的
+    `center_to_wheelbase = 1.317`(注明 nissan micra 专用)。要复现别人的 rig 就得用**别人的**
+    常量,否则差一个固定杆臂(实测 nuCarla vs 我们:**0.0607 m**,六路一致)。
+    与 `carla_actor_origin_to_nus_ego` 的 `origin_x` 是同一个设计:**常量对不对由判据把守,
+    调用方不许重定义**。
     """
-    return (t_nus[0] + NUS_EGO_ORIGIN_X, -t_nus[1], t_nus[2])
+    return (t_nus[0] + origin_x, -t_nus[1], t_nus[2])
 
 
 def carla_actor_origin_to_nus_ego(

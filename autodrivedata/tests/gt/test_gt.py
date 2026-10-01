@@ -137,6 +137,49 @@ class TestGtLine:
         )
         assert gt.box_to_gt_line(box, CAM_LOC, CAM_ROT, K) is None
 
+    def test_degenerate_sliver_dropped(self):
+        """★ 退化投影(擦过镜头的车)必须**剔除**,不是发一条零面积的框出去。
+
+        复现的是 2026-10-01 在 P1 数据里量到的那一族:车在 ego **正侧 3 m 处**、
+        整车落在像面下缘之下,只剩顶面那条边进画幅 —— 投出来 `y1 == y2`。
+
+        危害有二,都不是"少一条框"这么轻:
+        ① 零面积框与任何预测的 IoU 恒为 0 ⇒ **白送一次漏检**,P1 每份数据 11/194 条,
+           recall 天花板被压到 94.3%;
+        ② 它的进出由**亚帧抖动**决定 —— 远底角在 v≈375 上下几 px 摆动,0.24 m 的 ego
+           偏移就让整框在「0 px 高」与「164 px 高」之间翻面,于是两次采集的 GT 逐帧
+           条数不再相等(A/B 硬门槛当场破)。
+        """
+        car = gt.ActorBox(
+            type_id="vehicle.tesla.model3",
+            extent=(2.395, 1.0815, 0.744),
+            location=(0.0, 0.0, 0.744),
+            rotation=(0.0, 0.0, 0.0),
+            actor_location=(3.0, 3.5, 0.0),  # ego 正侧 3.5 m、车头朝 +x_g
+            actor_rotation=(0.0, 0.0, 0.0),
+        )
+        # 相机在 (0,0,1.65)、朝 +x_g:该车整体在相机**右侧且几乎齐平**,只剩顶边进画幅
+        assert gt.box_to_gt_line(car, CAM_LOC, CAM_ROT, K) is None
+
+    def test_a_one_pixel_box_still_survives(self):
+        """反向对照:1 px 是**下界不是筛子** —— 刚过线的框必须留着。
+
+        否则这条剔除就会静默吃掉远距小目标(而"吃掉了多少"只有数变了才知道)。
+        """
+        box = gt.ActorBox(
+            type_id="vehicle.audi.a2",
+            extent=(0.3, 0.3, 0.3),  # h=w=l=0.6 m:30 m 处约 12 px
+            location=(0.0, 0.0, 3.0),
+            rotation=(0.0, 0.0, 0.0),
+            actor_location=(30.0, 0.0, 0.0),
+            actor_rotation=(0.0, 0.0, 0.0),
+        )
+        line = gt.box_to_gt_line(box, CAM_LOC, CAM_ROT, K)
+        assert line is not None
+        p = line.split()
+        assert float(p[6]) - float(p[4]) >= gt.MIN_BOX_SIDE_PX
+        assert float(p[7]) - float(p[5]) >= gt.MIN_BOX_SIDE_PX
+
     def test_partial_truncation_ground_camera(self):
         """相机贴地 (0,0,0):高车(h=4)在 6m 处,近侧角点(z=4)出画幅 → trunc=0.5。
 

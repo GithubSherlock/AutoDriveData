@@ -116,7 +116,9 @@ outputs/          【未入库】全部产物的唯一落点(权重/数据集/�
 | 文档 | 内容 |
 |---|---|
 | [Plan.md](Plan.md) | **方案定案 + 历史执行记录**(契约/架构/里程碑归档)。已冻结,只增不改 |
-| [Plan2.md](Plan2.md) | **新计划的制定地**(2026-09-19 起):执行项/进度/遗留缺口。改决策先读它 |
+| [Plan2.md](Plan2.md) | 执行记录 **§P-M.1–§P-M.20**(2026-09-19 起;2026-09-30 **冻结**,§ 编号不再改动) |
+| [Plan3.md](Plan3.md) | **主线之外**的评估:外部数据集对照 / 新方向可行性(可复核来源 + 触发重评条件) |
+| [Plan4.md](Plan4.md) | **新计划的制定地**(2026-09-30 起)。**改决策先读它** |
 | [docs/fileTree.md](docs/fileTree.md) | 文件级索引与维护约定 |
 | [docs/milestone.md](docs/milestone.md) · [milestone2.md](docs/milestone2.md) | 版本里程碑 / 教程能力线里程碑 |
 | [docs/testLog.md](docs/testLog.md) | 测试与踩坑日志(现象 → 修复 → 回归保护) |

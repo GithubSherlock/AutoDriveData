@@ -206,3 +206,77 @@ class TestModuleLocation:
             if "__pycache__" not in p.parts and "ipynb_checkpoints" not in str(p)
         )
         assert hits == ["runtime/device.py"], f"设备工具应当只有一份,实测 {hits}"
+
+
+# ================================================================ 2026-09-30 峰值不过原点
+
+
+class TestBatch1Footprint:
+    """★ `_bs_from_budget` 必须把 **batch=1 的常驻足迹**从预算里扣掉。
+
+    背景(实测,MapQR / 48 GiB):峰值 ≈ `batch1足迹 + (bs−1)·每样本增量`,而
+    `batch1足迹 ≈ 12.98 GiB`。旧公式把它当"已驻留所以不占预算",算出 batch=4、
+    真跑却需要 ≈50 GiB ⇒ **一跑就 OOM**。这是纯算术,不需要 GPU 就能钉死 ——
+    而恰恰是这类"只在真训时才炸"的公式,最该有一发便宜的回归钉。
+    """
+
+    def test_budget_is_reduced_by_the_footprint(self, monkeypatch):
+        """同一个增量、同一个预算,**足迹不同 ⇒ 选出的 batch 必须不同**。
+
+        ★ **空闲显存必须 pin 住**:`_bs_from_budget` 读的是**真实** `mem_get_info`,
+        不 pin 的话这条测试的结论取决于"跑测试时 GPU 上还有谁" —— 首跑就撞上
+        (同期在训 MapQR、显存只剩 8 GiB,`>= 4` 直接假红)。**这正是被测的那个坑本身**:
+        预算里没算清"已经占了多少",选出来的批就是一跑就 OOM 的档。
+        """
+        import torch
+
+        from autodrivedata.runtime.device import _bs_from_budget
+
+        gb = 1024**3
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda _i: (int(48 * gb), int(48 * gb)))
+        args = dict(per_unit=12 * gb, min_batch=1, max_batch=16, safety_factor=1.0)
+        # 无足迹(理想线性过原点)时能塞 4 个
+        assert _bs_from_budget(base_bytes=0, **args) >= 4
+        # 有 13 GiB 足迹时塞不下了
+        assert _bs_from_budget(base_bytes=13 * gb, **args) < 4
+
+    def test_mapqr_measured_case(self, monkeypatch):
+        """复算实测那一档:**旧公式给 4,新公式必须给 3**。
+
+        数字全部取自 2026-09-30 的实测表(见 `runtime/device.py` 头注),不是编的。
+        `mem_get_info` 被 monkeypatch 成"空闲 46.7 GiB / 总 47.41 GiB"。
+        """
+        import torch
+
+        from autodrivedata.runtime.device import _bs_from_budget
+
+        gb = 1024**3
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda _i: (int(46.7 * gb), int(47.41 * gb)))
+        per, base = int(12.41 * gb), int(12.98 * gb)
+        got = _bs_from_budget(per, base, 1, 16, 0.95)
+        assert got == 3, f"实测表要求 3(峰值 12.98 + 2×12.41 = 37.8 ≤ 47.41),实际 {got}"
+
+    def test_room_clamped_at_zero_never_goes_below_min(self):
+        """batch=1 就快撑满 ⇒ 回落 `min_batch`,**不许算出 0 或负数**。"""
+        from autodrivedata.runtime.device import _bs_from_budget
+
+        assert _bs_from_budget(1, 10**12, 1, 8, 0.95) == 1
+        assert _bs_from_budget(1, 10**12, 3, 8, 0.95) == 3
+
+    def test_probe_returns_the_footprint_on_cuda(self):
+        """真探针必须把第三个量带出来 —— 否则上面那条算术没数据可用。"""
+        measured = measure_train_batch_memory(_tiny_step())
+        if not HAS_CUDA:
+            assert measured is None
+            return
+        assert measured is not None and len(measured) == 3
+        per_unit, probe_batch, base = measured
+        assert probe_batch == 2 and per_unit > 0 and base >= 0
+
+    def test_probe_oom_branch_still_reports_a_2_tuple_compatible_shape(self):
+        """退化分支(`probe_batch == 1`)的第三个量也要有,且 `[1]` 仍 == 1(旧调用方兼容)。"""
+        measured = measure_train_batch_memory(_tiny_step(oom=2))
+        if not HAS_CUDA:
+            assert measured is None
+            return
+        assert measured is not None and measured[1] == 1 and len(measured) == 3

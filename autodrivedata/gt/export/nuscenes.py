@@ -30,6 +30,8 @@ import numpy as np
 # 单点来源,勿在此另抄一份。两个 rig 的**姿态设计**都在 `camera_rig`:
 # `nuscenes` = 官方 calibrated_sensor;`wide` = 官方表 + 后移挂点/换轴(见 §P-M.8)。
 from autodrivedata.calib.camera_rig import (
+    NUCARLA_CAMERA_CALIBS,
+    NUCARLA_CAMERA_FOV,
     NUS_CAMERA_CALIBS,
     NUS_WIDE_CAMERA_CALIBS,
     NUS_WIDE_CAMERA_FOV,
@@ -47,7 +49,7 @@ NUS_CAMERAS = (
 
 # 相机 rig 名。`nuscenes` = **官方 nuScenes 标定**(默认,行为不得变);
 # `wide` = 自定义宽视场口径(前 55°/后侧 110°/后 120°、后三路挂点后移到车尾)。
-NUS_RIGS: tuple[str, ...] = ("nuscenes", "wide")
+NUS_RIGS: tuple[str, ...] = ("nuscenes", "wide", "nucarla")
 NUS_RIG_DEFAULT = "nuscenes"
 
 # 官方 nuScenes 5 雷达通道(与 nuScenes 官方一致;mini 集只有 5 雷达无 RADAR_BACK)
@@ -125,12 +127,32 @@ def _wide_intrinsics() -> dict[str, tuple[float, float, float]]:
 NUS_WIDE_CAMERA_INTRINSICS: dict[str, tuple[float, float, float]] = _wide_intrinsics()
 
 
+# nuCarla 的逐通道内参 —— **照它 `sensors.py` 逐行复现**,不套我们的 K。
+#
+# 两处都与我们**不同**,且都是真的:
+#   ① `focal = w / (2·tan(fov/2))`,fov 是**六路统一 65.0°** ⇒ fx ≈ **1255.71**;
+#      我们 CAM_FRONT 是 **1266.42**(官方逐通道 K)。
+#   ② **主点 = `w/2, h/2`(center 约定)= (800.0, 450.0)**;我们冻结的是 **CORNER**
+#      `(w−1)/2 = 799.5`(Plan2 §P-M.8 的裁决)⇒ 差 **0.5 px**。
+#      ⚠️ 这里**必须**照抄他们的 center 约定:复现别人的模型时,连它的像素约定也是输入的一部分。
+NUCARLA_CAMERA_INTRINSICS: dict[str, tuple[float, float, float]] = {
+    cam: (
+        (NUS_CAMERA_WIDTH / 2.0) / math.tan(math.radians(fov) / 2.0),
+        NUS_CAMERA_WIDTH / 2.0,
+        NUS_CAMERA_HEIGHT / 2.0,
+    )
+    for cam, fov in NUCARLA_CAMERA_FOV.items()
+}
+
+
 def _intrinsics(rig: str = NUS_RIG_DEFAULT) -> dict[str, tuple[float, float, float]]:
     """rig 名 → 逐通道 `(fx, cx, cy)`。未知 rig 抛错(静默取默认会让落盘口径与 spawn 分叉)。"""
     if rig == "nuscenes":
         return NUS_CAMERA_INTRINSICS
     if rig == "wide":
         return NUS_WIDE_CAMERA_INTRINSICS
+    if rig == "nucarla":
+        return NUCARLA_CAMERA_INTRINSICS
     raise ValueError(f"未知相机 rig:{rig!r}(可选 {NUS_RIGS})")
 
 
@@ -142,6 +164,8 @@ def camera_calibs(
         return NUS_CAMERA_CALIBS
     if rig == "wide":
         return NUS_WIDE_CAMERA_CALIBS
+    if rig == "nucarla":
+        return NUCARLA_CAMERA_CALIBS
     raise ValueError(f"未知相机 rig:{rig!r}(可选 {NUS_RIGS})")
 
 
@@ -151,6 +175,8 @@ def camera_fov(rig: str = NUS_RIG_DEFAULT) -> dict[str, float]:
         return NUS_CAMERA_FOV
     if rig == "wide":
         return NUS_WIDE_CAMERA_FOV
+    if rig == "nucarla":
+        return NUCARLA_CAMERA_FOV
     raise ValueError(f"未知相机 rig:{rig!r}(可选 {NUS_RIGS})")
 
 

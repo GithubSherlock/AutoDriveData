@@ -48,6 +48,10 @@ _BICYCLE_TYPES = frozenset(
     }
 )
 
+#: `box_to_gt_line` 的退化剔除阈值:投影框**两维都**必须至少这么宽(px)。
+#: 见该函数内那段注 —— 零面积框配不上,且进出由亚帧抖动决定。
+MIN_BOX_SIDE_PX = 1.0
+
 
 def classify_kitti(type_id: str) -> str:
     """CARLA actor type_id → KITTI 类名。"""
@@ -157,6 +161,21 @@ def box_to_gt_line(
     inside = (u >= 0) & (u < intrinsics.width) & (v >= 0) & (v < intrinsics.height)
     if not inside.any():
         return None  # 全落图外
+
+    # ★ **退化投影剔除**:近处**擦过镜头**的物体会只留一条线甚至一个点
+    #   (`x1==x2` 或 `y1==y2`,实测 depth 0.58–3.5 m)。这种框有两重害:
+    #   ① **永远配不上** —— 零面积框与任何预测的 IoU 都是 0,是白送的一次漏检;实测
+    #      P1 全部数据集各有 **11/194(5.7%)** 这种框 ⇒ **recall 天花板被压到 94.3%**,
+    #      每一份 P1 AP 都带着这个折扣(2026-10-01 发现);
+    #   ② **进出由亚帧抖动决定** —— 车的远底角恰落在像面下边缘(v≈375)时,0.24 m 的 ego
+    #      偏移就能让整框在「0 px 高」与「164 px 高」之间翻面 ⇒ 两次采集的 GT **逐帧条数**
+    #      不再相等,A/B 硬门槛当场破(实测 `kitti_ab_occl_none` 194 vs `_near` 195)。
+    #   判据取「两维都 ≥ 1 px」:配合 `max_distance`,本项目最远的框也有十几 px,
+    #   1 px 只可能命中这类退化投影。
+    if (u[inside].max() - u[inside].min()) < MIN_BOX_SIDE_PX or (
+        v[inside].max() - v[inside].min()
+    ) < MIN_BOX_SIDE_PX:
+        return None
 
     trunc = 1.0 - float(inside.sum() / front.sum())
     label = classify_kitti(box.type_id)

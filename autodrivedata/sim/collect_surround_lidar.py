@@ -43,6 +43,11 @@ python -m autodrivedata.map.stitch_temporal --frames <preds> --infos <out>/map_i
     --pose slam --slam-traj <slam_out>/traj_pgo.json --out <map_out>
 ```
 
+底图(`--lidar-root <out>`)把本采集器多采的 LiDAR/Radar 叠到矢量图下当**上下文**
+(`stitch_temporal` / `viz_maptr_pred` 都支持)。⚠️ 模型是**纯相机**的,点云**不进网络** ——
+别把带底图的产解读成多模态融合的结果。`--pose slam` 时底图与矢量**必须用同一位姿源**
+(一边 GT 一边 SLAM 会得到两张各自都对、叠起来错位的图)。
+
 ## ⚠️ 同步纪律(四条都踩过,别改)
 
 1. **每个 tick 必须逐路抽干队列**。只取被测那一路会让其余积压,下一帧读到的是**更早**的
@@ -65,6 +70,8 @@ python -m autodrivedata.map.stitch_temporal --frames <preds> --infos <out>/map_i
   python -m autodrivedata.sim.collect_surround_lidar --frames 200 --speed 6 --stride 2 \
       --spawn-index 88 --scene day_clear
   python -m autodrivedata.sim.collect_surround_lidar --frames 50 --no-radar      # 不挂雷达(轻量跑)
+  python -m autodrivedata.sim.collect_surround_lidar --autopilot --frames 240 --out outputs/dual_run  # 长序列
+    # ⚠️ autopilot 路线**不可复现** ⇒ 只用于训练数据/演示;A/B 仍用 collect_ab_route 的锚定定速
 """
 
 from __future__ import annotations
@@ -92,6 +99,7 @@ from autodrivedata.map.mapviz import calib_from_fov
 from autodrivedata.perception.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
 from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
+    SENSOR_OFFSET,
     loc,
     spawn_ego,
     spawn_ego_at,
@@ -111,7 +119,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--out", required=True, help="输出 root(经 project_path)")
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--stride", type=int, default=5, help="每帧跨几个 tick(5 = 0.5 s/帧)")
-    ap.add_argument("--speed", type=float, default=8.0, help="ego 定速 m/s(红线:定速要逐帧自证)")
+    # default=None 而不是 8.0:否则 `--autopilot --speed 8`(传的正是默认值)会**绕过互斥校验**
+    ap.add_argument("--speed", type=float, default=None, help="ego 定速 m/s(红线:定速要逐帧自证;缺省 8.0)")
+    ap.add_argument(
+        "--autopilot",
+        action="store_true",
+        help="改用 TM autopilot 跟路网跑(能跑长序列;定速直行在 Town10HD_Opt 约 133 m 就被挡停)。"
+        "**与 --speed 互斥**;⚠️ autopilot 路线**不可复现**(换 seed/车流就变)⇒ 只用于训练/演示,**不得用于 A/B**",
+    )
     ap.add_argument("--map", default=None, help="加载地图(缺省=不动当前图)")
     ap.add_argument("--scene", default=None, choices=sorted(SCENES), help="天气档")
     ap.add_argument("--spawn-index", type=int, default=None, help="固定用第 N 个 spawn point")
@@ -130,8 +145,47 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+#: autopilot 的目标速度 = 限速的百分之几。**唯一的定义处** —— spawn 时设的
+#: `vehicle_percentage_speed_difference(100 - 它)` 与 `calib.json` 里记的自述字段都取它,
+#: 否则"跑的是 70%"与"写的是 70%"是两处各自维护的数(迟早一改一漏)。
+AUTOPILOT_SPEED_PCT = 70.0
+
+
+def provenance(args: argparse.Namespace, default_map: str) -> dict[str, Any]:
+    """`calib.json` 的**自述字段**(纯值,可单测 —— 这段逻辑必须能脱离 CARLA 验证)。
+
+    ★ 为什么值得单独一个函数:`route` / `speed_mps` 曾经**恒写** `"const_speed"` + 默认 8.0,
+    连 `--autopilot` 的 run 也照写。那是一份**假的溯源记录** —— 后来的读方会以为这段数据
+    是"定速可复现"的,进而拿它去做只有锚定定速才允许的事(A/B 类比较)。
+    与红线里"声明 ≠ 渲染"同族:**产物里的自述字段错了,比没有这个字段更坏**
+    (没有字段 ⇒ 读方会去问;错字段 ⇒ 读方不会问)。纯函数 + 单测是唯一能在不跑 CARLA
+    的前提下钉住它的办法。
+    """
+    return {
+        "map": default_map,
+        "spawn_index": args.spawn_index,
+        "stride": args.stride,
+        "image_size": [NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT],
+        "route": "autopilot" if args.autopilot else "const_speed",
+        "speed_mps": None if args.autopilot else args.speed,
+        "autopilot_speed_pct": AUTOPILOT_SPEED_PCT if args.autopilot else None,
+        "reproducible": not args.autopilot,  # 一句话给下游:不可复现的 run 不得进 A/B
+        "has_lidar": True,  # 溯源:本 root 与 collect_surround 的产物靠这个键区分
+        "has_radar": not args.no_radar,
+        # 雷达挂点/偏航是**官方 nus 原值**(devkit 口径),不是 CARLA 系 —— 与相机那套
+        # (sensor2ego,CARLA 系)不同系,故单独一个键,免得被当成同一种读数。
+        "radar_nus_offsets": (
+            {ch: list(NUS_RADAR_OFFSETS[ch][0]) for ch in NUS_RADAR_CHANNELS} if not args.no_radar else None
+        ),
+    }
+
+
 def main() -> None:
     args = parse_args()
+    if args.autopilot and args.speed is not None:
+        raise SystemExit("--autopilot 与 --speed 互斥(两者都写 ego 控制,不静默取一)")
+    if args.speed is None:
+        args.speed = 8.0
     client = carla.Client(args.host, args.port)
     client.set_timeout(60.0)
     world = client.load_world(args.map) if args.map else client.get_world()
@@ -145,7 +199,16 @@ def main() -> None:
     tm = client.get_trafficmanager(8000)
     tm.set_synchronous_mode(True)
     ego = spawn_ego_at(world, args.spawn_index) if args.spawn_index is not None else spawn_ego(world)
-    ego.set_autopilot(False)  # 定速,不走 TM(红线:autopilot 路线不可复现)
+    if args.autopilot:
+        # TM 跟路网 —— 长序列的唯一办法(定速直行会撞停)。
+        # ⚠️ 与 `collect_surround` 同性质:**路线不可复现**,故只用于训练数据/演示;
+        #    A/B 实验仍必须用 collect_ab_route 的锚定定速(红线)。
+        ego.set_autopilot(True, tm.get_port())
+        tm.vehicle_percentage_speed_difference(ego, 100.0 - AUTOPILOT_SPEED_PCT)
+        tm.ignore_lights_percentage(ego, 100.0)  # 与 collect_surround 同口径:红灯等待=重复帧
+        print("[ego] autopilot on (TM 8000, 70% speed, 忽略红绿灯)")
+    else:
+        ego.set_autopilot(False)  # 定速,不走 TM(红线:autopilot 路线不可复现)
     spawn_traffic(world, tm, args.npc_vehicles, args.npc_walkers, args.seed)
     spawn_route_walkers(world, ego.get_transform(), args.route_walkers)
     bp_lib = world.get_blueprint_library()
@@ -174,10 +237,16 @@ def main() -> None:
         cams[name], qs[name] = s, q
 
     # ---- LiDAR:与 collect_slam 同口径(那边是 SLAM 链已验过的参数)----
+    # ★ **挂点必须用 `SENSOR_OFFSET`,不能是 ego 原点** —— 这不只是"对齐参数"的问题:
+    #   `slam_eval.lidar_pose_to_ego` 做坐标换算时按 `L = LIDAR_LEVER = [1.2, 0, 1.65]`
+    #   补杆臂(`L·M·T·M·inv(L)`),而那个常数**正是照 collect_slam 的挂点定的**。
+    #   挂点无偏移 ⇒ 这个补偿是错的 ⇒ 在本数据上跑 eval_slam 会得到带系统性偏差的 ATE
+    #   (2026-09-29 实测:无偏移挂载下 ATE 报 0.877 m,不可作干净参考)。
+    #   症状隐蔽:**不报错、不崩溃,只是数字偏** —— 与红线「ICP 的 T_delta 是点映射」同族。
     lid_bp = bp_lib.find("sensor.lidar.ray_cast_semantic" if args.semantic_lidar else "sensor.lidar.ray_cast")
     for k, v in LIDAR_ATTRS.items():
         lid_bp.set_attribute(k, v)
-    lidar = cast(carla.Sensor, world.spawn_actor(lid_bp, carla.Transform(), attach_to=ego))
+    lidar = cast(carla.Sensor, world.spawn_actor(lid_bp, SENSOR_OFFSET, attach_to=ego))
     lid_q: queue.Queue = queue.Queue()
     lidar.listen(lid_q.put)
 
@@ -222,25 +291,7 @@ def main() -> None:
         }
         for name, (mount, rot) in NUS_CAMERA_RIG.items()
     }
-    calib.update(
-        {
-            "map": default_map,
-            "spawn_index": args.spawn_index,
-            "stride": args.stride,
-            "image_size": [NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT],
-            "route": "const_speed",
-            "speed_mps": args.speed,
-            "has_lidar": True,  # 溯源:本 root 与 collect_surround 的产物靠这个键区分
-            "has_radar": not args.no_radar,
-            # 雷达挂点/偏航是**官方 nus 原值**(devkit 口径),不是 CARLA 系 —— 与相机那套
-            # (sensor2ego,CARLA 系)不同系,故单独一个键,免得被当成同一种读数。
-            "radar_nus_offsets": (
-                {ch: list(NUS_RADAR_OFFSETS[ch][0]) for ch in NUS_RADAR_CHANNELS}
-                if not args.no_radar
-                else None
-            ),
-        }
-    )
+    calib.update(provenance(args, default_map))
     (out / "calib.json").write_text(json.dumps(calib, indent=1), encoding="utf-8")
 
     # 预热:**每 tick 收齐全部队列**(纪律 1/2)。雷达 sensor_tick 相位偶发空(实测 ~7%),
@@ -260,10 +311,13 @@ def main() -> None:
     if not args.no_radar and not all(warmed_radar.values()):
         print(f"  [warn] 预热 10 tick 仍有雷达通道没出帧:{[k for k, v in warmed_radar.items() if not v]}")
 
-    # 清制动残留再定速(红线:`VehicleControl` 残留会让 set_target_velocity 打折)
-    ego.apply_control(carla.VehicleControl())
-    fwd = ego.get_transform().get_forward_vector()
-    fwd_v = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
+    # 清制动残留再定速(红线:`VehicleControl` 残留会让 set_target_velocity 打折)。
+    # **autopilot 模式下必须跳过**:`apply_control` 与 TM 抢控制权,会把 autopilot 打回手动。
+    fwd_v = None
+    if not args.autopilot:
+        ego.apply_control(carla.VehicleControl())
+        fwd = ego.get_transform().get_forward_vector()
+        fwd_v = carla.Vector3D(x=fwd.x * args.speed, y=fwd.y * args.speed, z=0.0)
 
     poses: list[dict] = []
     Ts: list[np.ndarray] = []
@@ -272,7 +326,8 @@ def main() -> None:
     i = -1  # 异常可能在首轮之前抛出;半成品标记要用它,别留未绑定名
     try:
         for i in range(args.frames):
-            ego.set_target_velocity(fwd_v)  # 每 tick 强设(速度环不稳)
+            if fwd_v is not None:
+                ego.set_target_velocity(fwd_v)  # 每 tick 强设(速度环不稳)
             drained: dict[str, carla.Image] = {}
             lid: carla.LidarMeasurement | None = None
             for _ in range(args.stride):
@@ -360,10 +415,16 @@ def main() -> None:
         dt = args.stride * 0.1
         p = np.array([T[:3, 3] for T in Ts])
         spd = np.linalg.norm(np.diff(p, axis=0), axis=1) / dt if len(p) > 1 else np.zeros(1)
-        print(
-            f"[speed] 命令 {args.speed:.2f} m/s → 逐帧实测 中位 {np.median(spd):.2f} / "
-            f"均值 {spd.mean():.2f} m/s(取自位姿序列,非命令值)"
-        )
+        if args.autopilot:
+            print(
+                f"[speed] autopilot(TM 70%)⇒ 逐帧实测 中位 {np.median(spd):.2f} / "
+                f"均值 {spd.mean():.2f} m/s(取自位姿序列;**命令值无意义**,故不报)"
+            )
+        else:
+            print(
+                f"[speed] 命令 {args.speed:.2f} m/s → 逐帧实测 中位 {np.median(spd):.2f} / "
+                f"均值 {spd.mean():.2f} m/s(取自位姿序列,非命令值)"
+            )
     print(
         f"[done] dual root: {out.resolve()} ({args.frames} 帧 × {len(cams)} 相机 + LiDAR,"
         f" stride {args.stride} = {args.frames * args.stride * 0.1:.1f}s 仿真时长)"

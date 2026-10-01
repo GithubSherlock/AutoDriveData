@@ -697,3 +697,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]  # autodrivedata/paths.py →
 > ⚠️ 这是「直接在 `main` 上做」的固有代价:没有一次性的 `git branch -D` 逃生口。
 > 若嫌麻烦,可在阶段 2 **之前**补切分支(此时只有阶段 0–1 两个 commit,迁移成本最低)——
 > 阶段 3 之后就别切了,历史已经纠缠。
+
+---
+
+## 附:第 12 类引用形态 —— **下游仓库**(2026-09-30 补记)
+
+本次重构的扫描清单收在「11 类」,**全部是本仓内**的。2026-09-30 发现漏了一类:
+
+**症状**:AutoLabel(消费方)的 `auto3dlabel/tests/functional/test_mapvec_crosscheck.py`
+引用 `autodrivedata.chamfer_ap` / `.geometry` / `.mapviz` —— 都是重构前的顶层路径。
+模块收进 `map/` `utils/` 之后,该测试 **collect 期即 `ModuleNotFoundError`**,
+自 2026-09-26 起**断了 4 天**,产出方与消费方**都不知道**。
+
+**为什么严重**:`mapvec_pred/1` 是**复制而非 import** 的跨仓契约(红线:消费方不反向 import)。
+这条测试是复制版**唯一**的漂移保护网 —— 它一死,产出方改契约时**没有任何东西会红**。
+
+**修法**:三行 import(符号全部未改名,只挪了路径)。文件头注已注明"由 Claude Code 于
+2026-09-30 修,非本仓作者改的"。
+
+**根因与机械判据**:覆盖面缺"下游"这一维。产出方侧新增
+[`autodrivedata/tests/test_downstream_refs.py`](../autodrivedata/tests/test_downstream_refs.py)
+—— AST 扫下游 `.py` 的 `autodrivedata.*` 引用并逐个 `find_spec`;
+带**扫描器自证**(喂一条必失效的引用,必须认出来)与**空扫自证**(一条都没扫到即失败,
+防目录改过之后判据静默死掉)。CLAUDE.md 的引用形态清单同步改为 **12 类**。
+
+**有意不覆盖**:下游的**路径字符串**引用(如 `finetune_config.py` 里写死的
+`.../AutoDriveData/outputs/kitti_ft/`)。那属数据可用性,不是代码引用 ——
+写进单测会让测试依赖数据集在不在盘上。**这条边界必须写出来**,否则"绿了"会被读成"全覆盖"。

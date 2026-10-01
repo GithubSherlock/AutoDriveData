@@ -7,10 +7,24 @@
 #
 # M3-5 结论:headless 下客户端会话收尾(销毁传感器+断连)偶发 UE4 segfault(139),
 # 但每次采集数据已完整落盘——崩溃只发生在 teardown 阶段。纪律:每次采集前 start。
+#
+# ⚠️ **质量档 = 渲染口径,不是性能旋钮**(2026-09-30 变更)。
+#   原为 `-quality-level=Low`,理由是 Plan.md §4.1 记的「RTX 3080 Ti **12GB** ⇒ Low 实占 ~5G」。
+#   2026-09-30 实测:`Low` 下**湿路面材质渲染成饱和异常色** —— `precipitation_deposits` 或
+#   `wetness` 任一 >0 时,干燥路面**首次变湿的下一 tick 起变色并永久保持**(受控探针:路面
+#   mean RGB 由中性灰跳到 `[110,111,223]`,R−B −27 → −113);同一个键在静止探针里出**蓝**、
+#   在 A/B 采集里出**品红** ⇒ 是着色器坏,不是「路面湿了长这样」。`Epic` 下渲染正常(真镜面反光)。
+#   **而当年选 Low 的 12 GB 约束已随机器更替消失**(现 3090 / 48 GB):实测 Epic 只占 **6.0 GB**、
+#   **49.4 tick/s(4.94× 实时)** ⇒ 几乎免费。
+#   ⇒ 默认改 `Epic`;`carla_server.sh start <档>` 或 `CARLA_QUALITY=<档>` 可覆盖。
+#   ★ **质量档是口径**:两档渲染不同,跨档数据集**不可混比**(P1 A/B、MapTR/MapQR 训练集、
+#     nus_mini… 全部按档归属)。
 
 CARLA_DIR=/root/autodl-tmp/CARLA_0.9.16
 BIN_NAME=CarlaUE4-Linux-Shipping
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+#: 第 2 个位置参数或 $CARLA_QUALITY 可覆盖;默认 Epic(理由见上)
+QUALITY=${2:-${CARLA_QUALITY:-Epic}}
 
 # 运行支撑物一律落在**项目内**(产出纪律:清系统盘/数据盘都不会带走它们;
 # 目录被删也能自愈重建)。STATE 在 outputs/ 下(gitignore)。
@@ -94,7 +108,8 @@ case "$1" in
     fi
     setup_state
     setup_gpucompat
-    nohup su - carla -c "cd $CARLA_DIR && LD_LIBRARY_PATH=$COMPAT_LDPATH LD_PRELOAD=$SHIM ./CarlaUE4.sh -RenderOffScreen -quality-level=Low" > "$LOG" 2>&1 &
+    nohup su - carla -c "cd $CARLA_DIR && LD_LIBRARY_PATH=$COMPAT_LDPATH LD_PRELOAD=$SHIM ./CarlaUE4.sh -RenderOffScreen -quality-level=$QUALITY" > "$LOG" 2>&1 &
+    echo "质量档 = $QUALITY(渲染口径;**跨档数据不可混比**,见头注)"
     wait_ready
     ;;
   stop)
