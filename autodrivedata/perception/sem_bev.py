@@ -39,9 +39,7 @@ import torch
 
 from autodrivedata.map.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose, intrinsics_from_k
 from autodrivedata.utils import runlog
-from autodrivedata.utils.geometry import (
-    ground_intersection,  # noqa: F401 — 语义 BEV 与采集/实时流共用同一投影
-)
+from autodrivedata.utils.geometry import camera_rotation_world_to_cam  # noqa: F401
 from autodrivedata.utils.paths import project_path
 
 try:
@@ -75,6 +73,72 @@ def init_camera(calib_cam: dict, size: tuple[int, int]) -> tuple[CameraIntrinsic
     return intrinsics_from_k(calib_cam["intrinsic"], size), calib_cam["sensor2ego"]
 
 
+#: 逐像素地面投影的默认像素上限(速度;投影是逐像素射线)。**只在画图时用** ——
+#: 判据(`sem_eval`)必须传 `None` 走全量:随机子采样会让 IoU 带一层抽样噪声,
+#: 而 GT 与预测的子集还各不相同(`np.where` 出来的顺序不同),那个噪声不会被抵消。
+MAX_PROJECT_PIXELS = 40_000
+
+
+def mask_to_bev(
+    mask: np.ndarray,
+    world_cam: tuple[tuple[float, float, float], tuple[float, float, float]],
+    intrinsics: CameraIntrinsics,
+    ground_z: float,
+    ego: list[float],
+    shape: tuple[int, int],
+    *,
+    max_pixels: int | None = MAX_PROJECT_PIXELS,
+) -> np.ndarray:
+    """掩膜像素(非 0 = 命中)→ **BEV 二值图** `(h, w)` bool(像素级地面投影)。
+
+    ground_intersection 返回**世界系**交点,BEV 面板是 **ego 局部系**(x 前向 /
+    y 左向,原点 = ego)→ 投影前先按 ego yaw 旋转回局部系。曾漏掉这步,da 18 万
+    像素只有 90 个落进 30m 窗口(世界系坐标当局部系用,远处路面全在窗外)。
+
+    这里是**唯一的投影实现**:画图(`project_mask_to_bev`)与判据(`sem_eval`)都走它
+    —— 两处各写一份的话,"图看着对"与"数算得对"会各自成立、合起来错。
+
+    **向量化实现**:逐像素调 `ground_intersection` 在判据规模上跑不动 ——
+    一帧 6 路可行驶区就有 **360 万**像素,20 帧近 7200 万次 Python 调用。
+    这里把同一条链整块用 numpy 算(与标量版**逐位等价**,`test_sem_bev` 有对拍钉):
+    归一化 → 相机→世界方向 → 与地平面求交 → 世界→ego 局部 → 栅格化。
+    """
+    out = np.zeros(shape, dtype=bool)
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return out
+    if max_pixels is not None and len(xs) > max_pixels:
+        idx = np.random.default_rng(0).choice(len(xs), max_pixels, replace=False)
+        xs, ys = xs[idx], ys[idx]
+
+    loc, rot = world_cam
+    fx, fy, cx, cy = intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy
+    # 归一化平面 → 相机系方向(与 `ground_intersection` 同一步)
+    dir_cam = np.stack([(xs - cx) / fx, (ys - cy) / fy, np.ones_like(xs, dtype=np.float64)], axis=1)
+    # 相机 → 世界。标量版是 `R_cw @ dir_cam`,其中 `R_cw = R_wc.T`
+    # ⇒ 批量形式是 `dir_cam @ R_cw.T` = `dir_cam @ R_wc`。
+    dir_world = dir_cam @ camera_rotation_world_to_cam(rot)
+    dz = dir_world[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (ground_z - loc[2]) / dz
+    keep = (dz < 0) & (t > 0)  # 射线上行 / 相机后:与标量版的 None 同判
+    if not keep.any():
+        return out
+    p = np.asarray(loc, dtype=np.float64)[None, :] + t[keep, None] * dir_world[keep]
+
+    a = math.radians(ego[3])
+    c, s = math.cos(a), math.sin(a)
+    dx, dy = p[:, 0] - ego[0], p[:, 1] - ego[1]
+    lx, ly = c * dx + s * dy, -s * dx + c * dy  # 世界 → ego 局部系
+    w, h = shape[1], shape[0]
+    # `bev_to_px` 的批量形式:同样的 `int()`(向零截断)语义 ⇒ 边界行为与标量版一致
+    bx = ((lx - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w).astype(np.int64)
+    by = ((BEV_Y[1] - ly) / (BEV_Y[1] - BEV_Y[0]) * h).astype(np.int64)
+    inb = (bx >= 0) & (bx < w) & (by >= 0) & (by < h)
+    out[by[inb], bx[inb]] = True
+    return out
+
+
 def project_mask_to_bev(
     mask: np.ndarray,
     world_cam: tuple[tuple[float, float, float], tuple[float, float, float]],
@@ -84,32 +148,8 @@ def project_mask_to_bev(
     bev: np.ndarray,
     color: tuple[int, int, int],
 ) -> None:
-    """掩膜像素(1 = 命中)→ BEV 着色(像素级地面投影)。
-
-    ground_intersection 返回**世界系**交点,BEV 面板是 **ego 局部系**(x 前向 /
-    y 左向,原点 = ego)→ 投影前先按 ego yaw 旋转回局部系。曾漏掉这步,da 18 万
-    像素只有 90 个落进 30m 窗口(世界系坐标当局部系用,远处路面全在窗外)。
-    """
-    a = math.radians(ego[3])
-    c, s = math.cos(a), math.sin(a)
-    ex, ey = ego[0], ego[1]
-    w, h = bev.shape[1], bev.shape[0]
-    ys, xs = np.where(mask > 0)
-    if len(xs) == 0:
-        return
-    # 下采样到最多 40k 像素(速度;投影是逐像素射线)
-    if len(xs) > 40_000:
-        idx = np.random.default_rng(0).choice(len(xs), 40_000, replace=False)
-        xs, ys = xs[idx], ys[idx]
-    for u, v in zip(xs, ys, strict=True):
-        g = ground_intersection(world_cam, intrinsics, float(u), float(v), ground_z)
-        if g is None:
-            continue
-        dx, dy = g[0] - ex, g[1] - ey
-        lx, ly = c * dx + s * dy, -s * dx + c * dy  # 世界 → ego 局部系
-        bx, by = bev_to_px(lx, ly, w, h)
-        if 0 <= bx < w and 0 <= by < h:
-            bev[by, bx] = color
+    """`mask_to_bev` 的**画图**封装:命中处涂 `color`(判据走前者,不走这里)。"""
+    bev[mask_to_bev(mask, world_cam, intrinsics, ground_z, ego, bev.shape[:2])] = color
 
 
 def letterbox_sq(img_bgr: np.ndarray, imgsz: int = 640) -> tuple[np.ndarray, float, float, float]:
@@ -164,6 +204,45 @@ def yolopv2_predict(model, img_bgr: np.ndarray, device: torch.device, imgsz: int
         da = cv2.resize(da.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
         llm = cv2.resize(llm.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
     return da.astype(bool), llm.astype(bool)
+
+
+def yolo11_object_mask(yolo11, img_bgr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """YOLO11s-seg → **障碍物实例掩膜**(只留 `DETECT_CLS` 那四类),原分辨率二值。
+
+    与 `yolopv2_predict` 并列抽出来,是为了让判据(`sem_eval`)与出图(`sem_bev`)
+    **吃同一份预测** —— 各跑一遍模型的话,报出的 mIoU 与图上看到的可能不是同一次推理。
+    """
+    res = yolo11.predict(img_bgr, conf=0.35, verbose=False)[0]
+    mask = np.zeros(size[::-1], dtype=bool)
+    if res.masks is None or res.boxes is None:
+        return mask
+    cls = res.boxes.cls.cpu().numpy()
+    for i, c in enumerate(cls):
+        if int(c) in DETECT_CLS:
+            m = res.masks.data[i].cpu().numpy()
+            if m.shape != size[::-1]:
+                m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
+            mask |= m > 0.5
+    return mask
+
+
+def predict_masks(
+    img_bgr: np.ndarray,
+    yolopv2,
+    yolo11,
+    device: torch.device,
+    size: tuple[int, int],
+    imgsz: int = 640,
+) -> dict[str, np.ndarray]:
+    """一帧一相机 → `{drivable, lane, obstacle}` 三个**原分辨率布尔掩膜**。
+
+    键名与 GT 侧(`perception.sem_tags.GT_CLASSES`)**逐字相同** —— 判据两侧靠它对上,
+    改名就会静默变成"三类全空、mIoU 恒 1"(见 `sem_tags` 头注那张映射表)。
+    """
+    h, w = img_bgr.shape[:2]
+    assert (w, h) == size, f"图像 {w}×{h} 与 size {size} 不符"
+    da, llm = yolopv2_predict(yolopv2, img_bgr, device, imgsz)
+    return {"drivable": da, "lane": llm, "obstacle": yolo11_object_mask(yolo11, img_bgr, size)}
 
 
 def main() -> None:
@@ -251,22 +330,12 @@ def main() -> None:
                 img = cv2.imread(str(p))
                 intrinsics, se = init_camera(calib[cam], size)
                 world_cam = cam_pose(ego, se)
-                # YOLOPv2:da + ll
-                da, llm = yolopv2_predict(yolopv2, img, device, args.imgsz)
-                # YOLO11:实例掩膜(车/人/卡车/巴士)
-                res = yolo11.predict(img, conf=0.35, verbose=False)[0]
-                obj_mask = np.zeros(size[::-1], dtype=bool)
-                if res.masks is not None and res.boxes is not None:
-                    cls = res.boxes.cls.cpu().numpy()
-                    for i, c in enumerate(cls):
-                        if int(c) in DETECT_CLS:
-                            m = res.masks.data[i].cpu().numpy()
-                            if m.shape != size[::-1]:
-                                m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
-                            obj_mask |= m > 0.5
+                # 三类掩膜(与判据 `sem_eval` 走**同一个** `predict_masks`)
+                pred = predict_masks(img, yolopv2, yolo11, device, size, args.imgsz)
+                da = pred["drivable"]
                 project_mask_to_bev(da, world_cam, intrinsics, ground_z, ego, bev, DA_COLOR)
-                project_mask_to_bev(llm, world_cam, intrinsics, ground_z, ego, bev, LL_COLOR)
-                project_mask_to_bev(obj_mask, world_cam, intrinsics, ground_z, ego, bev, OBJ_COLOR)
+                project_mask_to_bev(pred["lane"], world_cam, intrinsics, ground_z, ego, bev, LL_COLOR)
+                project_mask_to_bev(pred["obstacle"], world_cam, intrinsics, ground_z, ego, bev, OBJ_COLOR)
                 # 预览面板(每相机分割原图 + 掩膜投影)
                 h, w = size[1], size[0]
                 panel = np.hstack(

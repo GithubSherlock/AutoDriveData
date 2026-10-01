@@ -62,10 +62,12 @@ import time
 from typing import Any, cast
 
 import carla
+import numpy as np
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
 from autodrivedata.gt.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.map.mapviz import calib_from_fov
+from autodrivedata.perception.sem_tags import encode_tag_png
 from autodrivedata.sim.carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
 from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic
 from autodrivedata.sim.scenarios import SCENES, merged_weather
@@ -81,6 +83,19 @@ SURROUND_CAMS: dict[str, float] = dict(NUS_CAMERA_YAW)
 SURROUND_CAM_ATTRS = {"image_size_x": str(NUS_CAMERA_WIDTH), "image_size_y": str(NUS_CAMERA_HEIGHT)}
 
 
+def tag_from_semantic_image(image: carla.Image) -> np.ndarray:
+    """语义相机帧 → tag 图 `(H, W)` uint8。
+
+    ⚠️ **必须先 `convert(Raw)`**:默认转换器是 `CityScapesPalette`,不转拿到的是
+    **上色预览**(人眼好看、数值全错)。Raw 下 `B=G=0`、`A=255`,**tag 在 R 通道** ——
+    2026-10-01 实测确认(每个 tag 的调色板色与 CARLA 源码 29 色表逐个对,16/16 全中),
+    不是从文档抄的。见 [`perception/sem_tags.py`](../perception/sem_tags.py) 头注。
+    """
+    image.convert(carla.ColorConverter.Raw)
+    buf = np.frombuffer(image.raw_data, dtype=np.uint8)
+    return buf.reshape(image.height, image.width, 4)[:, :, 2].copy()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=None, help="输出根目录(默认 outputs/surround_<scene 或 drive>)")
@@ -90,6 +105,14 @@ def main() -> None:
     ap.add_argument("--npc-walkers", type=int, default=6)
     ap.add_argument("--route-walkers", type=int, default=6, help="沿 ego 初始朝向布置的行人数")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--sem",
+        action="store_true",
+        help="**逐相机**多挂一路 `sensor.camera.semantic_segmentation`(同挂点同 fov),"
+        "落 `sem_<cam>/{fid}.png` = 8 位灰度、tag 即像素值(无损)—— 这是 P2-A 的"
+        "**像素级分割 GT**,给 `perception/sem_eval.py` 当裁判用。默认关(对既有管线零改动;"
+        "6 路变 12 路,采集与磁盘都翻倍)",
+    )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument(
@@ -173,12 +196,42 @@ def main() -> None:
         s.listen(q.put)
         cams[name], qs[name] = s, q
 
+    # ---- 语义 GT(P2-A;`--sem` 时逐相机多挂一路)----
+    # **挂点/fov 必须与 RGB 那路逐字相同** —— 否则 tag 图与 RGB 图不再像素对齐,
+    # 而"对不齐"在下游只表现为 mIoU 偏低,看不出是这里错了。
+    sem_cams: dict[str, carla.Sensor] = {}
+    sem_qs: dict[str, queue.Queue] = {}
+    if args.sem:
+        for name, (mount, rot) in NUS_CAMERA_RIG.items():
+            sem_bp = bp_lib.find("sensor.camera.semantic_segmentation")
+            for k, v in SURROUND_CAM_ATTRS.items():
+                sem_bp.set_attribute(k, v)
+            sem_bp.set_attribute("fov", f"{NUS_CAMERA_FOV[name]:.6f}")
+            s = cast(
+                carla.Sensor,
+                world.spawn_actor(
+                    sem_bp,
+                    carla.Transform(
+                        carla.Location(x=mount[0], y=mount[1], z=mount[2]),
+                        carla.Rotation(pitch=rot[0], yaw=rot[1], roll=rot[2]),
+                    ),
+                    attach_to=ego,
+                ),
+            )
+            q = queue.Queue()
+            s.listen(q.put)
+            sem_cams[name], sem_qs[name] = s, q
+
     fovs = " ".join(f"{n.replace('CAM_', '')}={NUS_CAMERA_FOV[n]:.2f}°" for n in SURROUND_CAMS)
     print(f"[cams] {len(cams)} 环视相机挂载(nuScenes 官方 6DoF 挂点,逐通道 fov):{fovs}")
+    if args.sem:
+        print(f"[sem]  +{len(sem_cams)} 语义相机(同挂点同 fov)⇒ 像素级分割 GT 落 sem_<cam>/")
 
     for _ in range(5):  # 预热
         world.tick()
         for q in qs.values():
+            q.get(timeout=10)
+        for q in sem_qs.values():
             q.get(timeout=10)
 
     w, h = NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT
@@ -197,11 +250,16 @@ def main() -> None:
     out = project_path(args.out)
     for name in SURROUND_CAMS:
         (out / name.lower()).mkdir(parents=True, exist_ok=True)
+        if args.sem:
+            (out / f"sem_{name.lower()}").mkdir(parents=True, exist_ok=True)
     # 数据溯源(照 `"map"` 键的既有做法):旧产物无这些键 = 1242×375/六路共用 90°/stride 1
     calib["map"] = default_map  # 该采集来自哪张图(旧产物无此键 = Town10HD_Opt)
     calib["spawn_index"] = args.spawn_index  # None = spawn_ego 首空位
     calib["stride"] = args.stride
     calib["image_size"] = [w, h]
+    # 语义 GT 的溯源:读的人必须知道"这个 root 有没有 sem_*/、tag 是哪一版编号"。
+    # 旧产物无此键 = 没采语义。tag 编号见 `perception/sem_tags.py`(= CARLA CityObjectLabel)。
+    calib["semantic"] = "carla.CityObjectLabel/R-channel" if args.sem else None
     with open(out / "calib.json", "w", encoding="utf-8") as f:
         json.dump(calib, f, indent=1)
 
@@ -212,13 +270,21 @@ def main() -> None:
             # stride > 1:中间 tick 也必须**逐路抽干队列** —— 只取被测帧会让其余相机积压,
             # 下一帧读到的是更早的陈旧图(§P-M.7 判据 ⑥ 同款坑)。故先循环 tick 并每 tick 收齐。
             drained: dict[str, carla.Image] = {}
+            sem_drained: dict[str, carla.Image] = {}
             for _ in range(args.stride):
                 world.tick()
                 drained = {name: qs[name].get(timeout=10) for name in SURROUND_CAMS}
+                sem_drained = {n: sem_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.sem else {}
             for name, image in drained.items():
                 tmp = out / f".tmp_{i}_{name}.png"
                 image.save_to_disk(str(tmp))
                 tmp.rename(out / name.lower() / f"{i:06d}.png")
+            for name, image in sem_drained.items():
+                # **走 PIL 而不是 `save_to_disk`**:后者写的是当前转换器下的图(默认上色预览),
+                # 而我们要的是"tag 即像素值"的 8 位灰度。见 `tag_from_semantic_image`。
+                (out / f"sem_{name.lower()}" / f"{i:06d}.png").write_bytes(
+                    encode_tag_png(tag_from_semantic_image(image))
+                )
             egot = ego.get_transform()
             poses.append(
                 {
@@ -241,7 +307,9 @@ def main() -> None:
     finally:
         with open(out / "ego_pose.json", "w", encoding="utf-8") as f:
             json.dump(poses, f, indent=1)
-        for s in cams.values():
+        # 语义相机也要收 —— 与雷达同一条:`sensor.*` 不在下面那个 vehicle/walker/controller
+        # 过滤器里,漏收会留在世界里阻塞下一次采集的 spawn。
+        for s in (*cams.values(), *sem_cams.values()):
             s.stop()
             s.destroy()
         for a in world.get_actors():

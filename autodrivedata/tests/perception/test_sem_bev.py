@@ -18,9 +18,13 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pytest
 import torch
 
+from autodrivedata.map.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose
 from autodrivedata.perception import sem_bev
 
 # KITTI 口径输入(与采集器一致);letterbox 到 640×640 后 r≈0.5153、dh≈223.5
@@ -97,3 +101,107 @@ def test_band_shifts_with_the_band_position():
     da_high, _ = sem_bev.yolopv2_predict(_stub_with_drivable_band(420, 600), img, torch.device("cpu"))
     assert not np.array_equal(da_low, da_high)
     assert da_low[60:300, :].all() and not da_high[60:300, :].any()
+
+
+# ---------------------------------------------------------------------------
+# 投影的**向量化 vs 标量对拍**(2026-10-01)
+# ---------------------------------------------------------------------------
+# `mask_to_bev` 当天从"逐像素调 ground_intersection"改成整块 numpy:判据(P2-A)要全量跑,
+# 一帧 6 路可行驶区 360 万像素 × 20 帧 = 7200 万次 Python 调用,不向量化跑不完。
+# 这类改写的典型失败是"图看着对但点整体偏了半个像素" —— 在 BEV 图上**完全看不出来**。
+# 所以拿仍在的标量版(`ground_intersection` + `bev_to_px`)当 oracle,逐点对拍。
+
+_EGO = [12.0, -3.5, 0.6, 17.0, 0.4, -0.3]  # x, y, z, yaw°, pitch°, roll°
+
+
+def _bev_shape(pad: int = 0) -> tuple[int, int]:
+    from autodrivedata.perception.sem_bev import BEV_PX
+
+    h = int((BEV_Y[1] - BEV_Y[0]) / BEV_PX) + pad
+    w = int((BEV_X[1] - BEV_X[0]) / BEV_PX) + pad
+    return h, w
+
+
+def _scalar_reference(mask, world_cam, intrinsics, ground_z, ego, shape) -> np.ndarray:
+    """**标量**参考:逐像素走 `ground_intersection` + `bev_to_px`(判据用的那两个函数)。"""
+    from autodrivedata.map.mapviz import bev_px_transform
+    from autodrivedata.utils.geometry import ground_intersection
+
+    px = bev_px_transform((shape[1], shape[0]))
+    out = np.zeros(shape, dtype=bool)
+    a = math.radians(ego[3])
+    c, s = math.cos(a), math.sin(a)
+    for v, u in zip(*np.where(mask > 0), strict=True):
+        g = ground_intersection(world_cam, intrinsics, float(u), float(v), ground_z)
+        if g is None:
+            continue
+        dx, dy = g[0] - ego[0], g[1] - ego[1]
+        lx, ly = c * dx + s * dy, -s * dx + c * dy
+        bx, by = sem_bev.bev_to_px(lx, ly, shape[1], shape[0])
+        assert (bx, by) == tuple(int(t) for t in px(lx, ly)), "两处栅格不一致"
+        if 0 <= bx < shape[1] and 0 <= by < shape[0]:
+            out[by, bx] = True
+    return out
+
+
+def _mask_scene(seed: int, n_px: int = 900, size=(640, 360)):
+    """随机相机位姿 + 随机像素(偏向画面下半,多半打得到地面)。"""
+    rng = np.random.default_rng(seed)
+    se = (0.9, 0.4, 1.6, float(rng.uniform(-180, 180)), float(rng.uniform(-2, 2)), 0.0)
+    intr = CameraIntrinsics(width=size[0], height=size[1], fov_h_deg=90.0)
+    mask = np.zeros((size[1], size[0]), dtype=bool)
+    mask[rng.integers(size[1] // 2, size[1], n_px), rng.integers(0, size[0], n_px)] = True
+    return mask, cam_pose(_EGO, se), intr
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+def test_vectorised_projection_matches_the_scalar_one(seed):
+    """★ 两条实现对同一组像素必须给出**逐点相同**的 BEV 栅格。"""
+    mask, world_cam, intr = _mask_scene(seed)
+    shape = _bev_shape()
+    gz = _EGO[2] - 0.5
+    got = sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=None)
+    want = _scalar_reference(mask, world_cam, intr, gz, _EGO, shape)
+    assert got.any(), "这次抽样一个点都没落进 BEV 窗口 —— 先换个场景再谈对不对"
+    np.testing.assert_array_equal(got, want)
+
+
+def test_vectorised_projection_matches_on_a_wider_window():
+    """换窗口尺寸(多出边界几格)也必须一致 —— 栅格化的截断只在边界上露馅。"""
+    mask, world_cam, intr = _mask_scene(7)
+    shape = _bev_shape(pad=3)
+    gz = _EGO[2] - 0.5
+    got = sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=None)
+    want = _scalar_reference(mask, world_cam, intr, gz, _EGO, shape)
+    assert got.any() and np.array_equal(got, want)
+
+
+def test_upward_rays_draw_nothing():
+    """画面上缘(射线朝上)`ground_intersection` 返回 None ⇒ 两条实现都不该画出东西。"""
+    mask = np.zeros((360, 640), dtype=bool)
+    mask[0:10, :] = True
+    _m, world_cam, intr = _mask_scene(11)
+    shape = _bev_shape()
+    gz = _EGO[2] - 0.5
+    assert not sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=None).any()
+    assert not _scalar_reference(mask, world_cam, intr, gz, _EGO, shape).any()
+
+
+def test_subsampling_is_seeded_and_is_a_subset_of_the_full_path():
+    """画图路径会下采样(40k 上限):必须**可复现**,且是**全量的子集**。
+
+    判据走全量、画图走子采样 —— 若两条不是同一套投影,图与数就会互相矛盾,
+    而那种矛盾看起来只是"图上稀疏一点"。
+    """
+    mask = np.zeros((360, 640), dtype=bool)
+    mask[180:, :] = True
+    _m, world_cam, intr = _mask_scene(19)
+    shape = _bev_shape()
+    gz = _EGO[2] - 0.5
+    sub_a = sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=500)
+    sub_b = sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=500)
+    full = sem_bev.mask_to_bev(mask, world_cam, intr, gz, _EGO, shape, max_pixels=None)
+    np.testing.assert_array_equal(sub_a, sub_b)
+    assert sub_a.any() and full.any()
+    assert not (sub_a & ~full).any(), "子采样画出了全量没有的格子 —— 两条路径不是同一套投影"
+    assert sem_bev.MAX_PROJECT_PIXELS == 40_000, "默认上限是画图口径,改小会静默改变既有出图"

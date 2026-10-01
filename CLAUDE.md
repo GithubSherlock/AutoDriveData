@@ -13,8 +13,9 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 
 | 主题 | 结论 | 详述 |
 |---|---|---|
-| **P1** corner case 矩阵 | **Epic 口径重采(2026-09-30)**:四型可量化掉点 —— 浓雾 **−0.500** > 雨夜 −0.409 > 湿路面 −0.227 > 逆光 −0.047(day_clear 0.591)。**非相机模态两侧对称不动**:LiDAR 点数差 <0.002%、雷达 <0.3%、分布逐项相同(**平台边界**:CARLA 不给雨雾建模消光)。⚠️ 旧的 Low 档数字(逆光 −0.014 / 雨夜 −0.153 / 浓雾 −0.013)**已作废** —— Low 档**根本不渲染雾** | [Plan4.md](Plan4.md) §P-V4 |
+| **P1** corner case 矩阵 | **Epic 口径 + 修退化 GT(2026-10-01)**:四型可量化掉点 —— 浓雾 **−0.578** > 雨夜 −0.487 > 湿路面 −0.215 > 逆光 −0.125(day_clear **0.669**)。⚠️ 上一版(Epic 但含退化 GT,GT=194)是 −0.500 / −0.409 / −0.227 / −0.047(0.591),**已作废**:那 11 条零面积 GT 永远配不上,去掉后**基线涨 0.078 而 B 侧(检出稀的)一条没动** ⇒ 所有 Δ 同步变大。重新看再上一版的 Low 档数字**也作废** —— Low 档**根本不渲染雾**(**非相机模态两侧对称不动**:LiDAR 点数差 <0.002%、雷达 <0.3%、分布逐项相同 —— **平台边界**:CARLA 不给雨雾建模消光,这条不受 GT 口径影响) | [Plan4.md](Plan4.md) §P-V4 / §P-V12 |
 | **P2** 静态 GT | 信号/标志是 landmark、车道线是 lane_marking;**semantic LiDAR 打不到** ⇒ 只能走地图查询 API | Plan.md §5.7c |
+| **P2-A** 像素级分割 GT | 已通:`collect_surround --sem` 落 CARLA 语义 tag(**8 位灰度,tag 即像素值**;tag 编在 **R 通道**、编号 = `CityObjectLabel` —— ⚠️ **不是旧版的 `6=RoadLine/7=Road`**),`perception/sem_eval.py` 出**图像 mIoU 0.557 / BEV 0.512** 双口径。判据首跑即抓到链上真缺陷:**BEV 障碍物通道结构性为空**(物体像素的射线落到**中位 99.4 m** 外,0% 进 ±30 m 窗口) | Plan4 §P-V13 |
 | 灯色动态 GT | 灯态 = **独立时序层**,Off/Unknown **不猜**;**不做视觉回归**(镜片 30m 处仅 ~4px) | Plan.md §5.9 |
 | 失效归因 | **尺度主导**(<32px 0.15–0.47 vs ≥32px 0.78–1.00,断崖 ≈21–24px);CARLA **无运动模糊**(退化只能人工注入);天气只**前移断崖** | Plan.md §5.10 |
 | MapTR 矢量管道 | 参考自实现打通。chamfer AP @`--score-thr 0.2`:**0.3043** 帧级留出 / **0.1114** 路线级留出 | [Plan2.md](Plan2.md) §P-M.12 |
@@ -166,6 +167,14 @@ python -m autodrivedata.perception.eval_2d_ab --root-a outputs/kitti_ab_day_clea
 python -m autodrivedata.perception.eval_attr --run day8=outputs/kitti_sweep_day_clear_8:8.0 \
   --run rain=outputs/kitti_ab_rain_night:8.0 --json outputs/attr.json
 
+# P2-A 像素级分割 GT + 判据(§P-V13):采 GT 时加 `--sem`(逐相机多挂一路语义相机,
+#   同挂点同 fov ⇒ tag 与 RGB 像素对齐;默认关),再拿它给语义 BEV 打分
+python -m autodrivedata.sim.collect_surround --sem --frames 20 --out outputs/surround_sem_demo
+python -m autodrivedata.perception.sem_eval --root outputs/surround_sem_demo --frames 0-19
+python -m autodrivedata.perception.sem_eval --root <root> --frames 0-19 --self-test  # 不出模型,只验尺子
+#   报**两个口径**:图像 mIoU(分割网络行不行)/ BEV 逐类 IoU(这张 BEV 图能不能用)
+#   ⚠️ 某类 BEV 一个像素都没有时 mIoU 会**跳过它**并单独打印警告 —— 别把那条警告读成"这类做得好"
+
 # 变体选择:一键 --variant mapqr(= 散聚 query + 高度核 BEV 编码器),或细粒度开关做消融
 python -m autodrivedata.map.train_maptr --infos outputs/surround_v2/map_infos.json \
   --root outputs/surround_v2 --variant mapqr --out outputs/maptr_mapqr.pt
@@ -225,10 +234,14 @@ tensorboard --logdir outputs/tb --host 127.0.0.1 --port 6006
 # 规范 + 测试(提交前两件套;规则集钉死在 pyproject [tool.ruff],110 列)
 ruff check && ruff format        # format 无参数即就地格式化,全仓口径统一
 python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pytest 之外的路径前缀**
-                                 # 基线:1265 passed + 6 跳过 + 0 失败(2026-10-01 实测,157 s;
-                                 #   --collect-only 报 1271,差额 6 = 模块级 `importorskip` 的模块,
+                                 # 基线:1327 passed + 6 跳过 + 0 失败(2026-10-01 实测,157 s;
+                                 #   --collect-only 报 1333,差额 6 = 模块级 `importorskip` 的模块,
                                  #   收集期不计入。上一版 1174(再上一版 1110),
-                                 #   +35 静态遮挡纯几何,+22 采集器结构钉,+2 退化 GT 剔除 = +59)
+                                 #   +35 静态遮挡纯几何,+22 采集器结构钉,+2 退化 GT 剔除,
+                                 #   +7 读侧判据(含 0.01 px 那条),+5 GT 口径迁移工具 = +71;
+                                 #   再 +17 语义 tag 表纯值,+11 carla oracle,+14 分割判据,
+                                 #   +7 投影向量化对拍 = +49)
+                                 # ⚠️ 其中 6 条在 `importorskip("carla")` 的模块里 —— 收集期不计
                                  # ⚠️ 下游 AutoLabel 的 mapvec 用例另算:`autolabel` env 下
                                  #   `pytest auto3dlabel/tests/functional/` = 342 passed + 4 skipped
                                  #   (2026-09-30 实测)

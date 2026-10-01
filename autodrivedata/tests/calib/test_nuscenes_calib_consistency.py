@@ -55,6 +55,28 @@ CALIB = ROOT / "autodrivedata" / "calib"  # 阶段 3 起标定层在这里(源�
 SIM = ROOT / "autodrivedata" / "sim"  # 阶段 2 起采集器在这里
 
 
+_QUEUE_ROOTS = frozenset({"q", "qs", "sem_qs"})
+
+
+def _queue_get_root(node: ast.AST) -> str:
+    """`q.get(...)` / `qs[name].get(...)` / `sem_qs[n].get(...)` → 队列变量名;其余 → 空串。
+
+    ⚠️ **不能用 `_call_name`**:它顺着 `.attr` 往上爬,遇到 `qs[name]` 这种 `Subscript`
+    就停住,于是 `qs[name].get` 被认成 `"get"` —— 而 `"get".endswith("].get")` 为假 ⇒
+    **下标形式的队列读取一个都匹配不到**。旧版那条守卫正是这么写的,所以它实际只数到了
+    预热里的 `q.get`,断言 `any(n is gets[0] for n in ast.walk(main))` 又恒真 ——
+    "读取必须在 stride 循环里"这句话它**从来没验过**。
+    """
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return ""
+    if node.func.attr != "get":
+        return ""
+    cur: ast.AST = node.func.value
+    while isinstance(cur, (ast.Attribute, ast.Subscript)):
+        cur = cur.value
+    return cur.id if isinstance(cur, ast.Name) and cur.id in _QUEUE_ROOTS else ""
+
+
 def _call_name(node: ast.AST) -> str:
     """`ast.Call` → 被调名的点分字符串(如 `world.tick`);不是 Call / 名字取不到 → 空串。"""
     if not isinstance(node, ast.Call):
@@ -588,15 +610,35 @@ class TestSurroundRigMatchesStudio:
         """stride > 1 时**每个中间 tick 都要抽干全部相机队列**(§P-M.7 判据 ⑥ 同款坑)。
 
         只取"要存的那一帧"会让其余相机积压 ⇒ 下一帧读到更早的图(症状:图像与 ego 位姿
-        差一拍,且**与 stride 无关地**偶发)。锁法:保存循环里不再出现 `qs[...].get`。
+        差一拍,且**与 stride 无关地**偶发)。
+
+        ⚠️ **判据守的是性质,不是行数**。原版写的是"`main()` 里只允许一处 `qs[...].get`" ——
+        那是计数代理;`--sem` 加了第二路语义相机队列之后它当场误报,可它想守的
+        「不存在会读到陈旧帧的读取点」其实仍然成立。2026-10-01 改成直接断言那条性质:
+
+        **每一处队列读取都必须落在某个"每轮都 `world.tick()`"的循环体里** —— 录音循环
+        (`range(args.stride)`)与**预热循环**都满足(预热同样是逐 tick 抽干)。判据从
+        "数几处"换成"在不在该在的地方",以后加一路传感器不用再来改测试。
+        (带计数断言的守卫都该这么改 —— 否则每加一路传感器就要来放宽一次,而
+        "来放宽一次断言"正是把人训练成随手松判据的那条路。)
         """
         src = (SIM / "collect_surround.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
-        gets = [n for n in ast.walk(main) if _call_name(n).endswith("].get") or _call_name(n) == "q.get"]
-        # 唯一一处队列读取必须在 `for _ in range(args.stride)` 的 tick 循环体里
-        assert len(gets) == 1, f"main() 里有 {len(gets)} 处队列读取;只允许 stride 循环内一处"
-        assert any(n is gets[0] for n in ast.walk(main)), "队列读取不在 main 内?"
+        tick_loops = [
+            n
+            for n in ast.walk(main)
+            if isinstance(n, ast.For) and any(_call_name(c) == "world.tick" for c in ast.walk(n))
+        ]
+        assert len(tick_loops) >= 2, f"应当有预热与录音两个逐 tick 循环,找到 {len(tick_loops)}"
+        inside = {id(x) for n in tick_loops for x in ast.walk(n)}
+        gets = [n for n in ast.walk(main) if _queue_get_root(n)]
+        assert gets, "一处队列读取都没有 —— 那采的是哪一帧?"
+        outside = [ast.unparse(g) for g in gets if id(g) not in inside]
+        assert not outside, f"这些队列读取不在任何逐 tick 循环里 ⇒ 会读到陈旧帧:{outside}"
+        roots = {_queue_get_root(g) for g in gets}
+        assert "qs" in roots, f"RGB 相机队列没被抽(找到的队列根变量:{sorted(roots)})"
+        assert "sem_qs" in roots, f"`--sem` 的语义相机队列没被抽(同样会积压):{sorted(roots)}"
 
     def test_calib_json_carries_provenance(self):
         """落盘带 `spawn_index` / `stride` / `image_size`(旧产物无此键 = 旧口径)。"""

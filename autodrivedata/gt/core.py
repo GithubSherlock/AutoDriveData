@@ -185,3 +185,22 @@ def box_to_gt_line(
         f"{h:.2f} {w:.2f} {l:.2f} "
         f"{center_k[0]:.2f} {y_bottom:.2f} {center_k[2]:.2f} {ry:.2f}"
     )
+
+
+def is_degenerate_gt_line(line: str) -> bool:
+    """一行 `label_2` 是否触发 `MIN_BOX_SIDE_PX` 剔除 —— **出框侧那条例的读侧镜像**。
+
+    存在的理由:出框侧(上面的 `box_to_gt_line`)只对**新采**的数据生效,而磁盘上已经
+    躺着一批按旧口径写下的框(§P-V12 实测 P1 每份数据 11/194)。把判据做成同一个函数,
+    迁移脚本与采集器就不会各判各的 —— 两边**必须同源**,否则"筛过之后"与"重采一份"
+    会给出不同的 GT,而那个差只有在 A/B 逐帧条数对不上时才暴露。
+
+    判据取**文件里印出来的两位小数**(`x2-x1` / `y2-y1`),不是重算几何:
+    读侧手上只有文本。⚠️ **不能写成 `x1 == x2`** —— 实测 `wet_road` 帧 57 有一条
+    **0.01 px 高**的框,它打印出来两个数不相等,但按阈值早该被剔除;写成相等判断会让
+    那一帧的 GT 条数比别的 root 多 1,A/B 硬门槛当场破。
+    """
+    p = line.split()
+    if len(p) < 8:
+        return True  # 残缺行:留着只会在评测里当一条永远配不上的 GT
+    return min(float(p[6]) - float(p[4]), float(p[7]) - float(p[5])) < MIN_BOX_SIDE_PX

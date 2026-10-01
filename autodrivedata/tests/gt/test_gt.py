@@ -180,6 +180,32 @@ class TestGtLine:
         assert float(p[6]) - float(p[4]) >= gt.MIN_BOX_SIDE_PX
         assert float(p[7]) - float(p[5]) >= gt.MIN_BOX_SIDE_PX
 
+    @pytest.mark.parametrize(
+        ("x1", "y1", "x2", "y2", "degenerate"),
+        [
+            ("653.33", "189.17", "685.99", "211.57", False),  # 正常框
+            ("943.49", "231.32", "1183.14", "231.32", True),  # 0 px 高(线)
+            ("1006.45", "239.85", "1006.45", "239.85", True),  # 0×0(点)
+            ("947.14", "231.78", "1189.44", "231.79", True),  # ★ 0.01 px 高
+            ("900.00", "225.00", "1100.00", "226.00", False),  # 1.00 px 高:边界,留
+            ("900.00", "225.00", "1100.00", "225.99", True),  # 0.99 px 高
+        ],
+    )
+    def test_is_degenerate_gt_line(self, x1, y1, x2, y2, degenerate):
+        """★ 读侧判据必须与出框侧的 `MIN_BOX_SIDE_PX` **同源**,且**不是** `x1 == x2`。
+
+        第三行那条是 2026-10-01 实测的真数据(`kitti_ab_epic_wet_road` 帧 57):它
+        **0.01 px 高**,打印出来两个数**不相等**,但按阈值早该被剔除 —— 写成相等判断
+        会让那一帧的 GT 条数比别的 root 多 1,A/B 硬门槛当场破。
+        """
+        line = f"Car 0.00 0 0.00 {x1} {y1} {x2} {y2} 1.52 2.01 4.51 3.50 0.84 14.47 -1.57"
+        assert gt.is_degenerate_gt_line(line) is degenerate
+
+    def test_is_degenerate_gt_line_on_junk(self):
+        """残缺行也算"该剔除" —— 留着只会变成一条永远配不上的 GT。"""
+        assert gt.is_degenerate_gt_line("Car 0.00 0")
+        assert gt.is_degenerate_gt_line("")
+
     def test_partial_truncation_ground_camera(self):
         """相机贴地 (0,0,0):高车(h=4)在 6m 处,近侧角点(z=4)出画幅 → trunc=0.5。
 
