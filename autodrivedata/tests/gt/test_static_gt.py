@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+from autodrivedata.gt.props import CameraPose
 from autodrivedata.gt.static_gt import (
     LaneSegment,
     StaticFrame,
@@ -44,6 +47,38 @@ def test_static_frame_json_roundtrip():
     g = StaticFrame.from_json(f.to_json())
     assert g == f
     assert g.point_count() == 3
+    assert g.camera is None, "不传就不该凭空多出一个位姿"
+
+
+def test_static_frame_camera_roundtrip():
+    """`camera` 是可选的**新增**字段(2026-10-02):判据要靠它离线复现投影链。
+
+    ★ 两个方向都要钉:
+    - 传了 → 逐字段往返相等(判据拿到的内参/位姿必须与采集时一致);
+    - **没传 → `None`,不是默认内参** —— 2026-10-02 之前采的归档都是这种,
+      判据必须能把它认出来并**报错**(拿默认内参硬算会得到一整套看着正常的错数)。
+    """
+    cam = CameraPose(
+        location=(-63.9, 24.5, 1.6),
+        rotation_deg=(0.0, 0.16, 0.0),
+        width=1242,
+        height=375,
+        fov_deg=90.0,
+    )
+    f = StaticFrame(
+        frame_id="000000",
+        ego_location=(-63.9, 24.5, 0.0),
+        ego_yaw_deg=0.16,
+        camera=cam,
+    )
+    g = StaticFrame.from_json(f.to_json())
+    assert g.camera == cam
+    assert g == f
+
+    # 归档口径:老 json 里**没有** `camera` 这个键
+    legacy = json.loads(f.to_json())
+    legacy.pop("camera")
+    assert StaticFrame.from_json(json.dumps(legacy)).camera is None
 
 
 def test_merge_lane_marks_joins_same_props():

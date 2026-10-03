@@ -32,6 +32,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -206,30 +207,94 @@ def yolopv2_predict(model, img_bgr: np.ndarray, device: torch.device, imgsz: int
     return da.astype(bool), llm.astype(bool)
 
 
+def yolo11_instances(yolo11, img_bgr: np.ndarray, size: tuple[int, int]) -> list[tuple[np.ndarray, float]]:
+    """YOLO11s-seg → **逐实例**的 `(掩膜, conf)`(只留 `DETECT_CLS` 那四类),原分辨率。
+
+    与 `yolo11_object_mask` 的分工:那个把实例**并成一类掩膜**(类级判据要的就是它),
+    这个**保留每个实例的身份** —— 实例级判据(mask AP / PQ)数的是"几个物体",
+    合并之后就只剩"哪些像素是障碍物"了,数不出个数。
+
+    ⚠️ 逐实例的 conf 是 `boxes.conf` 的**原始值**,不是按面积加权或重排过的东西:
+    mask AP 的排序吃它,任何重排都会让 AP 变成一个"我们自己的数"而不是模型的。
+    """
+    res = yolo11.predict(img_bgr, conf=0.35, verbose=False)[0]
+    out: list[tuple[np.ndarray, float]] = []
+    if res.masks is None or res.boxes is None:
+        return out
+    cls = res.boxes.cls.cpu().numpy()
+    conf = res.boxes.conf.cpu().numpy()
+    for i, c in enumerate(cls):
+        if int(c) not in DETECT_CLS:
+            continue
+        m = res.masks.data[i].cpu().numpy()
+        if m.shape != size[::-1]:
+            m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
+        out.append((m > 0.5, float(conf[i])))
+    return out
+
+
+def instance_backend(backend: str = "sam3"):
+    """`(img_bgr, size) -> [(掩膜, conf)]` —— **两个后端同一签名**,下游一行不用改。
+
+    - `sam3`(**默认**):开放词表。⚠️ 逐概念前向再并集(见 `sam3_backend` 头注:
+      SAM3 必须点名概念,没有"把全部 thing 切出来"这种调用);
+    - `yolo`(回退):`yolo11s-seg`(COCO),一次前向出全部实例。
+    """
+    import cv2
+
+    if backend == "sam3":
+
+        def sam3_instances(img_bgr: np.ndarray, size: tuple[int, int]) -> list[tuple[np.ndarray, float]]:
+            from PIL import Image
+
+            from autodrivedata.perception import sam3_backend
+
+            img = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+            return [(i.mask, i.conf) for i in sam3_backend.segment(img, sam3_backend.THING_PROMPTS)]
+
+        return sam3_instances
+
+    def yolo_instances(img_bgr: np.ndarray, size: tuple[int, int]) -> list[tuple[np.ndarray, float]]:
+        from autodrivedata.utils.paths import project_path
+
+        yolo11 = _YOLO_SEG_CACHE.setdefault("m", YOLO(str(project_path("weights/yolo11s-seg.pt"))))
+        return yolo11_instances(yolo11, img_bgr, size)
+
+    return yolo_instances
+
+
+#: yolo 回退分支的权重缓存(只加载一次)。
+_YOLO_SEG_CACHE: dict[str, Any] = {}
+
+
+def object_mask(instances, img_bgr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """实例函数 → **障碍物类掩膜**(原分辨率二值)。与 `yolo11_object_mask` 同一句口径。"""
+    mask = np.zeros(size[::-1], dtype=bool)
+    for m, _ in instances(img_bgr, size):
+        mask |= m
+    return mask
+
+
 def yolo11_object_mask(yolo11, img_bgr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    """YOLO11s-seg → **障碍物实例掩膜**(只留 `DETECT_CLS` 那四类),原分辨率二值。
+    """YOLO11s-seg → **障碍物类掩膜**(只留 `DETECT_CLS` 那四类),原分辨率二值。
 
     与 `yolopv2_predict` 并列抽出来,是为了让判据(`sem_eval`)与出图(`sem_bev`)
     **吃同一份预测** —— 各跑一遍模型的话,报出的 mIoU 与图上看到的可能不是同一次推理。
+
+    ★ 实现是 `yolo11_instances` 的**并集**(顺序无关,故与旧的逐框 `|=` 逐位相同,
+    有回归钉 `tests/perception/test_sem_bev.py::test_object_mask_is_the_union_of_instances`)——
+    两份实现会漂,而"漂了"在这里表现为类级判据与实例级判据**看的不是同一次推理**。
     """
-    res = yolo11.predict(img_bgr, conf=0.35, verbose=False)[0]
     mask = np.zeros(size[::-1], dtype=bool)
-    if res.masks is None or res.boxes is None:
-        return mask
-    cls = res.boxes.cls.cpu().numpy()
-    for i, c in enumerate(cls):
-        if int(c) in DETECT_CLS:
-            m = res.masks.data[i].cpu().numpy()
-            if m.shape != size[::-1]:
-                m = cv2.resize(m, (size[0], size[1]), interpolation=cv2.INTER_NEAREST)
-            mask |= m > 0.5
+    for m, _ in yolo11_instances(yolo11, img_bgr, size):
+        mask |= m
     return mask
 
 
 def predict_masks(
     img_bgr: np.ndarray,
     yolopv2,
-    yolo11,
+    instances,
     device: torch.device,
     size: tuple[int, int],
     imgsz: int = 640,
@@ -242,7 +307,7 @@ def predict_masks(
     h, w = img_bgr.shape[:2]
     assert (w, h) == size, f"图像 {w}×{h} 与 size {size} 不符"
     da, llm = yolopv2_predict(yolopv2, img_bgr, device, imgsz)
-    return {"drivable": da, "lane": llm, "obstacle": yolo11_object_mask(yolo11, img_bgr, size)}
+    return {"drivable": da, "lane": llm, "obstacle": object_mask(instances, img_bgr, size)}
 
 
 def main() -> None:
@@ -256,6 +321,12 @@ def main() -> None:
     ap.add_argument("--frames", default="0-20", help="帧范围 0-20 或逗号列表")
     ap.add_argument(
         "--gpu", action="store_true", help="用 GPU(autodrivedata env torch 无 CUDA 驱动,默认 CPU)"
+    )
+    ap.add_argument(
+        "--backend",
+        choices=("sam3", "yolo"),
+        default="sam3",
+        help="**障碍物那一路**的后端(默认 sam3)。drivable/lane 仍走 YOLOPv2。⚠️ 两边 mIoU 不可比",
     )
     ap.add_argument("--imgsz", type=int, default=640, help="YOLOPv2 推理尺寸")
     ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
@@ -282,10 +353,9 @@ def main() -> None:
         device = torch.device("cuda" if args.gpu and torch.cuda.is_available() else "cpu")
         print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
 
-        # 模型
-        yolo11 = YOLO(
-            str(project_path("weights/yolo11s-seg.pt"))
-        )  # 权重落点 = weights/(同目录另有 kitti3d_finetune/)
+        # 模型:障碍物那一路按 `--backend` 选(SAM3 默认 ⇒ **不加载** yolo11s-seg)
+        instances = instance_backend(args.backend)
+        print(f"[model] 障碍物后端 = {args.backend}")
         # TorchScript archive:autodrivedata env torch 无 CUDA 驱动,jit.load 会做 CUDA 探测
         # 失败(驱动 12.4 vs torch cu130)→ 用 torch.load(weights_only=False) 直接载权重图。
         ckpt = torch.load(
@@ -331,7 +401,7 @@ def main() -> None:
                 intrinsics, se = init_camera(calib[cam], size)
                 world_cam = cam_pose(ego, se)
                 # 三类掩膜(与判据 `sem_eval` 走**同一个** `predict_masks`)
-                pred = predict_masks(img, yolopv2, yolo11, device, size, args.imgsz)
+                pred = predict_masks(img, yolopv2, instances, device, size, args.imgsz)
                 da = pred["drivable"]
                 project_mask_to_bev(da, world_cam, intrinsics, ground_z, ego, bev, DA_COLOR)
                 project_mask_to_bev(pred["lane"], world_cam, intrinsics, ground_z, ego, bev, LL_COLOR)

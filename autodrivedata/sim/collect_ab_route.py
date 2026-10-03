@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import argparse
 import queue
-from typing import cast
+from typing import Protocol, cast
 
 import carla
 import numpy as np
@@ -46,6 +46,7 @@ from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
     SENSOR_OFFSET,
+    ground_z_at,
     loc,
     rad,
     spawn_ego,
@@ -68,8 +69,16 @@ from autodrivedata.sim.scenarios import SCENES, merged_weather
 from autodrivedata.utils.paths import project_path
 
 SPEED = 8.0  # m/s 定速
+
+
 # 2026-09-09:65.0→62.0——第4台车曾恰好卡 GT max_distance=65.0 边界,起步
 # 抖动使两侧 GT 数不等(216 vs 219),帧级配对失效;留 3m 裕量
+class _WalkerCtrl(Protocol):
+    """pycarla 桩缺 WalkerAIController 方法标注的最小协议(与 `carla_common` 同款)。"""
+
+    def start(self) -> None: ...
+
+
 STATIC_OFFSETS = [
     20.0,
     35.0,
@@ -83,6 +92,26 @@ NPC_MODELS = [
     "vehicle.ford.mustang",
     "vehicle.toyota.prius",
 ]
+
+#: `--layout close` 的目标表:**多类 + 近距**,专为融合消融造的。
+#:
+#: ★ 为什么需要它(P1 的两条数据事实,见 Plan4 §P-V18 五/六):
+#: ① **只有一类目标**(P1 的 GT 100% `Car`)⇒ 相机的**类信息无处发力**,
+#:    「相机出类」那一行必然是 0.000 的差;
+#: ② **33–60 m 的 LiDAR 回波不足以成框**(实测框内 4/17/49 点)⇒ 四分之三的目标
+#:    进不了任何一档。两项都**不是判据能修的**。
+#:
+#: ⇒ 这一档把目标摆到 **7–24 m**(LiDAR 打得动),并混入**行人/骑行者**
+#: (KITTI 类 `Pedestrian`/`Cyclist`,由 `gt.core.classify_kitti` 归一)。
+#: ⚠️ **默认仍是 `p1`** —— 那一档的 d/lat 是 P1 已归档矩阵的复现前提,动它就是动红线。
+CLOSE_TARGETS: tuple[tuple[str, float, float], ...] = (
+    # (蓝图, 前向 m, 横向 m)。横向为正 = ego 右侧,与 P1 同侧。
+    ("walker.pedestrian.0001", 7.0, 4.2),
+    ("vehicle.tesla.model3", 9.0, 3.5),
+    ("vehicle.gazelle.omafiets", 13.0, 4.4),  # 自行车 ⇒ KITTI `Cyclist`
+    ("walker.pedestrian.0002", 16.0, 4.2),
+    ("vehicle.audi.a2", 21.0, 3.5),
+)
 
 
 def _bbox_top_z(a: carla.Actor) -> float:
@@ -111,20 +140,6 @@ def dims_match(bb: carla.BoundingBox, dims: tuple[float, float, float], *, tol: 
     """
     got = (2.0 * bb.extent.x, 2.0 * bb.extent.y, 2.0 * bb.extent.z)
     return max(abs(a - b) for a, b in zip(got, dims, strict=True)) <= tol
-
-
-def _ground_z(world: carla.World, x: float, y: float, fallback: float) -> float:
-    """`(x, y)` 处的**路面** z(取不到就退回 `fallback`)。
-
-    别拿 ego 的 z 顶替:遮挡物能不能挡,对它的**高度是线性敏感**的 —— 路面有起伏时
-    浮空 0.2 m 就等于少挡 0.2 m,而这只在数偏了以后才看得出来(与 §P-M.7「声明 = 渲染」
-    同一条纪律)。
-    """
-    try:
-        wp = world.get_map().get_waypoint(carla.Location(x=x, y=y, z=fallback + 2.0))
-    except RuntimeError:  # 该点不投影到任何车道(路肩外)
-        return fallback
-    return float(wp.transform.location.z)
 
 
 def _measure_asset(
@@ -213,7 +228,7 @@ def _spawn_occluders(
         pending: list[tuple[carla.Actor, carla.Location, float]] = []
         for s in slots:
             w = ego_t.transform(carla.Location(x=s.x, y=s.y, z=0.0))
-            gz = _ground_z(world, w.x, w.y, ego_t.location.z)
+            gz = ground_z_at(world, w.x, w.y, ego_t.location.z)
             want = carla.Location(x=w.x, y=w.y, z=gz)
             yaw = ego_t.rotation.yaw + s.yaw_deg
             v = world.try_spawn_actor(bp, carla.Transform(want, carla.Rotation(yaw=yaw)))
@@ -264,6 +279,14 @@ def main() -> None:
         help="不挂 5 雷达(默认挂)。雷达走 devkit 形状 `samples/RADAR_*/*.pcd`,与 "
         "`collect_surround_lidar` **同一套挂点/形状** —— P1 因此能补一条「雷达也不受天气/光照?」,"
         "与已确立的「LiDAR 不受天气光照」对称",
+    )
+    ap.add_argument(
+        "--layout",
+        default="p1",
+        choices=("p1", "close"),
+        help="目标布局。`p1`(默认)= P1 归档矩阵那四台路肩车(20/35/50/62 m)—— "
+        "**它的 d/lat 是已归档矩阵的复现前提,勿动**;`close` = **多类 + 近距**"
+        "(7–24 m,含行人与骑行者),专为融合消融造,见 `CLOSE_TARGETS` 头注",
     )
     ap.add_argument(
         "--occluders",
@@ -343,21 +366,37 @@ def main() -> None:
     right = ego.get_transform().get_right_vector()
     # (车, 前向距离 d, 横向 lat) —— d/lat 是**ego 局部坐标**,遮挡物档直接吃这两个
     placed: list[tuple[carla.Vehicle, float, float]] = []
-    for d, lat, i in zip(STATIC_OFFSETS, STATIC_LATS, range(len(STATIC_OFFSETS)), strict=True):
+    if args.layout == "close":
+        # 多类 + 近距档:行人是 `walker.*`,**不给 AI controller 就是站着不动**;
+        # 自行车是 `vehicle.*`(静置)。两者的 KITTI 类由 `gt.core.classify_kitti` 归一。
+        target_list = [(m, d, lat) for m, d, lat in CLOSE_TARGETS]
+    else:
+        target_list = [
+            (NPC_MODELS[i % len(NPC_MODELS)], d, lat)
+            for i, (d, lat) in enumerate(zip(STATIC_OFFSETS, STATIC_LATS, strict=True))
+        ]
+    for model, d, lat in target_list:
         p = start + fwd * d + right * lat
         pos = carla.Location(x=p.x, y=p.y, z=start.z)
-        bp = bp_lib.find(NPC_MODELS[i % len(NPC_MODELS)])
         v = world.try_spawn_actor(
-            bp,
+            bp_lib.find(model),
             carla.Transform(pos, carla.Rotation(yaw=ego.get_transform().rotation.yaw)),
         )
-        if v is not None:
-            veh = cast(carla.Vehicle, v)  # carla pyi 桩:try_spawn_actor 标返回 Actor(实为 Actor|None)
-            veh.apply_control(carla.VehicleControl(brake=1.0))  # 静置
-            placed.append((veh, d, lat))
+        if v is None:
+            print(f"  [warn] {model} spawn 失败 @ d={d} lat={lat}")
+            continue
+        if model.startswith("vehicle"):
+            cast(carla.Vehicle, v).apply_control(carla.VehicleControl(brake=1.0))  # 静置
+        # ⚠️ **不给 walker 挂 AI controller**(2026-10-02 实测证伪了那条假设):
+        #   挂上并 `start()` 之后,`controller.ai.walker` **把它带走了** ——
+        #   实测目标从 ego 局部 `(16, 4)` 跑到 `(65, -24)`(相机系 z≈60 m),
+        #   而回波**仍然是 0**(18/19 帧)。
+        #   (本仓 `carla_common.spawn_npcs` 里同样写法,但那里只是布景,
+        #    没有人去核对 walker 的实际落点 —— 这里一核就露了。)
+        placed.append((cast(carla.Vehicle, v), d, lat))
     world.tick()
     print(
-        f"[statics] {len(placed)}/{len(STATIC_OFFSETS)} 路肩车 @ "
+        f"[statics] {len(placed)}/{len(target_list)} 目标({args.layout}) @ "
         f"{[(round((s.get_location() - start).x), round((s.get_location() - start).y)) for s, _d, _l in placed]}"
     )
 

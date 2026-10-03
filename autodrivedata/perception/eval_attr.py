@@ -29,12 +29,9 @@ import statistics
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 from PIL import Image
-from ultralytics import YOLO
-from ultralytics.engine.results import Results
 
 from autodrivedata.perception.attribution import (
     DISTANCE_EDGES,
@@ -47,8 +44,14 @@ from autodrivedata.perception.attribution import (
     format_bins,
     load_gt_2d,
     match_frame,
-    norm_cls,
     ttc_s,
+)
+from autodrivedata.perception.backends import (
+    BACKENDS,
+    Predictor,
+    describe,
+    make_predictor,
+    resolve_conf,
 )
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
@@ -102,8 +105,7 @@ def image_stats(
 def run_one(
     root: Path,
     speed: float,
-    model: YOLO,
-    names: dict[int, str],
+    predict: Predictor,
     conf: float,
     iou: float,
     limit: int | None,
@@ -120,15 +122,9 @@ def run_one(
     for fid in sorted(gt_by_frame):
         img_path = root / "training/image_2" / f"{fid}.png"
         gray = np.array(Image.open(img_path).convert("RGB")).mean(axis=2)
-        # predict 返回 union(Iterator | list),先 materialize 再取首帧(同 eval_2d_ab)
-        res = cast(Results, list(model.predict(img_path, conf=conf, verbose=False, device=0))[0])
-        preds: list[Detection] = []
-        for b in res.boxes or []:  # 无检测帧 boxes=None
-            c = norm_cls(names[int(b.cls.item())])
-            if not c:
-                continue
-            x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
-            preds.append(Detection(c, x1, y1, x2, y2, float(b.conf.item())))
+        preds: list[Detection] = [
+            Detection(c, x1, y1, x2, y2, score) for c, score, (x1, y1, x2, y2) in predict(img_path) if c
+        ]
         gts = gt_by_frame[fid]
         dist_seq.append([g.distance_m for g in gts])
         rows: list = []
@@ -258,7 +254,19 @@ def main() -> None:
             "kitti_finetune/yolo11s_kitti/weights/best.pt"
         ),
     )
-    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default="sam3",
+        help="检测后端。**默认 sam3**(类别由提示词给出);`yolo` 是回退。⚠️ 两边不可比",
+    )
+    ap.add_argument(
+        "--conf",
+        type=float,
+        default=None,
+        help="置信度阈值。**不传则按后端取默认**(sam3 0.5 / yolo 0.25)—— "
+        "两边的 score 尺度不同,互相套用会把幻觉当检出",
+    )
     ap.add_argument("--iou", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", default=None, help="把原始归因记录落 JSON(备查/复算)")
@@ -267,6 +275,7 @@ def main() -> None:
 
     with runlog.run("autodrivedata.perception.eval_attr") as rl:
         rl.input(args.weight, "weight")
+        rl.highlight("backend", args.backend)
         for name, root, speed in args.runs:
             # 每个 --run 的速度是 TTC 归一化的分母,也是"跨速度不许比检出率"这条
             # 红线的依据 —— 输入侧连同速度一起留痕,否则事后看不出比的是不是同速
@@ -275,21 +284,22 @@ def main() -> None:
         if args.json:
             args.json = str(project_path(args.json))  # 产物锚定项目根(相对路径不随 cwd 漂移)
 
-        model = YOLO(args.weight)
-        names = model.names
+        conf = resolve_conf(args.backend, args.conf)
+        predict = make_predictor(args.backend, args.weight, conf)
+        print(describe(args.backend, predict))
         results: dict[str, list[GtRecord]] = {}
         dump: dict[str, list[dict]] = {}
         for name, root, speed in args.runs:
             if name in results:
                 raise SystemExit(f"--run 名字重复: {name}")
-            recs, speeds = run_one(root, speed, model, names, args.conf, args.iou, args.limit)
+            recs, speeds = run_one(root, speed, predict, conf, args.iou, args.limit)
             report_run(name, root, speed, recs, speeds)
             results[name] = recs
             dump[name] = [asdict(r) for r in recs]
 
         report_grid(results, lambda r: r.distance_m, DISTANCE_EDGES, "距离分箱检出率网格", "m")
         report_grid(results, lambda r: r.height_px, HEIGHT_EDGES, "框高分箱检出率网格", "px")
-        rl.highlight("conf", args.conf)
+        rl.highlight("conf", conf)
         rl.highlight("iou", args.iou)
         for name, recs in results.items():
             rl.highlight(f"n_gt/{name}", len(recs))

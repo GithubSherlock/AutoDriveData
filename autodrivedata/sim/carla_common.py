@@ -23,6 +23,9 @@ from autodrivedata.gt.traffic_light import (
 )
 from autodrivedata.utils import fonts
 
+#: 世界系 3 元组(位置/尺寸/角度)。语义见各函数。
+Vec3 = tuple[float, float, float]
+
 
 class _WalkerCtrl(Protocol):
     """pycarla 桩缺 WalkerAIController 方法标注的最小协议。"""
@@ -57,6 +60,65 @@ SENSOR_MOUNTS: dict[str, tuple[float, float, float]] = {
 def rad(rot: carla.Rotation) -> tuple[float, float, float]:
     """carla.Rotation(度)→ (pitch, yaw, roll) 弧度。"""
     return tuple(np.radians(a) for a in (rot.pitch, rot.yaw, rot.roll))
+
+
+def ground_z_at(world: carla.World, x: float, y: float, fallback: float) -> float:
+    """`(x, y)` 处的**路面** z;该点不投影到任何车道(路肩外)时退回 `fallback`。
+
+    别拿 ego 的 z 顶替:障碍物能不能挡/道具摆得正不正,对它**高度是线性敏感**的 ——
+    路面有起伏时浮空 0.2 m 就等于少挡 0.2 m,而这只在数偏了以后才看得出来
+    (与 §P-M.7「声明 = 渲染」同一条纪律)。
+
+    原为 `collect_ab_route` 与 `probe_static_prop_gt` 各一份的局部实现,2026-10-01 上移共享
+    —— 三份拷贝里任何一份漂了,"摆位"与"自证"就会用不同的地面,而差 20 cm 谁都看不出来。
+    """
+    try:
+        wp = world.get_map().get_waypoint(carla.Location(x=x, y=y, z=fallback + 2.0))
+    except RuntimeError:  # 该点不投影到任何车道(路肩外)
+        return fallback
+    return float(wp.transform.location.z)
+
+
+def measure_actor_size_yaw0(world: carla.World, bp: carla.ActorBlueprint) -> tuple[Vec3, Vec3, Vec3]:
+    """把蓝图摆在**空中 yaw=0** 处读回 `(全长宽高, 盒偏移, 盒旋转)` —— 唯一无歧义的那一读。
+
+    ## 为什么不能读实摆的那个
+
+    `Actor.bounding_box` 对**转过**的 actor 给出 `(extent, rotation)` 自相矛盾的读数。
+    2026-10-01 探针实测(锥桶,真值 0.3441×0.3441×0.5858 m):
+
+    | actor yaw | 直接读回的 (x, y) 全长 | |
+    |---|---|---|
+    | 0° | 0.3431 × 0.3450 | ✓ |
+    | 30° | **0.1246 × 0.4704** | ✗ |
+    | 60° | **0.1272 × 0.4697** | ✗ |
+    | 90° | 0.3450 × 0.3431 | ✓ |
+
+    不是两轴对调 —— 边长 s 的方锥转 θ 后读回 ≈ `(s·|cosθ−sinθ|, s·(cosθ+sinθ))`,
+    盒被**剪切**。后果拿渲染轮廓量:3.4% 的物体像素落在投影框**外面**,IoU 0.897 → 0.708。
+    **0° 与 90° 都读对** ⇒ 只拿一个 yaw≈0 的样本验一次会得"没问题"(本仓"yaw≈0 的
+    相机看着正常"的同款坑)。
+
+    ## 两个必须
+
+    - **必须摆在空中**:落地会与既有几何碰撞,`try_spawn_actor` 直接返回 None。
+    - **必须 `tick()` 之后再读**:快照 tick 后才刷新,spawn 完立刻读拿到的是全 0 的陈旧值
+      (第一版就是这么读到 `0.576×1.133` 的)。本函数 spawn 完自己 tick 一次。
+    """
+    pts = world.get_map().get_spawn_points()
+    # ⚠️ `Vector3D` 运算结果**不能直接进 `carla.Transform`**(红线),必须显式包一层
+    at = carla.Location(pts[-1].location + carla.Location(z=30.0))
+    probe = world.try_spawn_actor(bp, carla.Transform(at, carla.Rotation()))
+    if probe is None:
+        raise RuntimeError(f"{bp.id} 的 yaw=0 尺寸探针 spawn 失败 —— 无法自证资产尺寸")
+    world.tick()
+    bb = probe.bounding_box
+    dims: Vec3 = (2.0 * bb.extent.x, 2.0 * bb.extent.y, 2.0 * bb.extent.z)
+    offs: Vec3 = (bb.location.x, bb.location.y, bb.location.z)
+    rot: Vec3 = (bb.rotation.pitch, bb.rotation.yaw, bb.rotation.roll)
+    probe.destroy()
+    world.tick()
+    return dims, offs, rot
 
 
 def loc(t: carla.Transform) -> tuple[float, float, float]:
@@ -131,6 +193,55 @@ def spawn_npcs(world: carla.World, ego_t: carla.Transform) -> None:
             ctrl = world.spawn_actor(bp_lib.find("controller.ai.walker"), carla.Transform(), actor)
             cast(_WalkerCtrl, ctrl).start()  # 站立不动;动态场景再给行走指令
         print(f"  [npc] {type_id} @ {loc(tf)}")
+
+
+#: `load_world` 期间的客户端超时(秒)。**与平时的 60 s 不是一回事**:切大图是一次
+#: 同步重活,60 s 会让客户端**单方面放弃等待**(`RuntimeError: time-out of 60000ms
+#: while waiting for the simulator`),而**世界其实加载成功了** —— 下一次 `get_world()`
+#: 拿到的是新图,只是那次调用白报了错。Town13(12478 个 spawn point)实测 >60 s。
+LOAD_WORLD_TIMEOUT_S = 300.0
+
+
+class ClientLike(Protocol):
+    """`carla.Client` 的**最小面**(duck-typed):切图只用这两个方法。
+
+    用 Protocol 而不是直接标 `carla.Client`,理由同 `route.WaypointLike` ——
+    让"切图期间超时调高、结束恢复"这条**能在假 client 上跑单测**。
+    这一条正是本模块当初没写测试而漏掉的那类错(注释写着 ~2min、超时给 60 s)。
+
+    ⚠️ **形参名必须与 carla 桩逐字一致**(`second` / `map_name`,不是 `seconds` / `name`)——
+    Protocol 是按**签名**判兼容的,名字不同就整类不兼容,而报错信息读起来像类型错、
+    不像命名错(同 `route.WaypointLike` 里"可读 property vs 可变属性"那条踩坑记录)。
+    `reset_settings` 带上是因为实参可能用它;`map_layers` 不必 —— 它后面的都有默认值,
+    实现签名多几个可省参数不影响兼容。
+    """
+
+    def set_timeout(self, second: float) -> None: ...
+    def load_world(self, map_name: str, reset_settings: bool = True) -> carla.World: ...
+
+
+def load_world(
+    client: ClientLike,
+    name: str,
+    *,
+    load_timeout: float = LOAD_WORLD_TIMEOUT_S,
+    after_timeout: float = 60.0,
+) -> carla.World:
+    """`load_world` + **配套超时**(切图期间调高,切完恢复)。
+
+    为什么要包一层:三个采集器各写过一遍 `set_timeout(60)` → `load_world` → `set_timeout(60)`,
+    而 `collect_surround` 那处的注释自己写着「~2min」—— **注释与超时值互相矛盾**,
+    说明当时就知道慢、只是没把超时对上。Town13 一跑就现形。
+    `after_timeout` 由调用方给(pycarla 的 Client 没有 `get_timeout`,取不回原值,
+    所以只能**约定**一个后续值,别假装能还原)。
+    """
+    client.set_timeout(load_timeout)
+    try:
+        return client.load_world(name)
+    finally:
+        # 无论成败都恢复:加载失败后还挂着一个 300 s 的超时,会让**后面每一步**
+        # 卡到 5 分钟才报错,把一次明确的失败变成一次"看起来像挂死"的失败。
+        client.set_timeout(after_timeout)
 
 
 def sync_mode(world: carla.World, delta: float = 0.1) -> None:

@@ -1,4 +1,4 @@
-"""路线纯值单测:路网找环 / 闭环判据 / 前视点 / 纯追踪控制律。
+"""路线纯值单测:路网找环 / 闭环判据 / 前视点 / 纯追踪控制律 / 段起点选点。
 
 风格沿用仓库:手算锚点 + 边界。**全部在合成图上做** —— `find_cycle` 只吃 `successors`
 回调(见 route.py 头注),所以不必起 CARLA。
@@ -9,6 +9,9 @@
    而这种错在采集时**看着像在开**(有速度、有转向),只在轨迹形状上暴露;
 3. **★ 打舵方向**:角度误差为正 ⇒ 目标在右 ⇒ `steer` 取正。符号反了车会**朝反方向冲出去**,
    而两圈跑完才知道 —— 这条必须手算钉死。
+
+第四条在 `TestSpawnPointSelection`:**选点能不能复现已知集合**(`probe_spawn_points --expect`
+的自证就靠它),以及 `min_pairwise` 取的是**最近**那一对。
 """
 
 from __future__ import annotations
@@ -21,16 +24,21 @@ import pytest
 from autodrivedata.sim.route import (
     Cycle,
     NodeKey,
+    farthest_from_centroid,
     find_cycle,
+    greedy_maxmin,
+    greedy_maxmin_order,
     lap_budget,
     lateral_error,
     lookahead_index,
     make_successors,
+    min_pairwise,
     normalize_angle,
     pure_pursuit,
     route_closure,
     route_length,
     speed_ceiling,
+    spread_curve,
     track_index,
 )
 
@@ -471,3 +479,137 @@ class TestPurePursuit:
         assert (
             pure_pursuit((0.0, 0.0), 0.0, route, c.idx, speed=0.0, target_speed=8.0, lookahead=1.0).idx == 3
         )
+
+
+class TestSpawnPointSelection:
+    """多段采集的**段起点选点**(贪心最大最小距离)。
+
+    ★ 这一组真正的赌注是**「能不能复现 v2_epic 的 44/14/15/152/55」** ——
+    `probe_spawn_points --expect` 就靠这个自证。复现不了,拿它给新图选的段就没有依据。
+    最容易错的两条:**greedy 对种子敏感**(所以 `--expect` 必须遍历种子),
+    与 **`min_pairwise` 是「最近的一对」不是「最远的一对」**(写成 max 会让判据永远通过)。
+    """
+
+    #: 10 m 小方块 + 一个远处的点 —— 手算得动,且"远点先被选中"一眼可验
+    FIVE = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 10.0), (100.0, 100.0)]
+
+    def test_greedy_takes_the_isolated_point_before_the_cluster(self):
+        """第一步必须选**离种子最远的**那个(141.4 m 的孤立点),而不是方块里 10 m 的邻居。"""
+        assert greedy_maxmin(self.FIVE, 2, 0) == [0, 4]
+        assert min_pairwise(self.FIVE, [0, 4]) == pytest.approx(141.4213562, rel=1e-6)
+
+    def test_result_is_sorted_so_expect_comparison_is_order_free(self):
+        """★ 返回**升序下标** —— `--expect` 是拿 `got == want` 比的。
+
+        若按"选中顺序"返回,同样的集合会因为起点不同而给出不同序列,
+        「复现了没有」这个判断就变成"得先猜对方用什么顺序"。
+        """
+        for seed in range(len(self.FIVE)):
+            got = greedy_maxmin(self.FIVE, 3, seed)
+            assert got == sorted(got), f"种子 {seed} 没排序:{got}"
+
+    def test_seed_changes_the_result(self):
+        """★ **贪心对种子敏感** —— 这不是缺陷,是 `--expect` 要遍历全部种子的理由。
+
+        记一笔防"只试种子 0 然后说对不上":同样 5 个点、同样 k=3,
+        种子 0/3/4 给 `{0,3,4}`,种子 1/2 给 `{1,2,4}` —— 两个不同的集合。
+        """
+        assert greedy_maxmin(self.FIVE, 3, 0) == [0, 3, 4]
+        assert greedy_maxmin(self.FIVE, 3, 1) == [1, 2, 4]
+
+    def test_a_known_set_is_reproduced_only_by_the_right_seed(self):
+        """复现 `{0,3,4}` 要种子 0;种子 1 复现不了 ⇒ `--expect` 必须扫全部种子。"""
+        want = [0, 3, 4]
+        hits = [s for s in range(len(self.FIVE)) if greedy_maxmin(self.FIVE, 3, s) == want]
+        assert hits == [0, 3, 4], "应恰好这几个种子能复现"
+        assert 1 not in hits, "种子 1 给的是另一个集合 —— 只试它就误报『对不上』"
+
+    def test_min_pairwise_is_the_closest_pair_not_the_farthest(self):
+        """★ 取 **min** 不是 max。写成 max 会让「段间够不够远」的判据永远通过。"""
+        pts = [(0.0, 0.0), (1.0, 0.0), (100.0, 100.0)]
+        assert min_pairwise(pts, [0, 1, 2]) == pytest.approx(1.0)  # 最近的那对是 0–1
+
+    def test_a_single_point_has_infinite_spread_not_zero(self):
+        """★ 一个点**谈不上间距** ⇒ `inf`,不是 0。
+
+        写成 0 会让 `--min-gap` 在"只选出一个点"时**误报不通过** ——
+        而那其实说明的是 k 给错了,不是这张图太挤。
+        """
+        assert min_pairwise(self.FIVE, [0]) == float("inf")
+        assert min_pairwise(self.FIVE, []) == float("inf")
+
+    def test_spread_curve_never_rises_when_adding_a_point(self):
+        """★ 曲线**单调不增**:后面的选集是前面的**超集**(同一个种子、同一段贪心序列),
+        多一对点只可能给出更小的最近距离。涨了说明实现不是嵌套的。
+        """
+        curve = spread_curve(self.FIVE, 4, 0)
+        assert [k for k, _ in curve] == [2, 3, 4]
+        gaps = [g for _, g in curve]
+        assert gaps == sorted(gaps, reverse=True), f"曲线不单调不增:{curve}"
+        assert gaps[0] == pytest.approx(141.4213562, rel=1e-6)
+
+    def test_curve_is_empty_below_two_points(self):
+        """k<2 谈不上间距曲线 —— 返回空表,不是抛也不是造一个 (1, inf) 的假点。"""
+        assert spread_curve(self.FIVE, 1, 0) == []
+
+    def test_k_above_the_point_count_stops_instead_of_looping(self):
+        """k 比点数大 ⇒ 给全部点,不许死循环(`best_i < 0` 的那个分支就是为此)。"""
+        assert greedy_maxmin(self.FIVE, 10, 0) == [0, 1, 2, 3, 4]
+
+    def test_bad_arguments_raise_instead_of_guessing(self):
+        """越界种子 / k<1 必须报错 —— 静默取模或取 0 会让选出的段与记录的种子对不上。"""
+        with pytest.raises(ValueError, match="越界"):
+            greedy_maxmin(self.FIVE, 2, 5)
+        with pytest.raises(ValueError, match="k 必须"):
+            greedy_maxmin(self.FIVE, 0, 0)
+
+    def test_pick_order_starts_with_the_seed(self):
+        """★ 选择序的**首元素恒为种子**。
+
+        `surround_v2_epic` 记的 `44/14/15/152/55` 是**选择序**(44 = 种子),
+        按集合口径排序后是 `14/15/44/55/152`。同一个东西两种写法 ——
+        所以两条都要能拿到,而不是让调用方自己猜。
+        """
+        order = greedy_maxmin_order(self.FIVE, 3, 0)
+        assert order[0] == 0 and order == [0, 4, 3]
+        assert greedy_maxmin(self.FIVE, 3, 0) == sorted(order)
+
+    def test_pick_order_is_a_prefix_of_a_larger_k(self):
+        """★ 嵌套性:`k` 的结果是 `k+1` 的**前缀**(同一实现、同一序列上截断)。
+
+        `spread_curve` 的单调不增就建立在它上面 —— 若不是嵌套,加一个点反而可能
+        让最近间距**变大**,曲线就成了锯齿。
+        """
+        for k in (2, 3, 4):
+            assert greedy_maxmin_order(self.FIVE, k + 1, 0)[:k] == greedy_maxmin_order(self.FIVE, k, 0)
+
+
+class TestFarthestFromCentroid:
+    """贪心选点的**种子规则** —— 把"第一个点从哪来"这个自由度消掉。
+
+    ★ 这条规则是**反推出来的**(2026-10-03):`surround_v2_epic` 的选点当时是现算的、
+    规则没留档。实测 `Town10HD_Opt` 上只有"离质心最远"能逐位复现那五个点
+    (种子 → 44,最近间距 113.994 m,与 milestone2 记的 114 m 吻合)。
+    这几条钉的是它的**确定性**与**平局口径** —— 两者一变,新旧两批段就不可比了。
+    """
+
+    FIVE = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 10.0), (100.0, 100.0)]
+
+    def test_picks_the_outlier_not_the_cluster(self):
+        """质心 (24,24):方块里四个点距离 19.8–33.9,远处那个 107.5 ⇒ 选它。"""
+        assert farthest_from_centroid(self.FIVE) == 4
+
+    def test_is_seedless_so_the_same_map_gives_the_same_answer(self):
+        """同一份点集调用两次必须同解 —— 规则里不含随机、不含调用方状态。"""
+        assert farthest_from_centroid(self.FIVE) == farthest_from_centroid(list(self.FIVE))
+
+    def test_ties_go_to_the_lowest_index(self):
+        """平局取下标最小 —— 换成"取最后一个"会让结果变成实现细节(浮点扫描顺序)。"""
+        square = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 10.0)]  # 质心 (5,5),四点等距
+        assert farthest_from_centroid(square) == 0
+        assert farthest_from_centroid([(0.0, 0.0), (10.0, 0.0)]) == 0
+
+    def test_empty_point_set_raises(self):
+        """空集没有质心 —— 报错,不是返回 0(那会静默选一个不存在的点)。"""
+        with pytest.raises(ValueError, match="为空"):
+            farthest_from_centroid([])

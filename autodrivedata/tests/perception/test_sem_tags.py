@@ -130,3 +130,57 @@ class TestPaint:
         img = st.paint_tags(np.array([[200]], dtype=np.uint8))
         assert tuple(img[0, 0]) == (255, 0, 255)
         assert tuple(img[0, 0]) != st.PALETTE[0]
+
+
+class TestPropTags:
+    """★ 地图自带道具的 tag 集。
+
+    `PROP_TAGS` 是**实测**定的(探针把三个已知资产摆到镜头前,3/3 落 `Dynamic`),
+    不是查文档定的 —— `CityObjectLabel` 只给了名字,谁是谁没有规格说明,名字本身还
+    **反直觉**。这几条钉的是"它有没有被悄悄扩大 / 挪进三个 GT 类",那两种改法都**不报错**。
+    """
+
+    def test_holds_exactly_the_one_measured_tag(self):
+        assert st.PROP_TAGS == frozenset({st.SEM_TAGS["Dynamic"]})
+
+    def test_does_not_overlap_the_three_gt_classes(self):
+        """★ 并进 `obstacle` 是**最诱人的错改法**:预测器(COCO 训练)产不出锥桶,
+        并进去等于给它记一串永不可能命中的漏检。"""
+        for c in st.GT_CLASSES:
+            assert not (st.GT_CLASS_TAGS[c] & st.PROP_TAGS), c
+
+    def test_does_not_overlap_the_other_two_buckets(self):
+        """三个桶各报各的占比,重叠会让同一个像素被算两次。"""
+        assert not (st.PROP_TAGS & st.EXCLUDED_TAGS)
+        assert not (st.PROP_TAGS & st.NON_DRIVABLE_SURFACE_TAGS)
+
+    def test_prop_mask_is_exactly_the_tag_set(self):
+        tag = np.array(
+            [[st.SEM_TAGS["Dynamic"], st.SEM_TAGS["Roads"]], [st.SEM_TAGS["Car"], 0]], dtype=np.uint8
+        )
+        assert st.prop_mask(tag).tolist() == [[True, False], [False, False]]
+
+    def test_unverified_misc_tags_are_not_swept_in(self):
+        """★ `Static`(20) 与 `Other`(22) 各有几千像素,但**没有已知资产能归因**。
+        并进来就是把没验过的假设写死 —— 这条会在有人"顺手补齐"时红。"""
+        assert st.SEM_TAGS["Static"] not in st.PROP_TAGS
+        assert st.SEM_TAGS["Other"] not in st.PROP_TAGS
+
+
+class TestExcludedShareThirdBucket:
+    def test_three_buckets_do_not_subsume_the_gt_classes(self):
+        """★ 三桶只覆盖"两侧都不算"的那部分,其余是三个 GT 类 —— 不许归一化成一。"""
+        tag = np.full((10, 10), st.SEM_TAGS["Roads"], dtype=np.uint8)
+        tag[0, 0] = st.SEM_TAGS["Dynamic"]
+        tag[0, 1] = st.SEM_TAGS["Rider"]
+        tag[0, 2] = st.SEM_TAGS["Sidewalks"]
+        sh = st.excluded_share(tag)
+        assert set(sh) == {"excluded_obstacle", "non_drivable_surface", "map_prop"}
+        assert sh["map_prop"] == pytest.approx(1 / 100)
+        assert sh["excluded_obstacle"] == pytest.approx(1 / 100)
+        assert sh["non_drivable_surface"] == pytest.approx(1 / 100)
+
+    def test_no_map_props_reports_zero_not_nan(self):
+        """★ "这一帧没有道具"与"没测"必须可区分:`0.0` 是测了没有,`nan` 是没测。"""
+        tag = np.full((4, 4), st.SEM_TAGS["Roads"], dtype=np.uint8)
+        assert st.excluded_share(tag)["map_prop"] == 0.0

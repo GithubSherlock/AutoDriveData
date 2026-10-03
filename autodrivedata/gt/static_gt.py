@@ -22,6 +22,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from autodrivedata.gt.props import CameraPose
+
 
 def landmark_kind(name: str) -> str:
     """landmark name → 归一类别;未知名返回 'unknown'。
@@ -63,13 +65,26 @@ class LaneSegment:
 
 @dataclass(frozen=True)
 class StaticFrame:
-    """一帧静态 GT:信号 + 车道线,ego 位姿锚定(世界系)。"""
+    """一帧静态 GT:信号 + 车道线,ego 位姿锚定(世界系)。
+
+    ## `camera`:判据离线复现投影链要用(2026-10-02 加,可选)
+
+    信号锚点与车道线采样点都是**世界系**点,判据要把它们投进语义图才能问
+    「xodr 说的位置,渲染里是不是真有东西」。而投影要相机位姿 + 内参 ——
+    判据住在 `perception/`(层规则**禁 carla**),拿不到 `CAM_ATTRS`/`SENSOR_OFFSET`,
+    自己拼不出来。**落进文件才让判据离线可跑**(同 `gt/props.PropFrame.camera` 那条)。
+
+    ⚠️ **可选,且必须保持可选**:2026-10-02 之前采的所有 `static_gt/*.json` 都没有
+    这个键,`from_json` 读回 `None`。判据遇到 `None` 必须**明确报"这份 GT 没落位姿、
+    判不了"**,而不是拿默认内参硬算 —— 那会得到一整套看着正常的错数。
+    """
 
     frame_id: str
     ego_location: tuple[float, float, float]
     ego_yaw_deg: float
     signals: tuple[StaticSignal, ...] = ()
     lane_lines: tuple[LaneSegment, ...] = ()
+    camera: CameraPose | None = None
 
     def to_json(self) -> str:
         d = asdict(self)
@@ -100,12 +115,22 @@ class StaticFrame:
             )
             for l in d.get("lane_lines", [])
         )
+        cam = d.get("camera")
         return cls(
             frame_id=d["frame_id"],
             ego_location=tuple(d["ego_location"]),
             ego_yaw_deg=d["ego_yaw_deg"],
             signals=signals,
             lane_lines=lines,
+            camera=CameraPose(
+                location=tuple(cam["location"]),  # type: ignore[arg-type]
+                rotation_deg=tuple(cam["rotation_deg"]),  # type: ignore[arg-type]
+                width=int(cam["width"]),
+                height=int(cam["height"]),
+                fov_deg=float(cam["fov_deg"]),
+            )
+            if cam
+            else None,
         )
 
     def point_count(self) -> int:

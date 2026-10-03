@@ -65,10 +65,12 @@ import carla
 import numpy as np
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
+from autodrivedata.calib.probe_calib import decode_instance
 from autodrivedata.gt.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.map.mapviz import calib_from_fov
+from autodrivedata.perception.inst_tags import encode_instance_png
 from autodrivedata.perception.sem_tags import encode_tag_png
-from autodrivedata.sim.carla_common import loc, spawn_ego, spawn_ego_at, sync_mode
+from autodrivedata.sim.carla_common import load_world, loc, spawn_ego, spawn_ego_at, sync_mode
 from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic
 from autodrivedata.sim.scenarios import SCENES, merged_weather
 from autodrivedata.utils.paths import project_path
@@ -113,6 +115,14 @@ def main() -> None:
         "**像素级分割 GT**,给 `perception/sem_eval.py` 当裁判用。默认关(对既有管线零改动;"
         "6 路变 12 路,采集与磁盘都翻倍)",
     )
+    ap.add_argument(
+        "--inst",
+        action="store_true",
+        help="**逐相机**多挂一路 `sensor.camera.instance_segmentation`(同挂点同 fov),"
+        "落 `inst_<cam>/{fid}.png` = 16 位灰度、**像素值 = CARLA actor id**。"
+        "R 通道同时带 `CityObjectLabel` 语义类 ⇒ **一台相机同时给「有几个」与「各是什么」**,"
+        "正是实例分割 GT(mask AP / PQ 要的就是这两样)。默认关(对既有管线零改动)",
+    )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
     ap.add_argument(
@@ -146,9 +156,11 @@ def main() -> None:
     client = carla.Client(args.host, args.port)
     client.set_timeout(60.0)
     if args.map is not None:
+        # 走 `carla_common.load_world` —— 切图期间的超时**必须**比平时的 60 s 大:
+        # 本行原来的注释自己写着「~2min」而超时还是 60 s,大图(Town13 12478 个
+        # spawn point)一跑就 `time-out of 60000ms`,而**世界其实加载成功了**
         print(f"[map] load_world {args.map}(运行时切图,~2min)...")
-        client.load_world(args.map)
-        client.set_timeout(60.0)
+        load_world(client, args.map)
     world = client.get_world()
     default_map = args.map or world.get_map().name
     sync_mode(world)
@@ -199,18 +211,20 @@ def main() -> None:
     # ---- 语义 GT(P2-A;`--sem` 时逐相机多挂一路)----
     # **挂点/fov 必须与 RGB 那路逐字相同** —— 否则 tag 图与 RGB 图不再像素对齐,
     # 而"对不齐"在下游只表现为 mIoU 偏低,看不出是这里错了。
-    sem_cams: dict[str, carla.Sensor] = {}
-    sem_qs: dict[str, queue.Queue] = {}
-    if args.sem:
+    # `--sem` 与 `--inst` 只差一个蓝图后缀 ⇒ **同一份挂载代码**(挂点/fov/画幅必须逐字
+    # 相同,否则两条 GT 的像素不再对齐,而"不齐"在下游只表现为 IoU 偏低)。
+    def _spawn_kind(kind: str) -> tuple[dict[str, carla.Sensor], dict[str, queue.Queue]]:
+        cs: dict[str, carla.Sensor] = {}
+        qq: dict[str, queue.Queue] = {}
         for name, (mount, rot) in NUS_CAMERA_RIG.items():
-            sem_bp = bp_lib.find("sensor.camera.semantic_segmentation")
+            bp_k = bp_lib.find(f"sensor.camera.{kind}")
             for k, v in SURROUND_CAM_ATTRS.items():
-                sem_bp.set_attribute(k, v)
-            sem_bp.set_attribute("fov", f"{NUS_CAMERA_FOV[name]:.6f}")
+                bp_k.set_attribute(k, v)
+            bp_k.set_attribute("fov", f"{NUS_CAMERA_FOV[name]:.6f}")
             s = cast(
                 carla.Sensor,
                 world.spawn_actor(
-                    sem_bp,
+                    bp_k,
                     carla.Transform(
                         carla.Location(x=mount[0], y=mount[1], z=mount[2]),
                         carla.Rotation(pitch=rot[0], yaw=rot[1], roll=rot[2]),
@@ -220,18 +234,34 @@ def main() -> None:
             )
             q = queue.Queue()
             s.listen(q.put)
-            sem_cams[name], sem_qs[name] = s, q
+            cs[name], qq[name] = s, q
+        return cs, qq
+
+    sem_cams: dict[str, carla.Sensor] = {}
+    sem_qs: dict[str, queue.Queue] = {}
+    if args.sem:
+        sem_cams, sem_qs = _spawn_kind("semantic_segmentation")
+    inst_cams: dict[str, carla.Sensor] = {}
+    inst_qs: dict[str, queue.Queue] = {}
+    if args.inst:
+        inst_cams, inst_qs = _spawn_kind("instance_segmentation")
 
     fovs = " ".join(f"{n.replace('CAM_', '')}={NUS_CAMERA_FOV[n]:.2f}°" for n in SURROUND_CAMS)
     print(f"[cams] {len(cams)} 环视相机挂载(nuScenes 官方 6DoF 挂点,逐通道 fov):{fovs}")
     if args.sem:
         print(f"[sem]  +{len(sem_cams)} 语义相机(同挂点同 fov)⇒ 像素级分割 GT 落 sem_<cam>/")
+    if args.inst:
+        print(f"[inst] +{len(inst_cams)} 实例相机(同挂点同 fov)⇒ 实例分割 GT 落 inst_<cam>/")
 
+    # ★ **每一路队列都必须逐 tick 抽干**,包括后来加的 sem/inst —— 传感器队列是 FIFO,
+    #   `get()` 取的是**最旧**那帧。漏掉一路的代价不是"少收几帧",而是**那一路整体
+    #   滞后 N 帧**(N = 被漏掉的 tick 数),而它与别的路**都"有数据"、帧号也对得上**。
+    #   2026-10-01 实测:漏了 `inst_qs` ⇒ 首帧"实例相机 R 通道 vs 语义相机 tag"相符
+    #   **0.76–0.84**(应当 1.000),而**是采集器自己的自证把它抓出来的** ——
+    #   不看那个数,这条只会在下游表现为"PQ 的语义项莫名其妙偏低"。
     for _ in range(5):  # 预热
         world.tick()
-        for q in qs.values():
-            q.get(timeout=10)
-        for q in sem_qs.values():
+        for q in (*qs.values(), *sem_qs.values(), *inst_qs.values()):
             q.get(timeout=10)
 
     w, h = NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT
@@ -252,6 +282,8 @@ def main() -> None:
         (out / name.lower()).mkdir(parents=True, exist_ok=True)
         if args.sem:
             (out / f"sem_{name.lower()}").mkdir(parents=True, exist_ok=True)
+        if args.inst:
+            (out / f"inst_{name.lower()}").mkdir(parents=True, exist_ok=True)
     # 数据溯源(照 `"map"` 键的既有做法):旧产物无这些键 = 1242×375/六路共用 90°/stride 1
     calib["map"] = default_map  # 该采集来自哪张图(旧产物无此键 = Town10HD_Opt)
     calib["spawn_index"] = args.spawn_index  # None = spawn_ego 首空位
@@ -260,6 +292,8 @@ def main() -> None:
     # 语义 GT 的溯源:读的人必须知道"这个 root 有没有 sem_*/、tag 是哪一版编号"。
     # 旧产物无此键 = 没采语义。tag 编号见 `perception/sem_tags.py`(= CARLA CityObjectLabel)。
     calib["semantic"] = "carla.CityObjectLabel/R-channel" if args.sem else None
+    # 实例 GT 的溯源。口径见 `perception/inst_tags.py`:id = G + 256·B,R 通道 = CityObjectLabel。
+    calib["instance"] = "carla.actor-id(G+256*B)/R-channel-class" if args.inst else None
     with open(out / "calib.json", "w", encoding="utf-8") as f:
         json.dump(calib, f, indent=1)
 
@@ -271,10 +305,12 @@ def main() -> None:
             # 下一帧读到的是更早的陈旧图(§P-M.7 判据 ⑥ 同款坑)。故先循环 tick 并每 tick 收齐。
             drained: dict[str, carla.Image] = {}
             sem_drained: dict[str, carla.Image] = {}
+            inst_drained: dict[str, carla.Image] = {}
             for _ in range(args.stride):
                 world.tick()
                 drained = {name: qs[name].get(timeout=10) for name in SURROUND_CAMS}
                 sem_drained = {n: sem_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.sem else {}
+                inst_drained = {n: inst_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.inst else {}
             for name, image in drained.items():
                 tmp = out / f".tmp_{i}_{name}.png"
                 image.save_to_disk(str(tmp))
@@ -285,6 +321,26 @@ def main() -> None:
                 (out / f"sem_{name.lower()}" / f"{i:06d}.png").write_bytes(
                     encode_tag_png(tag_from_semantic_image(image))
                 )
+            for name, image in inst_drained.items():
+                # **走 PIL 不走 `save_to_disk`**:实例相机的默认转换器同样是上色预览,
+                # 而我们要的是"像素值 = actor id"的 16 位灰度。解码口径的唯一裁决在
+                # `calib/probe_calib.decode_instance`(差分实验),这里只是它的落盘侧。
+                ids = decode_instance(image.raw_data, image.height, image.width)
+                (out / f"inst_{name.lower()}" / f"{i:06d}.png").write_bytes(encode_instance_png(ids))
+                # ★ 实测断言(只在首帧做一次):实例相机的 **R 通道 == 语义相机的 tag**。
+                #   这条成立时一台相机同时给实例与类(PQ 的语义项白给);不成立时
+                #   "拿实例相机当语义相机用"全线是错的,而症状是 **PQ 语义项恒为 0** ——
+                #   会被读成"模型的类报得差"。同一帧两路都在时顺手比一次,不额外 tick。
+                if i == 0 and args.sem and name in sem_drained:
+                    cls_ch = (
+                        np.frombuffer(image.raw_data, dtype=np.uint8)
+                        .reshape(image.height, image.width, 4)[:, :, 2]
+                        .copy()
+                    )
+                    tag0 = tag_from_semantic_image(sem_drained[name])
+                    m = float((cls_ch == tag0).mean())
+                    print(f"[inst] 首帧 {name}:实例相机 R 通道 vs 语义相机 tag 逐像素相符 {m:.6f}")
+
             egot = ego.get_transform()
             poses.append(
                 {
@@ -309,7 +365,7 @@ def main() -> None:
             json.dump(poses, f, indent=1)
         # 语义相机也要收 —— 与雷达同一条:`sensor.*` 不在下面那个 vehicle/walker/controller
         # 过滤器里,漏收会留在世界里阻塞下一次采集的 spawn。
-        for s in (*cams.values(), *sem_cams.values()):
+        for s in (*cams.values(), *sem_cams.values(), *inst_cams.values()):
             s.stop()
             s.destroy()
         for a in world.get_actors():

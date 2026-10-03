@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -82,18 +84,63 @@ class TestRadarChain:
             want = np.array([t[0], -t[1], t[2]], dtype=np.float64)
             np.testing.assert_allclose(got, want, atol=1e-6, err_msg=f"{ch} 原点对不上")
 
+    def test_radar_orientation_matches_the_spawn_yaw(self):
+        """★★ **判据是"朝向 == 采集侧 spawn 用的 yaw"**,不是"看着对不对"。
+
+        ## 这条为什么必须这么写(2026-10-01 真实代价)
+
+        原先只有一条"非原点处也要对",它拿**同一个公式**算期望值 —— 等于把实现的错误
+        抄进断言;用的还是 `RADAR_FRONT`(yaw 仅 **0.2°**),而这个坑是**镜像**:
+        `R(+yaw_nus)` 与 `R(−yaw_nus)` 在 yaw≈0 时数值上几乎相同 ⇒ 它对符号**完全不敏感**,
+        **跑了一版都没红**。
+
+        实证代价(同一帧同时喂两条路,与 CARLA 自己的 `sensor.get_transform()` 比位移):
+
+        | 通道 | `+yaw_nus` | `−yaw_nus` |
+        |---|---|---|
+        | RADAR_FRONT | 1.18 m | 1.14 m |
+        | RADAR_FRONT_LEFT | **44.13 m** | 2.33 m |
+        | RADAR_FRONT_RIGHT | **24.36 m** | 2.30 m |
+        | RADAR_BACK_LEFT | 2.10 m | 0.62 m |
+        | RADAR_BACK_RIGHT | 3.16 m | 2.34 m |
+
+        ⚠️ 而**不能拿"雷达点落在 LiDAR 表面上"当判据**:LiDAR 是 11.7 万点的密云,
+        44 m 的位移照样落在"某个"表面附近(旧口径下 FRONT_LEFT 的 ≤1 m 占比 52%,
+        **看着完全正常**)。**参考越密,判别力越差。**
+
+        ## 真值
+
+        `radar_yaw_offset_carla(ch)` = 采集侧 spawn 用的 CARLA yaw(纯值,不 import carla)。
+        把传感器自身系的 **+x** 喂进 `radar_ego`,在 B 系量出的方向角必须等于它。
+        """
+        from autodrivedata.gt.export.nuscenes import radar_yaw_offset_carla
+
+        arr = np.zeros((2, len(RADAR_NUS_FIELDS)), dtype=np.float32)
+        arr[0, 0] = 10.0
+        arr[:, 3], arr[:, 10], arr[:, 11], arr[:, 14] = 0, 1, 3, 0  # devkit 合法值
+        for ch in NUS_RADAR_CHANNELS:
+            pts = bev_base.radar_ego(arr, ch)
+            d = pts[0] - pts[1]
+            got = math.degrees(math.atan2(d[1], d[0]))
+            assert got == pytest.approx(radar_yaw_offset_carla(ch), abs=1e-4), (
+                f"{ch} 朝向与采集侧 spawn 的 yaw 差 {got - radar_yaw_offset_carla(ch):.1f}° —— 左右镜像"
+            )
+
     def test_radar_yaw_rotates_points_not_just_translates(self):
         """**非原点处**也要对 —— 只对原点的话,把 `R_yaw` 整个删掉也照样绿。
 
         判据:在 RADAR_FRONT 前方 10 m 放一个点,换到 B 系后应当落在 ego 前方约 10 m、
-        且横向位移≈0(该通道 yaw 仅 +0.2°)。同时它的**高度**必须原样带过来(z 不参与旋转)。
+        且横向位移≈0。同时它的**高度**必须原样带过来(z 不参与旋转)。
+
+        ⚠️ 注意这条**按定义**对 yaw 符号不敏感(那正是它抓不到镜像的原因,见上一条)——
+        它守的是"有没有旋转、z 有没有被动过",两者分工不同,都要留。
         """
         ch = "RADAR_FRONT"
         arr = np.zeros((1, len(RADAR_NUS_FIELDS)), dtype=np.float32)
         arr[0, 0], arr[0, 1], arr[0, 2] = 10.0, 0.0, 1.0
         t, yaw = NUS_RADAR_OFFSETS[ch]
         got = bev_base.radar_ego(arr, ch)[0]
-        want_xy = (t[0] + 10.0 * np.cos(yaw), t[1] + 10.0 * np.sin(yaw))
+        want_xy = (t[0] + 10.0 * np.cos(-yaw), t[1] + 10.0 * np.sin(-yaw))
         want_x = want_xy[0] + bev_base.NUS_EGO_ORIGIN_X
         assert got[0] == pytest.approx(want_x, abs=1e-6)
         assert got[1] == pytest.approx(want_xy[1], abs=1e-6)

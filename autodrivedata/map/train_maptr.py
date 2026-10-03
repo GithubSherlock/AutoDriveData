@@ -47,6 +47,7 @@ from autodrivedata.map.maptr.model import MapTR, load_map_weights
 from autodrivedata.map.maptr.variants import resolve_variant, save_map_checkpoint, variant_names
 from autodrivedata.runtime.device import SAFETY_FACTOR, get_gpu_free_memory_gb, tune_train_batch_size
 from autodrivedata.runtime.early_stop import EarlyStopper, PlateauDetector
+from autodrivedata.runtime.lr_schedule import SCHEDULES, lr_at
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -58,17 +59,49 @@ def _to_device(images: dict | list, dev: torch.device):
     return {n: t.to(dev) for n, t in images.items()}
 
 
+#: AMP 用 bf16 而不是 fp16:**3090(Ampere)原生支持 bf16,且不需要 `GradScaler`**
+#: (fp16 要缩放损失防下溢,那是一条独立的失效模式)。见 `--amp` 的说明。
+AMP_DTYPE = torch.bfloat16
+
+
 def _train_batch(
-    model: MapTR, opt: torch.optim.Optimizer, dev: torch.device, ds: MapTRDataset, batch: dict
+    model: MapTR,
+    opt: torch.optim.Optimizer,
+    dev: torch.device,
+    ds: MapTRDataset,
+    batch: dict,
+    amp: bool = False,
 ) -> tuple[float, float]:
     """跑一个完整训练步(forward+匈牙利匹配+loss+backward+step),返回 (cls, pts) 损失。
 
     同时用作自适应 batch 的探针步(measure_batch_memory 的 step_fn):探针必须与
-    真实训练步完全同构,否则每样本显存增量测不准。
+    真实训练步完全同构,否则每样本显存增量测不准 —— **`amp` 必须一路传下去**,
+    否则探针量的是 fp32 的显存,而真跑用 bf16(或反过来),选出的 batch 当场 OOM。
+
+    ## `amp=True` 时**只**包 forward(2026-10-03)
+
+    实测单步分阶段计时(`num_workers=0`,基线):forward 640 ms / 匹配 18 ms /
+    loss+backward 645 ms / opt 5 ms —— GPU 火力全在 forward 与 backward 上,
+    所以 autocast 只包这一段。**匹配不在 autocast 里**:它走
+    `.cpu().numpy()` + scipy 匈牙利,是 fp32 的 CPU 路径,包不包都一样。
+    ⚠️ 实测 `match` 只占 **0.7%** —— 决定 "要不要把匹配挪到 GPU" 之前先看这个数。
     """
     images = _to_device(batch["images"], dev)
     poses = batch["poses"].to(dev)
-    out, _ = model(images, poses, ds.calibs)
+    with torch.autocast(device_type=dev.type, dtype=AMP_DTYPE, enabled=amp):
+        out, _ = model(images, poses, ds.calibs)
+    # ★ 发散守卫(**买的是"报错能归因",不是"防发散"**):预测一旦出 NaN/Inf,
+    # 原来的报错落在**下一站的 scipy**上 —— `ValueError: matrix contains invalid
+    # numeric entries`(实测 lr 6e-4 @ batch 3:warmup 结束那一刻触顶即发散),
+    # 那句话既不说哪一帧、也不说跟学习率有关,查起来先怀疑匹配、白绕一圈。
+    # 代价是一次 `.item()` 的同步,张量只有 B×Nq×(C+1) 量级(实测可忽略)。
+    if not torch.isfinite(out["pred_logits"]).all().item():
+        raise RuntimeError(
+            "预测出现 NaN/Inf —— 训练已发散。**最可能是学习率超过了这个 batch 能承受的值**"
+            "(实测 `lr 6e-4 @ --batch 3` 在 warmup 结束、lr 触顶那一 epoch 发散;"
+            "论文的 6e-4 是 batch≈32 的值,按批缩放约为 5.6e-5)。"
+        )
+    # 匹配在 autocast 之外:`.numpy()` 不接受 bf16(fp32 的 CPU 路径),而且它本来就不吃 GPU
     cls_ts, pts_ts, masks = [], [], []
     for bi in range(poses.shape[0]):
         cls_t, pts_t, mask = match_assign(
@@ -81,15 +114,17 @@ def _train_batch(
         cls_ts.append(cls_t)
         pts_ts.append(pts_t)
         masks.append(mask)
-    loss = maptr_loss(
-        out["pred_logits"],
-        out["pred_points"],
-        torch.tensor(np.stack(cls_ts), device=dev),
-        torch.tensor(np.stack(pts_ts), device=dev),
-        torch.tensor(np.stack(masks), device=dev),
-    )
+    with torch.autocast(device_type=dev.type, dtype=AMP_DTYPE, enabled=amp):
+        loss = maptr_loss(
+            out["pred_logits"],
+            out["pred_points"],
+            torch.tensor(np.stack(cls_ts), device=dev),
+            torch.tensor(np.stack(pts_ts), device=dev),
+            torch.tensor(np.stack(masks), device=dev),
+        )
+        total = loss["total"]
     opt.zero_grad()
-    loss["total"].backward()
+    total.backward()
     opt.step()
     return float(loss["cls"].detach()), float(loss["pts"].detach())
 
@@ -364,11 +399,42 @@ def main() -> None:
     ap.add_argument("--exclude-seg", default="", help="排除这些段(逗号分隔);路线级留出用")
     ap.add_argument("--keep-in-seg", default=None, help="只保留段内帧号区间 A:B(左闭右开);帧级留出用")
     ap.add_argument("--epochs", type=int, default=400)
+    ap.add_argument(
+        "--amp",
+        action="store_true",
+        help="bf16 混合精度(forward 与 loss 走 `torch.autocast`)。**默认关** —— "
+        "已归档的数全是 fp32 口径,开了就与它们不可比(四臂内部仍可比)。"
+        "⚠️ 用 bf16 不用 fp16:3090 原生支持且**不需要 GradScaler**;"
+        "⚠️ 自适应 batch(`--batch 0`)的探针会跟着走 AMP,不会量错显存",
+    )
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument(
-        "--lr-halve", type=int, default=12, help="lr 每 N epochs 减半(0=不衰减;长训必须关,否则 lr 提前归零)"
+        "--lr-schedule",
+        choices=SCHEDULES,
+        default="halve",
+        help="学习率调度。**默认 halve**(每 --lr-halve epochs 减半,已归档数就是它,勿改默认);"
+        "cosine = warmup 后余弦退火到 lr·--min-lr-ratio,即 MapQR 官方那个形状"
+        "(`runtime/lr_schedule.py` 头注记了「官方 500 iter ↔ 我们 ≈4.7 epoch」的换算)",
+    )
+    ap.add_argument(
+        "--lr-halve",
+        type=int,
+        default=12,
+        help="`--lr-schedule halve` 时 lr 每 N epochs 减半(0=不衰减;长训必须关,否则 lr 提前归零)",
     )
     ap.add_argument("--warmup", type=int, default=0, help="前 N epochs lr 线性升温(重启续训防尖峰;0=关)")
+    ap.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=0.0,
+        help="warmup 的**起点比例**(mmcv 语义,官方 1/3);0 = 从 0 升",
+    )
+    ap.add_argument(
+        "--min-lr-ratio",
+        type=float,
+        default=1e-3,
+        help="`--lr-schedule cosine` 的退火终值占峰值的比例(官方 1e-3)",
+    )
     ap.add_argument(
         "--early-stop",
         action=argparse.BooleanOptionalAction,
@@ -528,7 +594,9 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     else:
 
         def probe_step(bs: int) -> None:
-            _train_batch(model, opt, dev, ds, collate([ds[i % len(ds)] for i in range(bs)]))
+            # ⚠️ `amp` 必须与真跑一致 —— 否则探针量的是另一种精度下的显存,
+            #    选出的 batch 在真跑时当场 OOM(或白保守)
+            _train_batch(model, opt, dev, ds, collate([ds[i % len(ds)] for i in range(bs)]), amp=args.amp)
 
         free_gb = get_gpu_free_memory_gb()
         batch_size = tune_train_batch_size(probe_step, max_batch=args.max_batch)
@@ -544,6 +612,15 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     rl.highlight("epochs", args.epochs)
     rl.highlight("seed", args.seed)
     rl.highlight("temporal_window", args.temporal_window)
+    # 学习率配方必须逐项记全:峰值/调度/warmup 三件里漏一件,日志里的 AP 就归不到配方上
+    # (本条的由来见 `runtime/lr_schedule.py` 头注:恒定 1e-4 下"架构更差"与"没训完"分不开)
+    rl.highlight("amp", "bf16" if args.amp else "off")
+    rl.highlight("lr", args.lr)
+    rl.highlight("lr_schedule", args.lr_schedule)
+    rl.highlight("lr_halve", args.lr_halve)
+    rl.highlight("warmup", args.warmup)
+    rl.highlight("warmup_ratio", args.warmup_ratio)
+    rl.highlight("min_lr_ratio", args.min_lr_ratio)
     # 变体开关必须与结论数字同处记录 —— 否则日志里的 AP 归不到具体结构上
     rl.highlight("variant", args.variant or "custom(细粒度开关)")
     rl.highlight("scatter_gather", flags["scatter_gather"])
@@ -559,20 +636,24 @@ def train(args: argparse.Namespace, rl: runlog.RunLogger) -> None:
     stop_epoch: int | None = None
     stop_reason = ""
     for epoch in range(1, args.epochs + 1):
-        # 阶梯衰减:每 --lr-halve epochs 减半(0 = 不衰减;长训必须关,
-        # 否则 400-epoch 跑的后半程 lr 已衰减到 ~1e-8,平台是 lr 归零不是收敛)
-        if args.lr_halve > 0:
-            lr = args.lr * (0.5 ** ((epoch - 1) // args.lr_halve))
-        else:
-            lr = args.lr
-        if args.warmup > 0 and epoch <= args.warmup:
-            lr *= epoch / args.warmup  # 线性升温:防"力矩重置 + 大步长"的起步尖峰
+        # 调度在 `runtime/lr_schedule.py`(**纯值、可单测**);这里只取当帧的值。
+        # `halve` 是默认且与改造前逐位相同 —— 已归档的四档数是那个口径。
+        lr = lr_at(
+            epoch,
+            base=args.lr,
+            epochs=args.epochs,
+            schedule=args.lr_schedule,
+            lr_halve=args.lr_halve,
+            warmup=args.warmup,
+            warmup_ratio=args.warmup_ratio,
+            min_lr_ratio=args.min_lr_ratio,
+        )
         for g in opt.param_groups:
             g["lr"] = lr
         model.train()
         ep = {"cls": 0.0, "pts": 0.0}
         for batch in loader:
-            c, p = _train_batch(model, opt, dev, ds, batch)
+            c, p = _train_batch(model, opt, dev, ds, batch, amp=args.amp)
             ep["cls"] += c
             ep["pts"] += p
         steps = max(1, len(loader))

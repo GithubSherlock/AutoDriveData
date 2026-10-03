@@ -142,7 +142,25 @@ def radar_ego(arr18: np.ndarray, channel: str) -> np.ndarray:
     arr = _drop_nan(np.asarray(arr18, dtype=np.float64).reshape(-1, len(RADAR_NUS_FIELDS)))
     if len(arr) == 0:
         return np.zeros((0, 3), dtype=np.float64)
-    t, yaw = NUS_RADAR_OFFSETS[channel]
+    t, yaw_nus = NUS_RADAR_OFFSETS[channel]
+    # ★★ **旋转角必须取 `−yaw_nus`**(2026-10-01 实测裁定,此前镜像了整整一版)。
+    #   判据不是"看着对不对",而是**与 CARLA 自己的 `sensor.get_transform()` 比位移** ——
+    #   把同一批检测同时喂两条路送进世界系,量中位位移(米):
+    #
+    #   | 通道 | `+yaw_nus`(旧) | `−yaw_nus`(今) |
+    #   |---|---|---|
+    #   | RADAR_FRONT | 1.18 m | 1.14 m |
+    #   | RADAR_FRONT_LEFT | **44.13 m** | 2.33 m |
+    #   | RADAR_FRONT_RIGHT | **24.36 m** | 2.30 m |
+    #   | RADAR_BACK_LEFT | 2.10 m | 0.62 m |
+    #   | RADAR_BACK_RIGHT | 3.16 m | 2.34 m |
+    #
+    #   为什么能活一版:① `RADAR_FRONT` 的 yaw 只有 **0.2°** ⇒ 翻符号几乎不动;
+    #   ② 原先记这条链的**唯一**判据是"雷达点落在 LiDAR 表面上",而 LiDAR 是 11.7 万点的
+    #   **密云** —— 44 m 的位移照样落在"某个"表面附近(实测 ≤1 m 占比 52%,**看着完全正常**)。
+    #   密度越高的参考越没判别力 ⇒ 正确仲裁是 CARLA 自己的位姿,它精确且不依赖任何表。
+    #   (本仓"yaw≈0 的相机看着正常"那个坑的第四次现形。)
+    yaw = -yaw_nus
     c, s = np.cos(yaw), np.sin(yaw)
     xyz = arr[:, :3]
     x = xyz[:, 0] * c - xyz[:, 1] * s + t[0]

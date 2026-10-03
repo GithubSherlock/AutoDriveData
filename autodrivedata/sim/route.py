@@ -32,6 +32,15 @@ CARLA 侧的那层适配(`make_successors`,把 `wp.next(step)` 与节点键对�
 不是新状态 —— 只是 `wrap_at`(回绕落点):跑完一圈后前视点索引回到**环入口**而不是 0,
 `Control.wrapped` 是圈数计数的**唯一依据**。`wrap_at` 存在的意义是「起点到环入口那段引路
 (prefix)只跑一次」,不该在第二圈重跑(否则车会掉头回去找起点)。
+
+## 另:多段采集的选点也在这里
+
+`greedy_maxmin` / `min_pairwise` / `spread_curve` 是**段起点选点**(贪心最大最小距离)。
+放这里而不是放采集器里,同一条理由:CARLA 侧只该做编排,可单测的几何放这边。
+
+⚠️ 贪心**对种子敏感**(第一个点从哪来会改变整组结果)⇒ 种子**不要手挑**,
+走 `farthest_from_centroid`。那条规则是**反推出来的** —— 它在 `Town10HD_Opt` 上
+逐位复现了 `surround_v2_epic` 现算的那五个点(见 `probe_spawn_points --expect`)。
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ import math
 from collections import deque
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Protocol, cast
 
 # 纯追踪:航向误差(弧度)→ steer 的比例增益。误差 0.4 rad(23°)即满舵,留足余量不抖。
@@ -233,6 +243,94 @@ def route_closure(points: Sequence[Sequence[float]], *, tol: float = 1.0) -> dic
         "end_gap_m": gap,
         "closed": gap <= tol,
     }
+
+
+def farthest_from_centroid(points: Sequence[Sequence[float]]) -> int:
+    """离**全部点的质心**最远的那个下标 —— 贪心选点的**种子规则**(把种子这个自由度消掉)。
+
+    ★ 这条规则是**反推出来的,不是发明的**(2026-10-03):`surround_v2_epic` 的
+    `44/14/15/152/55`(milestone2 记的「贪心最大最小距离……两两最近 114 m」)当时是现算的,
+    没留规则。实测 `Town10HD_Opt` 的 155 个 spawn point:按"离质心最远"取种子(→ **44**)
+    再贪心,**逐位复现**那五个点(最近间距 113.994 m)。其余候选规则(max x / min y /
+    最大模长 / 种子 0)都不命中,种子 55 虽能给出更大的 117.2 m 但**不是**当时那组。
+
+    ⇒ 新图沿用**同一条规则**,新旧两批段的选点口径才可比。
+
+    平局取**下标最小**的(`max` 的语义),故结果与机器无关、可复现。
+    """
+    if not points:
+        raise ValueError("点集为空 —— 没有质心可算")
+    n = len(points)
+    cx = sum(p[0] for p in points) / n
+    cy = sum(p[1] for p in points) / n
+    return max(range(n), key=lambda i: math.hypot(points[i][0] - cx, points[i][1] - cy))
+
+
+def greedy_maxmin_order(points: Sequence[Sequence[float]], k: int, seed: int) -> list[int]:
+    """贪心最大最小距离(**farthest point sampling**),按**选中顺序**返回。
+
+    每步选「到已选集合的**最近**距离」最大的那个。**第一个恒为 `seed`**。
+
+    **为什么用它选多段采集的起点**:段间起点离得近 ⇒ 两段走同一条街,扩的是帧数
+    不是**路线多样性**,而 MapTR 线要的恰恰是后者(矢量从 xodr 解析、不依赖外观,
+    要的是拓扑多样性)。`surround_v2_epic` 的 `44/14/15/152/55` 就是这么来的 ——
+    ⚠️ **那个写法是选择序不是排序**(首元素 44 = 种子),拿它比对时要选对口径。
+
+    平局取**下标最小**的(`>` 严格比较 ⇒ 先到先得),故结果与机器无关。
+    """
+    if not 0 <= seed < len(points):
+        raise ValueError(f"种子 {seed} 越界(共 {len(points)} 个点)")
+    if k < 1:
+        raise ValueError(f"k 必须 ≥ 1,收到 {k}")
+    sel = [seed]
+    while len(sel) < k:
+        best_i, best_d = -1, -1.0
+        for i, p in enumerate(points):
+            if i in sel:
+                continue
+            d = min(_dist(p, points[j]) for j in sel)
+            if d > best_d:
+                best_i, best_d = i, d
+        if best_i < 0:  # k > 点数
+            break
+        sel.append(best_i)
+    return sel
+
+
+def greedy_maxmin(points: Sequence[Sequence[float]], k: int, seed: int) -> list[int]:
+    """同 `greedy_maxmin_order`,但返回**升序下标** —— 供集合比较用。
+
+    下游(`probe_spawn_points --expect`)拿它与已知索引集直接 `==` 比,
+    所以必须是集合口径:按选择序返回会让"复现了没有"变成"得先猜对方用什么顺序"。
+
+    ⚠️ **对种子敏感**:第一个点从哪来会改变整组结果(实测同样 5 点、同样 k=3,
+    种子 0/3/4 给 `{0,3,4}` 而种子 1/2 给 `{1,2,4}`)。种子**不要手挑** ——
+    走 `farthest_from_centroid`(那是复现出已知集合的那条规则)。
+    """
+    return sorted(greedy_maxmin_order(points, k, seed))
+
+
+def min_pairwise(points: Sequence[Sequence[float]], idx: Sequence[int]) -> float:
+    """所选点两两之间的**最近**距离(米)—— 就是「段间离得够不够远」那个数。
+
+    少于两点时返回 `inf`:**一个点谈不上间距**,写成 0 会被下游读成"两点重合",
+    于是 `--min-gap` 判据在只有一个点时**误报不通过**。
+    """
+    if len(idx) < 2:
+        return math.inf
+    return min(_dist(points[i], points[j]) for i, j in combinations(sorted(idx), 2))
+
+
+def spread_curve(points: Sequence[Sequence[float]], k: int, seed: int) -> list[tuple[int, float]]:
+    """`k' = 2..k` 的最近间距曲线 —— 判「这张图撑不撑得起 k 段」。
+
+    只看最终那一个数看不出"再加一段会掉多少"。曲线掉得陡 ⇒ 这张图的路网本来就
+    不大,再多分段只是把同一片街区切细(段数涨、多样性不涨)。
+    """
+    out: list[tuple[int, float]] = []
+    for kk in range(2, k + 1):
+        out.append((kk, min_pairwise(points, greedy_maxmin(points, kk, seed))))
+    return out
 
 
 def speed_ceiling(loop_len: float, *, delta: float, min_frames_per_lap: int) -> float:

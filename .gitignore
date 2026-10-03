@@ -69,6 +69,7 @@ Thumbs.db
 gitpush.sh
 clear_cache.sh
 hdMapGitHub/
+jd_xpeng.md
 
 # ===== 例外：assets/ 是【入库】的静态资源目录 =====
 # 上面的 `*.png` / `*.jpg` 等全局规则会把 assets/ 里的图**静默**吞掉

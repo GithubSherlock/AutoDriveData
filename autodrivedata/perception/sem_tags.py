@@ -131,7 +131,39 @@ NON_DRIVABLE_SURFACE_TAGS: frozenset[int] = frozenset(
     {SEM_TAGS["Sidewalks"], SEM_TAGS["Terrain"], SEM_TAGS["Ground"]}
 )
 
+#: **地图自带的静态道具**(锥桶/路障/施工围挡……)在语义相机里落的 tag。
+#:
+#: ★ 这个 tag 集是**实测**定的,不是查文档定的 —— `CityObjectLabel` 只给了名字,
+#: 谁是谁没有任何规格说明,而名字本身还**反直觉**(锥桶是静态道具,却打成 `Dynamic`)。
+#: 2026-10-01 探针(`sim/probe_static_prop_gt`)把三个已知资产逐个摆到镜头前读:
+#:
+#: | 资产 | 实例掩膜内 tag |
+#: |---|---|
+#: | `static.prop.constructioncone` | **21 `Dynamic` 100%** |
+#: | `static.prop.streetbarrier` | **21 `Dynamic` 100%** |
+#: | `static.prop.warningconstruction` | **21 `Dynamic` 100%** |
+#:
+#: 3/3 排他。**`Static`(20) 与 `Other`(22) 不并进来** —— 它们各有几千像素,但
+#: **没有已知资产能归因**(形态上像"一堆小碎块里混着几个物体"),并进来就是把
+#: 没验过的假设写死。要扩这个集合,先拿资产把它钉下来。
+#:
+#: 为什么值得单独一支:这些 tag **既不在三个 GT 类里、也不在 `EXCLUDED_TAGS` 里**
+#: ⇒ 它们原本落在一个**不被报出来的第三桶**。模型若在那里报 obstacle,会被记成 FP
+#: 而日志里查不出为什么(COCO 训练集无 traffic cone,当前 YOLO11s-seg 不报 ——
+#: 但那是**模型的现状**,不是**判据的性质**)。
+PROP_TAGS: frozenset[int] = frozenset({SEM_TAGS["Dynamic"]})
+
+#: **地图自带的**静态道具属于"探测得到但没被建模"的那一类:能出**类掩膜**,出不了实例
+#: (它们在 `get_actors()` 里一个都没有 —— 2026-10-01 普查 Town10HD_Opt 实测 0 个,
+#: 而同一帧语义相机里有 6999 个 `Dynamic` 像素 ⇒ 它们是**关卡网格**,没有 transform 可查)。
+#: 由**采集器摆出来**的道具走另一条路(`gt/props.py` 的独立通道,能出实例 GT)。
+
 TAG_NAMES: dict[int, str] = {v: k for k, v in SEM_TAGS.items()}
+
+
+def prop_mask(tag: np.ndarray) -> np.ndarray:
+    """tag 图 → **静态道具类掩膜**(布尔)。见 `PROP_TAGS` 的口径说明。"""
+    return np.isin(tag, list(PROP_TAGS))
 
 
 def encode_tag_png(tag: np.ndarray) -> bytes:
@@ -162,11 +194,22 @@ def masks_from_tags(tag: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def excluded_share(tag: np.ndarray) -> dict[str, float]:
-    """被排除标签的像素占比 —— **报出来**才叫"排除",不报就叫"悄悄设了上限"。"""
+    """**两侧都不算**的像素占比,分三桶报出来 —— 报出来才叫"排除",不报就叫"悄悄设了上限"。
+
+    | 桶 | 内容 | 谁决定的 |
+    |---|---|---|
+    | `excluded_obstacle` | Rider/Motorcycle/Bicycle/Train | **预测器产不出**,算进去等于冤枉它 |
+    | `non_drivable_surface` | Sidewalks/Terrain/Ground | 不是 BDD100K 口径的可行驶面 |
+    | `map_prop` | 地图自带的静态道具(见 `PROP_TAGS`) | 三个 GT 类都没建模它 |
+
+    第三桶是 2026-10-01 补的。**它此前就在那儿,只是没人报** —— 而"没报"与"没有"
+    在下游长得一样。值是像素占比,不是"做得好不好"。
+    """
     n = float(tag.size) or 1.0
     return {
         "excluded_obstacle": float(np.isin(tag, list(EXCLUDED_TAGS)).sum()) / n,
         "non_drivable_surface": float(np.isin(tag, list(NON_DRIVABLE_SURFACE_TAGS)).sum()) / n,
+        "map_prop": float(prop_mask(tag).sum()) / n,
     }
 
 

@@ -26,6 +26,7 @@ import torch
 
 from autodrivedata.map.mapviz import BEV_X, BEV_Y, CameraIntrinsics, cam_pose
 from autodrivedata.perception import sem_bev
+from autodrivedata.perception.sem_bev import DETECT_CLS, yolo11_instances, yolo11_object_mask
 
 # KITTI 口径输入(与采集器一致);letterbox 到 640×640 后 r≈0.5153、dh≈223.5
 W, H, IMGSZ = 1242, 375, 640
@@ -205,3 +206,75 @@ def test_subsampling_is_seeded_and_is_a_subset_of_the_full_path():
     assert sub_a.any() and full.any()
     assert not (sub_a & ~full).any(), "子采样画出了全量没有的格子 —— 两条路径不是同一套投影"
     assert sem_bev.MAX_PROJECT_PIXELS == 40_000, "默认上限是画图口径,改小会静默改变既有出图"
+
+
+class _FakeTensor:
+    """最小张量桩:只需 `.cpu().numpy()`(两条实现都只用这两个方法)。"""
+
+    def __init__(self, arr):
+        self._a = np.asarray(arr)
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self._a
+
+
+class _FakeYOLO:
+    """最小 ultralytics 结果桩 —— 只回放给定的 `masks.data` / `boxes.cls` / `boxes.conf`。"""
+
+    def __init__(self, masks, cls, conf):
+        self._masks = type("M", (), {"data": [_FakeTensor(m) for m in masks]})()
+        self._boxes = type("B", (), {"cls": _FakeTensor(cls), "conf": _FakeTensor(conf)})()
+
+    def predict(self, *a, **k):
+        return [type("R", (), {"masks": self._masks, "boxes": self._boxes})()]
+
+
+class TestObjectMaskIsTheUnionOfInstances:
+    """★ 类级掩膜必须是实例掩膜的**并集** —— 两条链看的必须是同一次推理。
+
+    2026-10-01 把 `yolo11_object_mask` 重写成 `yolo11_instances` 的并集(实例级判据也要
+    吃同一份预测)。合并**顺序无关**,所以旧实现(逐框 `|=`)与新实现应当**逐位相同**;
+    这条钉的是重构没有偷偷改变类级判据的输入 —— 各跑一遍模型的话,报出的 mIoU 与图上
+    看到的可能不是同一次推理,而"不是同一次"在下游看不出来。
+    """
+
+    @staticmethod
+    def _yolo(n_keep: int = 2):
+        m0 = np.zeros((8, 16), dtype=np.float32)
+        m0[1:3, 1:3] = 1.0
+        m1 = np.zeros((8, 16), dtype=np.float32)
+        m1[4:6, 4:6] = 1.0
+        keep = sorted(DETECT_CLS)[:n_keep]
+        # 第 3 个框用类别 99(不在 DETECT_CLS 里)⇒ 两条实现都必须丢掉它
+        return _FakeYOLO([m0, m1, m0], [keep[0], keep[1], 99], [0.9, 0.8, 0.7])
+
+    def test_union_matches_the_old_per_box_loop(self):
+        size, img = (16, 8), np.zeros((8, 16, 3), dtype=np.uint8)
+        y = self._yolo()
+        union = yolo11_object_mask(y, img, size)
+        old = np.zeros(size[::-1], dtype=bool)
+        for m, _ in yolo11_instances(y, img, size):
+            old |= m
+        assert np.array_equal(union, old)
+        assert union.sum() == 8  # 两个 2×2 的块;类别 99 那个被丢掉
+
+    def test_instances_keep_identity_and_conf(self):
+        """★ 实例级判据要的就是这两样:每个实例**分开**,且带模型的**原始 conf**。"""
+        size, img = (16, 8), np.zeros((8, 16, 3), dtype=np.uint8)
+        inst = yolo11_instances(self._yolo(), img, size)
+        assert len(inst) == 2, "类别 99 不该进实例表"
+        assert [c for _, c in inst] == [0.9, 0.8]
+        assert not np.array_equal(inst[0][0], inst[1][0]), "两个实例的掩膜必须分开,不许并成一块"
+
+    def test_crowded_scene_would_be_indistinguishable_after_union(self):
+        """反向对照:两个实例**并起来**与**分开**在类级掩膜上完全一样 —— 这正是实例级判据
+        存在的理由(类级看不出"两辆车连成了一片")。"""
+        size, img = (16, 8), np.zeros((8, 16, 3), dtype=np.uint8)
+        y = self._yolo()
+        inst = yolo11_instances(y, img, size)
+        union = yolo11_object_mask(y, img, size)
+        assert union.sum() == sum(m.sum() for m, _ in inst)  # 不重叠时两者一致
+        assert len(inst) == 2 and union.ndim == 2

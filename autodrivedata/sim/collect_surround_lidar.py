@@ -100,6 +100,7 @@ from autodrivedata.perception.radar import detections_to_nus18, mask_radar_point
 from autodrivedata.sim.carla_common import (
     LIDAR_ATTRS,
     SENSOR_OFFSET,
+    load_world,
     loc,
     spawn_ego,
     spawn_ego_at,
@@ -188,7 +189,9 @@ def main() -> None:
         args.speed = 8.0
     client = carla.Client(args.host, args.port)
     client.set_timeout(60.0)
-    world = client.load_world(args.map) if args.map else client.get_world()
+    # 切图走 `carla_common.load_world`(切图期间调高超时)—— 大图 >60 s,
+    # 直接 `client.load_world` 会超时报错而**世界其实加载成功**(见那里的头注)
+    world = load_world(client, args.map) if args.map else client.get_world()
     default_map = args.map or world.get_map().name
     sync_mode(world)
     scene = SCENES[args.scene] if args.scene else None

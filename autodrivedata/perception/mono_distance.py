@@ -35,12 +35,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 
 from autodrivedata.calib.core import CameraIntrinsics
 from autodrivedata.perception import attribution as attr
+from autodrivedata.perception.backends import BACKENDS, describe, make_predictor, resolve_conf
 from autodrivedata.perception.mono_depth import box_to_ground_distance
 from autodrivedata.utils import runlog
 from autodrivedata.utils.geometry import box_2d_from_3d, mono_depth_from_box
@@ -50,7 +51,6 @@ from autodrivedata.utils.paths import project_path
 _YOLO_IMPORT_ERR: Exception | None = None
 try:
     from ultralytics import YOLO
-    from ultralytics.engine.results import Results
 except Exception as _e:  # pragma: no cover — 无 ultralytics 环境跑基线不受影响
     _YOLO_IMPORT_ERR = _e
     YOLO = None  # type: ignore[assignment]  # 仅在 yolo 分支(已查 _YOLO_IMPORT_ERR)解引用
@@ -198,26 +198,19 @@ def _summarize(res: dict) -> dict:
 
 def _yolo_detect_frames(
     image_2: Path,
-    model: Any,
-    names: dict[int, str],
-    conf: float,
+    predict: Any,
     limit: int | None,
 ) -> dict[str, list[attr.Detection]]:
-    """逐帧 YOLO → {frame_stem: [Detection]}(与 eval_2d_ab.detect 同循环结构)。
+    """逐帧检测 → {frame_stem: [Detection]}(与 `eval_2d_ab.detect` 同循环结构)。
 
-    names 是 model.names(COCO 类号→名),检测框转 attr.Detection(cls, x1..y2, conf)。
-    无检测帧(res.boxes is None)返回空 list。推理 device=0(GPU)。
+    后端由 `--backend` 决定(默认 sam3);检测框转 `attr.Detection(cls, x1..y2, conf)`。
+    无检测帧返回空 list。
     """
     out: dict[str, list[attr.Detection]] = {}
     for f in sorted(image_2.glob("*.png"))[:limit]:
-        res = cast(Results, list(model.predict(f, conf=conf, verbose=False, device=0))[0])
-        dets: list[attr.Detection] = []
-        for b in res.boxes or []:
-            c = attr.norm_cls(names[int(b.cls.item())])
-            if not c:
-                continue
-            x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
-            dets.append(attr.Detection(c, x1, y1, x2, y2, float(b.conf.item())))
+        dets: list[attr.Detection] = [
+            attr.Detection(c, x1, y1, x2, y2, score) for c, score, (x1, y1, x2, y2) in predict(f) if c
+        ]
         out[f.stem] = dets
     return out
 
@@ -301,7 +294,18 @@ def main() -> None:
         help="检测框来源:project=GT 3D 投影框(诚实基线);yolo=YOLO 检测框(生产口径)",
     )
     ap.add_argument("--yolo-weight", default=DEFAULT_YOLO_WEIGHT, help="YOLO 权重(KITTI 微调模型)")
-    ap.add_argument("--yolo-conf", type=float, default=0.25, help="YOLO 置信度阈值")
+    ap.add_argument(
+        "--yolo-conf",
+        type=float,
+        default=None,
+        help="检测置信度阈值。**不传则按后端取默认**(sam3 0.5 / yolo 0.25)",
+    )
+    ap.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default="sam3",
+        help="检测后端。**默认 sam3**(类别由提示词给出);`yolo` 是回退。⚠️ 两边不可比",
+    )
     ap.add_argument("--iou-thr", type=float, default=0.5, help="YOLO 框与 GT 投影框匹配 IoU 阈值")
     ap.add_argument("--no-runlog", action="store_true", help="不落 logs/ 三件套(默认每次运行都落)")
     args = ap.parse_args()
@@ -335,9 +339,11 @@ def main() -> None:
                 raise SystemExit("--detector yolo 需要 CUDA(YOLO 推理 device=0);基线用 --detector project")
             if _YOLO_IMPORT_ERR is not None:
                 raise RuntimeError(f"ultralytics 导入失败:{_YOLO_IMPORT_ERR}")
-            model = cast(Any, YOLO)(args.yolo_weight)  # ultralytics 导入失败已被上面 SystemExit 拦截
-            names = model.names
-            yolo_dets = _yolo_detect_frames(image_2, model, names, conf=args.yolo_conf, limit=args.max_frames)
+            predictor = make_predictor(
+                args.backend, args.yolo_weight, resolve_conf(args.backend, args.yolo_conf)
+            )
+            print(describe(args.backend, predictor))
+            yolo_dets = _yolo_detect_frames(image_2, predictor, limit=args.max_frames)
             rows, match_stats = _yolo_rows(
                 label_2,
                 calib,

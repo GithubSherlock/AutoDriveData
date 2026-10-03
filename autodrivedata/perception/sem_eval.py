@@ -49,6 +49,7 @@ from autodrivedata.perception.sem_bev import (
     BEV_PX,
     GROUND_Z_OFF,
     init_camera,
+    instance_backend,
     mask_to_bev,
     predict_masks,
 )
@@ -179,6 +180,12 @@ def main() -> None:
     ap.add_argument("--root", required=True, help="带 `sem_*/` 的 surround root(collect_surround --sem)")
     ap.add_argument("--frames", default="0-19", help="帧范围 0-19 或逗号列表")
     ap.add_argument("--out", default="outputs/sem_eval", help="输出根(预览图)")
+    ap.add_argument(
+        "--backend",
+        choices=("sam3", "yolo"),
+        default="sam3",
+        help="**障碍物那一路**的后端(默认 sam3)。drivable/lane 仍走 YOLOPv2。⚠️ 两边不可比",
+    )
     ap.add_argument("--gpu", action="store_true")
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument(
@@ -212,7 +219,11 @@ def main() -> None:
         img_sb = Scoreboard("图像")
         bev_sb = Scoreboard("BEV")
         bshape = bev_shape()
-        shares: dict[str, list[float]] = {"excluded_obstacle": [], "non_drivable_surface": []}
+        shares: dict[str, list[float]] = {
+            "excluded_obstacle": [],
+            "non_drivable_surface": [],
+            "map_prop": [],
+        }
         # 几何自证按**全局命中/全局抽样**汇总,**不平均每路的比值** —— 侧向相机常常一个
         # Sky 像素都没有,而"1 个像素打中了"会记成 1.0 把均值整个抬起来(2026-10-01 实测:
         # 同一份数据按比值平均报 0.099、按全局汇总报 0.000)。
@@ -222,12 +233,12 @@ def main() -> None:
 
         if args.self_test:
             print("[self-test] 不出模型:预测 := GT(两个口径的 mIoU 都必须恰好 1.000)")
-            yolo11 = yolopv2 = device = None
+            instances = yolopv2 = device = None
         else:
             if YOLO is None:
                 raise SystemExit("ultralytics 未装(autodrivedata env)")
             device = torch.device("cuda" if args.gpu and torch.cuda.is_available() else "cpu")
-            yolo11 = YOLO(str(project_path("weights/yolo11s-seg.pt")))
+            instances = instance_backend(args.backend)
             yolopv2 = (
                 torch.load(
                     str(project_path("outputs/models/yolopv2.pt")), map_location="cpu", weights_only=False
@@ -236,7 +247,7 @@ def main() -> None:
                 .float()
                 .eval()
             )
-            print(f"[model] YOLOPv2({args.imgsz}) + YOLO11s-seg on {device}")
+            print(f"[model] YOLOPv2({args.imgsz}) + 障碍物后端={args.backend} on {device}")
 
         for fid in frames:
             token = f"{fid:06d}"
@@ -262,7 +273,7 @@ def main() -> None:
                 if args.self_test:
                     pred = gt
                 else:
-                    pred = predict_masks(img, yolopv2, yolo11, device, size, args.imgsz)
+                    pred = predict_masks(img, yolopv2, instances, device, size, args.imgsz)
                     # ★ 键名必须与 GT 的类名**逐字相同** —— 对不上时三类全空,
                     #   mIoU 会是个漂亮的 0 而不是崩,所以这儿当面擂一遍。
                     if set(pred) != set(GT_CLASSES):
@@ -324,9 +335,16 @@ def main() -> None:
         print(img_sb.line())
         print(bev_sb.line())
         print(
-            f"  被排除类像素占比(均值):"
-            f" obstacle 类(Rider/Motorcycle/Bicycle/Train)={np.nanmean(shares['excluded_obstacle']):.4%}"
+            f"  两侧都不算的像素占比(均值):"
+            f" 预测器产不出的类(Rider/Motorcycle/Bicycle/Train)={np.nanmean(shares['excluded_obstacle']):.4%}"
             f"  非可行驶地面(Sidewalks/Terrain/Ground)={np.nanmean(shares['non_drivable_surface']):.4%}"
+        )
+        # ★ 第三桶:地图自带的静态道具。此前**就在那儿但没人报** —— 而"没报"与"没有"
+        #   在下游长得一样(模型在那里报 obstacle 会被记成 FP,而日志里查不出为什么)。
+        print(
+            f"  ⚠️ 地图自带静态道具(`Dynamic` tag,见 `sem_tags.PROP_TAGS`)="
+            f"{np.nanmean(shares['map_prop']):.4%} —— 三个 GT 类都没建模它,"
+            f"预测若落在那里算 FP(那是**判据口径**,不是模型错)"
         )
         sky_rate = orc["sky_hit"] / orc["sky_n"] if orc["sky_n"] else float("nan")
         road_rate = orc["road_hit"] / orc["road_n"] if orc["road_n"] else float("nan")
@@ -350,6 +368,7 @@ def main() -> None:
         rl.highlight("sky_ray_ground_hit", round(sky_rate, 4))
         rl.highlight("road_ray_ground_hit", round(road_rate, 4))
         rl.highlight("excluded_obstacle_share", round(float(np.nanmean(shares["excluded_obstacle"])), 6))
+        rl.highlight("map_prop_share", round(float(np.nanmean(shares["map_prop"])), 6))
         rl.highlight("n_frames", len(frames))
         rl.highlight("self_test", bool(args.self_test))
 
