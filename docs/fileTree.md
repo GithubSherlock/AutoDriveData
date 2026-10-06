@@ -45,10 +45,11 @@ AutoDriveData/
 | `slam/` | 10 | 两段式激光 SLAM + 精度评估 + C++ 对拍 | **纯值** |
 | `perception/` | 17 | 检测 / 单双目 / 雷达 / 语义 / 点云 | **不 import carla** |
 | `gt/` | 5 | 动态目标 + 静态目标 + 灯态 + 落盘导出 | **纯值** |
-| `traj/` `gs/` | 3 | 轨迹组装转换 / 3DGS 训练 | 许 torch,禁 carla |
+| `traj/` `gs/` | 5 | 轨迹组装转换 / 3DGS 训练 **+ 归属 + 帧同步判据** | 许 torch,禁 carla |
 | `runtime/` | 3 | 设备探测 / TF32 口径 / 显存体检 / 批量超参实测 + **训练早停判据** + **jsonl→TensorBoard 转换** | 许 torch,禁 carla |
+| `edit/` | 11 | 图像/场景编辑:后端 + 条件源 + 保真度 / 下游 / 注入 / 时序 / 和谐化 判据 | 许 torch,禁 carla |
 | `utils/` | 4 | `geometry` `paths` `fonts` `runlog` | **纯值** |
-| `tests/` | 60 | 与能力目录镜像(见 §3) | 不设限 |
+| `tests/` | 66 | 与能力目录镜像(见 §3) | 不设限 |
 
 **规模列口径(两个,别混)**:§2 表 = **递归**(`find <目录> -name '*.py' ! -name '__init__.py'`);
 各小节标题 = 该目录**本级**文件数(子包另立小节,如 `gt/` 记 `3 + export/ 子包`、`map/` 记 18
@@ -61,7 +62,10 @@ Jupyter 残留**(`.ipynb_checkpoints/`,它会污染计数);标的是量级,加/�
 **运行留痕(2026-09-27)**:每个**训练 / 推理 / 评估**入口跑一次就在 `logs/` 落**三件套**
 (stem 相同:`<能力>_<模块>_<时间戳>.log` 全量文本 / `.jsonl` 逐迭代指标 / `.json` 汇总),
 口径与关法见下方 [`utils/runlog.py`](#utils--通用件4) 行,落点见 §6。
-下表标 **落 `logs/` 三件套** 的**恰好 18 个**:用户裁决的覆盖范围(16 = 训练 3 + 推理/评估 13)外加
+下表标 **落 `logs/` 三件套** 的**到 2026-10-02 为止 20 个**(之后又补了 `gs/frame_sync` 与
+`gs/attribute_instances` —— 两个**判据类**入口,跑出来的数要能事后归因 ⇒ 现在 **22 个**;
+⚠️ **计数以 [CLAUDE.md](../CLAUDE.md) 常用命令那一行为准**,这里只是当时的快照):
+用户裁决的覆盖范围(16 = 训练 3 + 推理/评估 13)外加
 **2026-09-27 补入的两个 SLAM 链路入口**(`slam/slam_odometry`、`slam/slam_backend` —— 前端 12.6 min、
 后端 11 min 却都**只在末尾落盘**,中断即零痕迹,是这三类里留痕价值最高的一对);
 **采集器(`sim/collect_*`)、数据组装(`map/assemble_*` / `merge_train_infos`)、标定探针(`calib/*`)仍不在其中** ——
@@ -275,11 +279,45 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | `assemble_traj_pt.py` | CARLA 轨迹 → HiVT TemporalData 组装(纯值) · 落 `logs/` 三件套 |
 | `convert_hivt_pt.py` | plain dict → HiVT TemporalData(在 hivt env 跑) · 落 `logs/` 三件套 |
 
-### `gs/` — 3DGS(1)
+### `gs/` — 3DGS(3)
+
+> 本目录**有重建、有归属,还没有编辑**:`train_3dgs_mini` 出高斯,`attribute_instances` 把每个高斯
+> 认到一个 CARLA 实例上(`edit-3dgs-plan.md` 阶段 B)。**许 torch,禁 carla**(层守卫强制)。
 
 | 文件 | 职责 |
 |---|---|
-| `train_3dgs_mini.py` | 3DGS mini 训练(gsplat 光栅化) · 落 `logs/` 三件套 |
+| `train_3dgs_mini.py` | 3DGS mini 训练(gsplat 光栅化) · 落 `logs/` 三件套。`--val-frames` **默认自动取 5 帧**(旧默认 `0` 是"psnr_val 算在一张坏帧上"的一半原因);`--cam-convention {carla,legacy}` **2026-10-04 起默认 `carla`** —— 旧口径 `rw = Rz(yaw)@Rx(pitch)` **不是 CARLA 的相机系**(`means*.npy` 不在世界系,归属没法用),`legacy` 只为**复现归档**(§A.1–A.3 的 PSNR 表 / `means*.npy` / `gaussians*.ply`)而留;默认值抽成常量 `DEFAULT_CAM_CONVENTION`(**唯一落点**,判据 `TestDefaultConvention`)。实测判据与量级见 `edit-3dgs-plan.md` §B.4。⚠️ **跑之前先读模块头注的「用法」**:不带 `CUDA_HOME=/usr/local/cuda-11.8 PATH=/usr/local/cuda-11.8/bin:$PATH` 会让 torch 的 JIT 缓存 hash 不命中、**用 nvcc 13.0 重编并静默覆盖规范 `.so`**(包括一次性探针 `python -c "import gsplat"`);`--densify` **默认关,且 2026-10-04 起确认应当关**(carla 口径下两个 seed 一致更差,见 §A.4.1 ②) |
+| `cuda_env.py` | `import gsplat` **之前**必须做完的两件事的唯一落点:设 `TORCH_CUDA_ARCH_LIST`(预置值先过一遍 `_get_cuda_arch_flags()`,不可用就换实卡架构)、检查 `CUDA_HOME`(不设时 torch 的扩展缓存 hash 不命中 ⇒ **重编并静默覆盖规范 `.so`**,实测代价 ≈1 h)。★ 取 gsplat **只能走 `ensure_gsplat()`** —— 裸 `import gsplat` 会被 `ruff format --fix`(isort) 挪到本模块之前,顺序就没了(2026-10-04 实测被自动修坏过一次)。AST 守卫 `tests/gs/test_cuda_env.py` |
+| `render_gs.py` | **离线渲染器**:加载盘上一份高斯(`means/rots/scales/col/opac` 五件套)+ capture → 渲染指定帧,落 PNG(目检)+ npy(判据用,PNG 是 8 bit 判据不能吃)。`rasterize()`/`mse_to_psnr()` 从训练脚本抽出**共用**(唯一口径);`--verify-json` 复算逐帧 PSNR 与 `train_result*.json` 对账(容差 ≤1e-3 dB)—— **专抓「两套渲染口径」那类不报错的错**。⚠️ 别写成两层:训练时的渲染与编辑后的渲染必须是同一套 |
+| `edit_gs.py` | **按实例 id 编辑一份高斯**(目前只有「删」)。★ 两条纪律都对应**删错了但看着像成功**:① `-1`(未归属)一个不许动 —— 删它等于删整片背景,而那渲染出来只是「场景没了」;② **删掉 0 个必须抛** —— 静默成功会让下游把「编辑前后一模一样」读成「这个物体删不掉」。`--prop-json` 从 `capture/prop.json` 读 `instance_id`(编辑对象的**权威来源**),`--list` 看 id 直方图(含未归属占比) |
+| `eval_edit.py` | **编辑判据**:**三档 + 分区**。三档 = 不编辑基线 / 编辑后 / **天花板**(B 自己训一份) —— 少一档,"20 dB"无从解读;分区 = 只在**真值掩膜**(A 的实例图 == `instance_id`)内算,全场均值会把窟窿稀释掉。★ **A/B 配对是硬门槛**(位姿最大差 > `1e-6` 直接拒,别放宽成 P1 的 0.07 —— 两者量的不是一回事);**掩膜为空 = 未判**(第三态) |
+| `frame_sync.py` | **capture 的帧同步判据**(离线纯值):逐帧 `>50 m` 占比 / 中位深度 / 相邻帧平均绝对差,**首帧必须与其余帧同分布**。第三态:帧数 < 5 ⇒ **未判**。⚠️ "其余"取 **p5–p95 / 中位**而不是 min/max —— 首版用 max 时"2 帧瞬态"恰好顶住上界,**差点放过去** |
+| `lidar_ab.py` | **LiDAR 的 A/B 判据**(纯值,禁 carla/torch):**确定性**(位姿差 / 点数)与**「靶有多大」**(世界系最近邻距离 + 点数差)。★ **自带对照**:遮挡物在车前 ⇒ `x<0` 的后方**必然**只有位姿抖动,是该对自身的 floor。★ **不是「逐点相同」** —— 实测 A/B 位姿本就差 **0.0619 m**(对相机可接受、对 LiDAR 是整片平移)。结论见 [edit-pointcloud-plan.md](edit-pointcloud-plan.md) §1/§2 |
+| `attribute_instances.py` | **Gaussian → 实例归属**:逐帧投影读 `inst/*.png` 的 id 投票取众数(`min_samples` / `min_share` 不足 ⇒ **未归属 -1**),落 `outputs/3dgs/attr{_tag}.npy`。判据 = **跨视角一致率**(偶数帧/奇数帧各自独立投票)+ 两条对照(**平凡基线** `Σpᵢ²` / **随机置换**)⇒ **裁决用 κ**,不用倍率(基线 0.844 时倍率式子无解,见模块头注)。`--self-test` 用合成夹具(那里的一致率**同时是正确率**);`--shuffle-inst` 是反向自证 |
+
+### `edit/` — 图像/场景编辑(11)
+
+> **新能力面(2026-10-05 用户裁决"成项目模块,放 `edit/`")**。生成模型(StyleGAN3 / ControlNet)
+> 的后端与条件源。**许 torch,禁 carla** —— 条件源吃的是盘上**已采好**的数据(真值深度 /
+> 语义 tag / RGB),采集是 `sim/` 的事(与 `perception/` 同形:评测层不连仿真器)。
+> 两个官方 repo 克隆在 `hdMapGitHub/` 且**保持 pristine** —— 全部版本适配收在 `cldm_backend`。
+> 计划与全部实测见 [edit-image-plan.md](edit-image-plan.md)。
+
+| 文件 | 职责 |
+|---|---|
+| `cldm_backend.py` | ControlNet 官方 repo 的**唯一落点**。**6 处版本适配**(① 传递 import 要 `pytorch_lightning` ② PL 2.x 挪走 `rank_zero_only` ③ torch 2.6 的 `torch.load` 默认 `weights_only` ④ CLIP 文本塔 **196 键** `text_model.` 前缀 ⑤ 官方 demo 隐含要求**方图** ⑥ `MidasDetector` **自己不 resize**,喂 375² 会在 ViT 里报 `a (577) must match b (530)`)+ 权重 **sha256 校验**(边车按 `(size,mtime)` 缓存,边界"能改 mtime 的人能骗过它"**明写成测试**)+ 两个官方条件估计器。★ **缺键必须抛**:宽松加载会把缺的键当随机初始化,**模型照样出图**,CLIP 那一半是白噪声 |
+| `depth_cond.py` | **纯值(禁 carla/torch)**:度量深度 → ControlNet 条件图。口径对齐 `annotator/midas/__init__.py` 的 `disparity → 逐图 min-max → ×255`;真值侧补 `1/d`。**三种保序归一化** `{minmax, histeq, match}` —— 它存在的理由是一个**ρ 看不见的**缺陷:`1/d` 把远场压成窄带 ⇒ min-max 出来是**发灰平场**,而 ControlNet 吃**像素值**不是排序。判据 `spearman`(对单调变换不变) |
+| `conditioned_gen.py` | CLI:**条件源组装 → 生成 → 条件保真度(带对照臂)**。`--kind {gt-depth,midas-depth,canny}` × `--normalize` × `--fidelity`。★ 头注列了这把尺子的**三条已知边界**(整图 ρ 被共享先验撑满 / ρ 看不见强度分布 / MiDaS 本身在 512² 中心裁上不稳)⇒ "ρ 高既不充分也不必要",主判据用**余量**(自比 − 对照)。⚠️ hint 必须 **3 通道**(官方靠 `HWC3()` 复制),漏了会在 `openaimodel.py` 深处报 `expected input[2, 1, 512, 512] to have 3 channels` |
+
+| `kitti_square.py` | **KITTI root → 方裁 root**(纯值,禁 carla/torch)。落 `image_2`+`label_2`+`pose`+**`depth`(有则按同一仿射裁)**。生成管线吃 512² 方图,而采集帧是 1242×375 ⇒ **图裁了而框没裁不报错,只让下游 AP 崩掉**。`label_2` 的 2D 列(4–7)做同一仿射、**3D 列原样不动**(动它们 = 伪造几何);`clipped` 与 `dropped_out` **分开计数**(裁断样本按 2D 口径红线必须单独分类)。★ **不落 `calib`/`velodyne`** —— 裁剪后主点要平移重缩放,落一份没改的比不落更危险。★ 中心裁起点与生成侧 `to_square_rgb` **同一套取整**(`(w-s)//2`),有机械判据 `test_crop_matches_generator`(差 1 px 不报错,只让 AP 莫名低) |
+| `downstream_eval.py` | **下游闭环判据**:四臂(晴 / 真值雾 / 生成雾 / **对照**)配同一套 GT 跑 `perception.eval_2d_ab`,报 **ΔAP 三档**。★ **对照臂是分辨力来源** —— 两版都错过:① 转 GT ⇒ GT 条数变了;② 转图 ⇒ **与 C 臂逐位相同**,因为 `eval_2d_ab` 把框**池化**、配对顺序不起作用 ⇒ 现有版本取**后半程的图配前半程的 GT**(图集合真的不同) |
+
+| `degrade.py` | **人工注入退化**(纯值,禁 carla/torch):运动模糊 / 高斯噪声 / 雨痕 / **全局遮蔽雾** / ★ **距离相关雾**。依据是本仓红线「**CARLA 无运动模糊,退化只能人工注入**」。★ 两条判据钉住:强度 0 **必须逐位恒等**、**seed 逐帧固定**。★★ **`fogdepth` 是本轮最强的一条**:全局遮蔽雾做到亮度 186 只掉 **−0.002**,而**距离相关雾**(用**真值深度** `t=e^(−βd)`)β=0.10 掉 **−0.262**(生成图上 **−0.348**)⇒ **能移动检测器的是"退化随距离增长",不是"雾有多白"** |
+| `noise_curve.py` | **「强度 → ΔAP」标定曲线**:给另外两种退化当标尺,`fit_equivalent_level` 把某个 Δ 投影回曲线。★ 实测**在本后端上立不起来**(三种注入 9 档全落在 ±0.011)—— 那是**检测器的性质**,不是工具的错;`--backend yolo` 再跑才有意义 |
+| `video_edit.py` | **视频编辑的时序一致性**(JD 明确列了)。判据 = 相邻帧**结构跳变**,两条自证:**与真值序列比而非与 0 比**、**打乱必须报更大**。⚠️ 描述子**刻意不用 MiDaS**(它自己就抖,拿抖尺量抖分不开);两侧**必须先中心方裁**再比(画幅不同比的是构图) |
+| `harmonize.py` | **和谐化**:没有真值靶 ⇒ 立**代理**(生成图与真值帧的 LAB 一阶/二阶统计距离),方法只做基线(`Reinhard`),**两条判据**:下降**且**与「对齐到别帧」的对照分开。★ 踩到一个真缺陷:OpenCV 的 LAB **有两套量纲**(uint8 `L∈[0,255]` vs float32 `L∈[0,100]`),混用让 L 通道彻底错。★ 掩膜版(`dilate`/`context_ring`/`reinhard_transfer_masked`/`lab_stats(mask=)`)给 `harmonize_target` 用 —— **掩膜外必须逐位不变**(第一版整幅 `from_lab` 出去,RGB→LAB→RGB 有损,把外面也改了) |
+| `calibrate.py` | **β 标定产线**(§5 #14)。一条命令 = **扫曲线 + 拟合 + 出配方**(`--apply` 直接落产物),并**自动报曲线是否单调**。★★ **默认 `--grid-points 101`**:11 点口径下曲线**不单调**(实测 `+0.0763 / −0.0026 / −0.0013`),拿它内插 = 把尺子的台阶当退化效应(见 `perception/eval_2d_ab` 头注)。★ 落不上曲线时返回 `β=None` —— **那是结论不是失败** |
+| `harmonize_target.py` | ★★ **和谐化的真值靶**(§1.12):A/B **同帧跨天气**粘贴 —— 背景/真值 = A 天气第 f 帧,补丁 = B 天气**同一帧**的车辆框区域,真值 = A 帧原样,掩膜 = GT 2D 框。⇒ **精确真值,不是代理**。★ 几何由 A/B 硬门槛保证**且可验**:`box_shift` 实测 70 帧 max **0.31 px**(超 2 px 当场抛)。★ 两条自证:补丁取自真值本身 ⇒ 距离必须 0;**行序颠倒 ⇒ `box_shift` 必须 0**(两家 root 的 `label_2` 行序真的不同,逐行 zip 会读出 215 px 假错位) |
 
 ### `utils/` — 通用件(4)
 
@@ -301,6 +339,7 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 |---|---|---|
 | 纯值库单测 | `test_geometry.py` `test_calib.py` `test_gt.py` `test_compare.py` `test_paths.py` `test_scenarios.py` `test_static_gt.py` `test_traffic_light.py` `test_semantic.py` `test_radar.py` | 手算断言,不依赖 carla / AutoLabel |
 | 运行日志 | `test_runlog.py` | 三件套契约的**纯值**回归钉(不依赖 carla/torch/GPU)。`TestHeader` 钉头块 `script`/`started` 正则/`argv`/`cwd`,**且指纹只采一次**(monkeypatch 计数器 —— 重采会让同一跑的 `.json["gpu"]` 与 `.log` 头块不一致);`TestTee` 钉 `print()` 进 `.log` + **`__getattr__` 全量代理**(`isatty`/`encoding` 与内层流一致)+ **恢复的是构造时那个对象**(`sys.stdout` 身份相等,自证 `capsys` 不被破坏);`TestRegistries` 钉**同名重复登记去重**(同一文件登记两次只留一行 —— `inputs` 是"读了哪些"的**集合**,不是调用流水账)+ 不存在的路径记 `missing` **不虚报** + `artifact_dir` 的 `n_files`/`bytes_total`;`TestFailure` 钉 `ValueError` → traceback 进 `.log` / `status="error"` / **异常照常抛出**,`SystemExit(1)` → `exit_code=1` / `status="failed"`;`TestSwitches` 钉 `AUTODRIVEDATA_RUNLOG=0` 与 `sys.argv` 里的 `--no-runlog` 都**一个文件不建**;`TestFingerprint` 钉无 CUDA / 非 git 下取 `null` 而**不抛** |
+| **图像编辑(2026-10-05)** | `edit/test_depth_cond.py`(36) `edit/test_cldm_backend.py`(24) `edit/test_conditioned_gen.py`(15) `edit/test_calibrate.py`(12) `edit/test_harmonize_target.py`(14) | 三个文件**全部不出模型、不读 5.71 GB 权重**。被测契约全是**静默型**:条件图方向反了(`1/d` 漏掉 ⇒ 白 = 远,**`minmax` 也是单调的所以"看着像样"**)只有拿错误写法与正确写法做 Spearman 才分得开(实测 **−0.988**);CLIP 196 键前缀重映射错了会走到 `load_state_dict` 报一堆不相干的键,而**宽松加载会把缺的键当随机初始化 —— 模型照样出图,CLIP 那一半是白噪声**;权重 sha256 缓存边车按 `(size,mtime)` 命中,**"能改 mtime 的人能骗过它"这条边界明写成测试**(同族的 `ptp` 断言也曾因为"min-max 按定义就铺满量程"判红过 —— 量的应是**中段占比**);hint **必须 3 通道**(官方靠 `HWC3()`,漏了在 `openaimodel.py` 深处报 `expected input[2, 1, 512, 512] to have 3 channels`);三个条件源**尺寸必须都是 `COND_OUT`**。★ 三条断言是**我自己写过头**后被实测打回的(`== -1.0` / `== 逐位` / `ptp`),都改成带容差或换统计量,并把"为什么不是严格相等"写在注释里。★★ 2026-10-06 补:`test_calibrate` 钉**口径默认必须是 101** + `--grid-points` **真的传下去了**(AST 判据 —— 同族 `noise_curve --levels` 曾被静默忽略);`test_harmonize_target` 钉**行序无关的 `box_shift`**、**掩膜外逐位不变**、**对齐超限当场抛**、以及"补丁取自真值 ⇒ 距离 0"的管道自证 |
 | **层守卫** | `test_layer_guard.py` | **包纪律的可执行版本**(docs/refactor-2026-09.md §3):`LAYER_RULES` = 目录 → 禁止 import 的三方名,最长前缀匹配。旧版(`test_paths.py` 的整包禁令)的两个洞已堵:**马甲库**(`ultralytics`/`mmdet3d`/`mmcv`/`lightning` 会拉起 torch 但字面无 torch)、**字面量动态导入**(`importlib.import_module("x")`)。`TestPackageLayers` 扫真实包 + 强制新子目录必须显式声明;`TestLayerGuardSelfCheck` 用**合成源码注入**做立论自证(12 条:抓得住三类违规,且规则能区分、不是"见 carla 就红") |
 | **文档守卫** | `test_docs.py` | **「文档/入口不腐」的可执行判据**(2026-09-26 重构后补 —— 那次 21 条引用失效**全是静默的**,只有照着做的人拿到 `FileNotFoundError`;失效模式与 `paths.py::parents[1]` 同族:写的时候对、挪了之后静默错)。三类:① `CLAUDE.md`/`README.md`/`docs/fileTree.md` 的 markdown 链接目标必须存在;② 同三份文档里的 `python -m autodrivedata.<...>` 必须 `find_spec` 可解析;③ **包内 `.py` docstring 的 markdown 链接**必须存在。**第三类是第一版的漏网** —— 只扫 `.md` 时,`utils/fonts.py` 等处的 **16 条**坏链在「全文档坏链 0」的结论下整体逃检 ⇒ **判据的覆盖范围本身也是判据的一部分**。每条各带一条**扫描器自证**(防正则腐化后空过)。只判机械可判者:docstring 里的裸文件名不算路径;形如**方括号后紧跟圆括号单位**的**单位注记**(如米/像素、度、yaw=0)由后缀白名单滤掉(不加会多 9 条假阳性)。**`.`md` 侧不加白名单** —— 那里 `]` + `(` 就是 Markdown 链接,写它就是真坏链(本行的初版用实例演示,当场把守卫测红) |
 | 地图矢量线 | `test_opendrive.py` `test_mapvec.py` `test_mapvec_schema.py` `test_mapviz.py` `test_chamfer_ap.py` `test_chamfer_gpu.py` | 含闭式解手算锚点与真实 xodr 计数锚点 |
@@ -318,6 +357,11 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | 配置图 / 覆盖表 | `test_rigviz.py` | **交付物图的数值侧回归**(纯值,PIL + numpy)。`TestCoverageTable`:wide 三个盲区**逐项等于设计预算**(7.3353/6.0984/1.7224 = 15.1561°、覆盖 0.9579)、官方 rig 零盲区;重叠对的 `span` 必须落在两个相机各自的扇区里(共视探针按它摆锥)。`TestAzimuthIndependentImplementation`:`rigviz.azimuth_of` == `camera_rig.camera_azimuth_nus`(两套独立实现)。`TestRigLayoutFigure`:**盲区红弧"有当且有、无当且无"**(官方 0 个盲区 ⇒ 0 红像素;wide 有 ⇒ >0)+ 六通道都有画色与短码。`TestRulerLanes`:底尺**跨 0° 不崩**(`360.0 % 360 == 0` 会让 `rectangle` 抛 `ValueError`)+ 盲区红**列数** ∝ Σ盲区度数 + 六条泳道都画出来 + 页脚折行后每行实测宽 ≤ 画布且不压数字表。**不钉排版/错别字**——那些写成断言只会得到"改个字就红"的脆测试 |
 | 绘制字体 | `test_fonts.py` | **中文字形不许静默变豆腐块**的回归钉。`TestProbe`:探针立论自证(`U+10FFFF` 在任何字体下都落 `.notdef`)+ **DejaVu 被正确判否**(它有 `−`/`°`/`★` 却画不了中文 ⇒ 判据不是"文件在不在")+ 生效字体实测能画中文。`TestRendering`:两个不同汉字在**画布上必须像素不同**(最强钉——豆腐块下它们逐像素相同)、`sanitize` 后零缺字 / 替换目标自己画得出 / 不等长(排版不错位)、CJK 宽 ≈ 2× ASCII(HUD 底条据此定宽)。`TestDrawnStringsAreRenderable`:**AST 扫全仓绘制字符串**(8 个绘制模块 × 绘制调用实参 + `hud_line` 之类构造器**函数体**——漏后者 `calib_live` 整行中文 HUD 会逃检)⇒ 逐个 `sanitize` 后零缺字;另有**根因钉** `test_no_module_draws_with_a_bare_text_call`(不许出现不带 `font=` 的 `d.text(...)`)与每模块 `import fonts` 钉 |
 | **验收补钉(2026-09-28)** | `tests/perception/test_sem_bev.py` `tests/calib/test_viz_layout_cmp.py` | 两条都补的是**同一类失效:CLI 早就跑不起来,而 pytest 全绿**(见 [docs/acceptance-2026-09-28.md](acceptance-2026-09-28.md) §4.1/§4.2)。`test_sem_bev`:桩模型跑通 YOLOPv2 掩膜链(**该模块此前零覆盖**),顺带把一直没人测的 letterbox→裁 padding→缩回原图几何钉住(含反例对照:把带挪位置,输出必须跟着挪);并 AST 钉住"外部 `utils` 包不许回来"(注意与 `traj/convert_hivt_pt.py` 的 HiVT `utils` 是**同名多义**,别混)。`test_viz_layout_cmp`:`--a`/`--b` 必须真的决定**读图**路径 —— 两个 root 的图染成**纯红/纯蓝**,断言两张输出各自取自自己的 root(路径再写死必然同色);**改代码前先确认它对旧逻辑报红** |
+| **3DGS 阶段 B(2026-10-04)** | `tests/gs/test_frame_sync.py`(12)`tests/gs/test_attribute_instances.py`(20)`tests/sim/test_collect_3dgs.py`(17) | 三组都钉「**不报错、只是数偏**」类失效。**帧同步**:坏首帧必须红、干净首帧必须绿、**帧数不够必须 `None`(未判)**、尺寸不等的两帧比 mean **必须抛**(广播出来的 `mean` 是个看着正常的错数)、**两三帧坏掉不许把"其余"的统计量撑起来**(首版用 min/max 时正是这么差点放过去的)。**归属**:★ **向量化 `project_points` 与 `calib.core.world_to_img` 逐点对拍**(投影口径只许有一套实现)、已知布局逐点还原、视场外/身后必须判无效、`min_samples`/`min_share` 各自生效、**打乱实例图后一致率必须塌到 κ 基线**、两半无共同归属必须**未判**;★ `TestCamConvention`:同一位姿下 `carla` 口径的 viewmat 与 `world_to_img` 差 <1e-3 px 而 `legacy` 差 >20 px(**它必须能红 —— 否则它就不是判据**)。**采集器结构钉**:`make_kind_blueprints` 必须逐字设 `CAM_ATTRS`(用假 `bp_lib` 问,不读代码)、`apply_pose` 四路同一个 tf、主循环必须走 `shoot_synced` 且**不许再出现 `q.get(`**(旧写法 = 恒定滞后 2 帧) |
+| **CUDA 环境顺序(2026-10-04)** | `tests/gs/test_cuda_env.py`(12) | ★ **AST 扫全包**:除 `cuda_env.py` 外,`gs/` 里任何模块的**顶层**不许出现 `import gsplat` —— 那让正确性依赖"两行 import 的先后",而 `ruff format --fix`(isort) 会把 gsplat 挪到 first-party 之前(实测坏过一次)。再加一条宽松档:碰了 gsplat 的模块必须 import 过 `cuda_env`(覆盖"删掉 `ensure_gsplat()`、改函数内懒 import"这条绕过路径)。另有 `_arch_list_usable` 的行为钉(拒 `10.3`、收 `8.6`)+ **探针不许留副作用**(只问一句,不是设置)+ 豁免名单不许是死链 |
+| **离线渲染器(2026-10-04)** | `tests/gs/test_render_gs.py`(10) | 两条被测契约都是**不报错的错**:① `rots` 缺了 —— 渲染**照样跑得起来**(gsplat 不在乎你给的是不是训练出的四元数),只是结果不是那个模型 ⇒ `test_missing_rots_raises` 是它的直接反例;② `opac` 存的是**已 sigmoid** 的值而渲染只 clamp ⇒ `test_opacity_is_not_double_activated` 按**行为**钉(双重激活必须给出不同结果;若夹具恰在 0/1 附近使两者相同,判据自己会喊"失去分辨力")。另有 `parse_frames` 越界**必须抛不许静默截断**、五件套往返逐位相同、长度不齐当场抛。⚠️ 真调 gsplat 的那 2 条**没给 `CUDA_HOME` 就跳过**(见 `_NEEDS_CUDA_ENV`)—— 不是"通过了",是**第三态** |
+| **编辑算子与判据(2026-10-04)** | `tests/gs/test_edit_eval.py`(23) | 三条被测契约都是**删错了但看着像成功**(`-1` 被顺手删 / 请求的 id 一个没命中却静默成功 / A/B 位姿其实对不上),加一条**第三态**(掩膜空 ⇒ 未判)。三档读数有**手算锚点**(误差 0.1/0.01/0.001 ⇒ PSNR 20/40/60,缺口 40、补上 20、闭合率 0.5);掩膜与全局**真的分区**(误差只在掩膜内时两个数必须分开)。另有**冒烟才抓到的两条接线问题**钉:`--list` 不该被 `--out-tag` 卡住、`check_ids` 必须排在 `load_set` **之前**。全部带反向自证(去掉 `-1` 守卫 / 去掉「删 0 个报错」/ 把容差放宽成 0.07 ⇒ 各自当场红) |
+| **训练环境的三个静默失效(2026-10-04)** | `tests/gs/test_train_3dgs_mini_env.py`(12) | 三条底层机制**同一个**:设置与使用之间隔着别的东西。**`--seed`(4 条)**:覆盖**不报错、不改任何输出形状**,只有"换个 seed 数字、结果一模一样"才看得出来 —— `TestSeedEverything` 钉三处随机源真的被钉住、★ **换 seed 必须换序列**(原 bug 的直接反例)、`-1` 不动上游;`TestNoClobber` 是**源码顺序钉**(`_seed_everything` 之后到读数据之间不许再出现 `manual_seed` / `.seed(`,只看代码行)。**`CUDA_HOME`(4 条)**:`TestCudaNote` 钉 ★ **告警块必须排在 `import gsplat` 之前**(torch 的扩展缓存按 flags 的 hash 定位,环境不同 ⇒ **重编并覆盖规范 `.so`**,而不是报错)、`CUDA_NOTE` 在未设/已设两种环境下各说对、**`CUDA_HOME` 进了 runlog**(跨 build 不许混比的前提)。**相机系默认值(4 条)**:`TestDefaultConvention` 钉默认是 `carla`,且 ★ **签名与 argparse 都取同一个常量 `DEFAULT_CAM_CONVENTION`**、源码里**不许再出现任何写死的 `default="…"`** —— 那个默认值**翻过一次**(`legacy`→`carla`),两处各写一个字面量正是"改了一处、另一处还是旧值"的静默失效;另钉 `legacy` 仍**可选**(归档产物要靠它复现)。三条都有**反向自证**:seed 那行放回去 / 告警块挪到 import 之后 / 常量改回 `legacy` 或只在 CLI 处写死 ⇒ 当场变红 |
 | MapTR 数据划分 | `test_maptr_select.py` | **留出划分与多段组装的回归钉**(§P-M.12)。两条被测契约都是**静默失效型**:划分有交集只会让 AP 看起来更高、`data_path` 前缀写错只会让旧命令指错文件 —— 都不报错。`TestSelectFrames`:路线级(`--exclude-seg seg4`)与帧级(`--keep-in-seg 0:2`)两侧**互斥且并集为全集**、边界左闭右开、选择器取交集、**段名拼错必须 `ValueError` 而不是空列表**、旧单段 infos 不带选择器照旧可用。`TestArgParsing`:`parse_segs` 空串/纯空白 → `None`;`parse_frame_range` 拒绝 `80` / `80:100:2` / `100:80` / `5:5`。`TestRootsAndPrefixes`:单段前缀空 / 多段 `segK/`、glob 只收目录、必须且只能给一个来源。`TestHistoryWindows` / `TestWindowDataset`(时序窗口,§P-M.12 阶段 4):窗口**不跨段**、**不跨切分**(训练/留出各自只见自己的帧,窗口帧 ⊆ 本切分池)、段首帧丢弃且计数上报、`frame` 在段缝连续故**不许**当历史键、`window=1` 返回结构与单帧基线逐字节相同。`TestOverfitGate`(假警报型,§P-M.12):过拟合闸门按**实际训练样本数**判(`is_single_frame_anchor`),`320/400/500` 全不是锚点;外加**静态根因钉** —— AST 扫源码禁止 `args.frames` 与整数字面量比较(只禁这一形态,`args.frames > len(sel)` 的截断检查合法),因为"再写回 `args.frames > 1`"就是本条缺陷的复发式 |
 | MapTR 自实现 | `test_gkt.py` `test_head.py` `test_device.py` | 单帧过拟合正确性锚定。`test_gkt` 三条**回归钉**:`test_pose_rotation_order_is_carla_convention`(换序)、`test_scale_k_to_feature_resolution`(K 缩放)、`test_gkt_valid_coverage_on_real_rig`(真实 rig BEV 可见率 ≈94%,修前 1.25%) |
 | 地图格式(§P-M.15/.16) | `test_lanelet2.py` `test_apollo.py` `test_stitch.py` | **往返是主判据**:六类 + 重复键 attrs + id/src + **顺序**逐字段全等;投影往返 < 1e-4 m 且**换 origin 结果必须不同**(防投影没生效);origin 随文件走、缺 origin **报错不猜**;格式合法性与**元素计数一致**(防静默丢要素);**第三方文件按语义标签尽力读回**;Apollo 侧另钉「`lane` 不许把 `left/right_boundary` 的点吸进 `central_curve`」与「按种类分组读**不许打乱顺序**」;**含 z** 逐分量往返(Town11 的 791 m 是压力点)。`test_stitch`:恒等 placement **返回同一对象**、单图拼接**逐位不变**、计数守恒、**z 保真**、去重容差边界、**同图内部不去重**、**单点要素参与去重**、变换口径手算钉 |
@@ -362,6 +406,9 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | `acceptance-2026-09-28.md` | **全能力面验收记录**(2026-09-28):一次"从零把整条流水线重跑一遍"的逐数字对账(§0 扫描表)+ 复跑中新发现的 11 条问题(3 条已修并补回归钉、4 条待用户裁决、4 条口径注记)+ 产物索引 + 复跑须知。复跑入口 = [tools/showcase.py](../tools/showcase.py) |
 | `ros2-humble-build.md` | **ROS2 Humble 源码构建记录**(2026-09-28,**环境侧**):三档成本实测(136/158/349 源码包)、四步命令与每步的坑、踩坑清单、构建期 github 抓取的镜像注入。**与能力线无关**(主线有意纯 numpy 不吃 ROS);`github.com` SNI 级被封的判据也在这一份 |
 | `ros2-feasibility.md` | **ROS2 引入可行性评估**(2026-09-28):结论 = **不引入**。三条判据(GIL 疼点已被"同步执行"绕过 / 教程能力线 16 次选择不用它 / 代价可量化而收益不可量化)+ **分层守卫会静默失效**(`rclpy` 不在任何禁用集里)+ 工业惯例三层对照 + 唯一真候选(FAST-LIO2 对标基线)为何区分度低 + **五条触发重评条件**。与 Plan.md §5.12(官方 MapTR/MapQR 复线终止)**无关** |
+| `edit-3dgs-plan.md` | **3D 场景编辑(3DGS)** 探索计划。§A 三条杠杆(分辨率/迭代/致密化)全部实测收口;§B 相机系与帧同步两个前置缺陷;§C.0.3 C1 搁置;★ **§C.0.4(2026-10-05)** = 重开时的 TAA 对照**做完了**,结论**不是 TAA** —— 三条独立缺陷(道具资产**不渲染** / 逐像素签名**尺子无分辨力** / 相机位姿与 `poses_*.json` **差 79.132 m**) |
+| `edit-pointcloud-plan.md` | **点云编辑(LiDAR)** 计划,**已以证伪收口**:实测 A/B 位姿本就差 0.0619 m,而编辑该产生的信号(前方点数差 +2)**小于**对照 floor(−65)⇒ 靶落在噪声里。三个**重评条件**写在 §4 |
+| `edit-image-plan.md` | **图像编辑 / 合成与和谐化 / 域自适应**计划 + **StyleGAN3 与 ControlNet 的真实接入实测**(2026-10-05):两条链都在**现成 env** 里跑通(只加 6 个包 + 4 处版本 shim);★ 关键读数:StyleGAN3 官方权重**全域外**(只有人脸/动物脸)且朴素投影**投不进去**;ControlNet **目检确认在按条件控布局**;★ 结构性发现 = **本项目的真值 depth/seg 正好是 ControlNet 的条件源** |
 
 ## 6 `outputs/` — 产物目录(唯一落点,**不展开子文件**)
 
@@ -428,4 +475,5 @@ batch、sim 用它做设备探测)。放 `utils/` 不行 —— 那层是 `_PURE
 | `lightning_logs/` | 【未入库】HiVT 训练日志与 ckpt(PyTorch Lightning 默认落点) |
 | `auto3dlabel/weights/` | 【未入库】3D 检测微调权重(AutoLabel 消费方) |
 | `hdMapGitHub/` | 【未入库】上游开源仓库克隆:`HiVT` / `MapTR` / `MapTR_maptrv2` / `MapQR` / `FAST_LIO` / `maptracker`,**保持 pristine**,项目侧改动一律放 `autodrivedata/map/maptr/` 与 `autodrivedata/map/maptr_official/` |
+| `hdMapGitHub/stylegan3` · `hdMapGitHub/ControlNet` | 【未入库】**图像编辑线的两个参考仓库**(2026-10-05)。**同样保持 pristine** —— 版本适配全部走 `sys.modules` 替身与键重映射(见 [edit-image-plan.md](edit-image-plan.md) §1),**没有改动这两个 repo 里的任何文件**。权重在 `weights/stylegan3/` 与 `weights/controlnet/`(各带 `MANIFEST.txt` 记 sha256) |
 | `.vscode/` `.claude/` `build/` `*_cache/` | 【未入库】本地 IDE 配置、AI 会话配置、构建与测试缓存 |

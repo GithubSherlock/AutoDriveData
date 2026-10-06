@@ -32,7 +32,17 @@ import pytest
 from autodrivedata.utils import paths
 
 # 文档的权威落点。**新增顶层文档时加进来** —— 否则它不在守卫范围内。
-DOCS = ("CLAUDE.md", "README.md", "docs/fileTree.md")
+DOCS = (
+    "CLAUDE.md",
+    "README.md",
+    "docs/fileTree.md",
+    # ★ 2026-10-06 补:这三份也是"会被人照着做"的文档,而它们的**图片链接**
+    #   从来没被机械检查过(edit-image-plan 有 20 张图挂在上面)。
+    #   「判据的覆盖范围本身也是判据的一部分」—— 本文件头注第二类漏网的同族。
+    "docs/edit-image-plan.md",
+    "docs/edit-3dgs-plan.md",
+    "docs/edit-pointcloud-plan.md",
+)
 ROOT = paths.PROJECT_ROOT
 
 _MD_LINK = re.compile(r"\]\(([^)\s]+)\)")

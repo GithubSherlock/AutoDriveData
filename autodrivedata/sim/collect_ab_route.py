@@ -37,6 +37,7 @@ import carla
 import numpy as np
 
 from autodrivedata.calib.core import CameraIntrinsics, KittiCalibOut, tr_velo_to_cam
+from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.gt.core import ActorBox, box_to_gt_line
 from autodrivedata.gt.export.kitti import write_frame
 from autodrivedata.gt.export.nuscenes import NUS_RADAR_CHANNELS, NUS_RADAR_MOUNTS_CARLA
@@ -54,6 +55,7 @@ from autodrivedata.sim.carla_common import (
 )
 from autodrivedata.sim.collect_nus import RADAR_ATTRS, RADAR_YAW_OFFSET, _latest
 from autodrivedata.sim.collect_slam import ego_pose_matrix
+from autodrivedata.sim.collect_static_gt import assert_synced
 from autodrivedata.sim.occlusion import (
     CAM_FWD,
     OCCLUDER_COVER,
@@ -267,6 +269,22 @@ def _spawn_occluders(
     return placed
 
 
+def make_depth_blueprint(bp_lib: carla.BlueprintLibrary) -> carla.ActorBlueprint:
+    """深度相机蓝图:**属性逐字取 `CAM_ATTRS`**(与 RGB 那一路同一份常量)。
+
+    ★ 这是「深度图与 `image_2` **像素对齐**」这条不变量的**唯一落点**(`--depth`)。
+    挂点(与 RGB 同 `SENSOR_OFFSET`)与这三项(`image_size_x` / `image_size_y` / `fov`)
+    只要有一处不一致,两幅画就不再逐像素对应 —— 而"不齐"在下游**只表现为
+    「GT 框与画面配不上」**,看不出是这里错的(同 `collect_3dgs.make_kind_blueprints` 的纪律)。
+
+    抽成函数是为了让单测能拿一个假 `bp_lib` 直接问"你到底给它设了哪些属性"。
+    """
+    bp = bp_lib.find("sensor.camera.depth")
+    for ak, av in CAM_ATTRS.items():
+        bp.set_attribute(ak, av)
+    return bp
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", required=True, choices=sorted(SCENES))
@@ -312,6 +330,13 @@ def main() -> None:
         default=OCCLUDER_GAP,
         help=f"遮挡物沿**视线**到目标车的距离 m(默认 {OCCLUDER_GAP})。越大越不挡:"
         "墙离车越远就离相机越近,能截到车上的俯角段反而更窄",
+    )
+    ap.add_argument(
+        "--depth",
+        action="store_true",
+        help="多挂一路深度相机(同挂点同 fov → `training/depth/{id}.npy`,米)。"
+        "★ **这是「真值深度 + label_2 同源」的唯一来源** —— 既有 root 里 `kitti_ab_*` 有框没深度、"
+        "`3dgs_sync/capture` 有深度没框。默认关 ⇒ 关着时产物与归档**逐字节一致**",
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
@@ -427,6 +452,17 @@ def main() -> None:
     camera.listen(img_q.put)
     lidar.listen(lid_q.put)
 
+    # 深度(**默认关**):★ 挂点与 fov 取**同一份常量**,不许另写一遍 ——
+    # 只要挂点/fov 差一处,深度图与 `image_2` 就不再像素对齐,而那在下游**只表现为
+    # "GT 框与画面配不上"**,看不出是这里错的(同 `collect_3dgs.make_kind_blueprints` 的纪律)。
+    dep: carla.Sensor | None = None
+    dep_q: queue.Queue = queue.Queue()
+    if args.depth:
+        dep = cast(
+            carla.Sensor, world.spawn_actor(make_depth_blueprint(bp_lib), SENSOR_OFFSET, attach_to=ego)
+        )
+        dep.listen(dep_q.put)
+
     # ---- 5 雷达:与 `collect_surround_lidar` **同一套挂点/形状**(由 NUS_RADAR_* 导出)----
     # 2026-09-30 加:原先 P1 只有相机 + 语义 LiDAR。加雷达是为了补一条与
     # 「LiDAR 不受天气光照」对称的结论 —— 否则 P1 的"非相机模态兜底"只证了一半。
@@ -450,7 +486,7 @@ def main() -> None:
             )
             s.listen(radar_qs[ch].put)
             radars[ch] = s
-    print(f"[sensors] 1 相机 + LiDAR(semantic) + {len(radars)} 雷达")
+    print(f"[sensors] 1 相机{' + 深度' if args.depth else ''} + LiDAR(semantic) + {len(radars)} 雷达")
 
     # 预热:雷达 `sensor_tick` 相位偶发空(实测 ~7%)⇒ 以"每通道至少出过一帧"为就绪判据。
     # **必须在 ego 站定期间做** —— 此处的 tick 不产生 A/B 帧,ego 仍被 brake 钉住。
@@ -479,6 +515,13 @@ def main() -> None:
             world.tick()
             image: carla.Image = img_q.get(timeout=10)
             pts: carla.LidarMeasurement = lid_q.get(timeout=10)
+            # ★ **每 tick 每队列都要抽干**(红线第四次现形那一条)。深度那路同样:
+            # 漏一次 = 那一路整体滞后 N 帧,而"帧号一张张对得上、图一张张出得来",
+            # 症状只是"深度与画面对不上"。
+            dep_img: carla.Image | None = dep_q.get(timeout=10) if dep is not None else None
+            # ★ **同 tick 自证**:两路的 `frame` 号必须相等。`assert_synced` 管的是
+            # "几路彼此同不同步";红线的代价是**恒定滞后**,而它不会自己报错。
+            sync_note = assert_synced([("RGB", image), ("深度", dep_img)])
 
             cam_t, lid_t = camera.get_transform(), lidar.get_transform()
             calib_out = KittiCalibOut(
@@ -525,6 +568,11 @@ def main() -> None:
             image.save_to_disk(str(tmp))
             png = tmp.read_bytes()
             tmp.unlink()
+            if dep_img is not None:
+                # 解码走 `calib.depth_codec.decode_depth`(**唯一口径**,与 `collect_3dgs` 同)
+                dpath = out / "training" / "depth" / f"{i:06d}.npy"
+                dpath.parent.mkdir(parents=True, exist_ok=True)
+                np.save(dpath, decode_depth(dep_img.raw_data, dep_img.height, dep_img.width))
             raw = np.frombuffer(pts.raw_data, dtype=np.float32)
             velo = semantic_to_velodyne_bin(raw.reshape(-1, 6), seed=args.frames * 100 + i)
             write_frame(
@@ -537,12 +585,17 @@ def main() -> None:
                 pose=ego_pose_matrix(ego.get_transform()),
             )
             if (i + 1) % 25 == 0 or i == args.frames - 1:
-                print(f"[frame {i + 1}/{args.frames}] ego x={ego.get_location().x:8.1f} | {len(labels)} GT")
+                print(
+                    f"[frame {i + 1}/{args.frames}] ego x={ego.get_location().x:8.1f} | {len(labels)} GT"
+                    + (f" | {sync_note}" if sync_note else "")
+                )
     finally:
         # **雷达必须一起收**:留着同名 actor 会在下一次采集的"清场"里被漏掉(它不在
         # vehicle/walker/controller 三类里),阻塞后续 spawn —— 与 `collect_surround_lidar`
         # 首跑漏收 5 个 radar 是同一条。**遮挡物同理**(`static.prop.*` 也不在那三类里)。
-        for s in (camera, lidar, *radars.values()):
+        for s in (camera, lidar, dep, *radars.values()):
+            if s is None:
+                continue  # `dep` 在未开 `--depth` 时是 None
             s.stop()
             s.destroy()
         for a in world.get_actors():

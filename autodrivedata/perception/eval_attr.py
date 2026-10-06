@@ -48,6 +48,7 @@ from autodrivedata.perception.attribution import (
 )
 from autodrivedata.perception.backends import (
     BACKENDS,
+    DEFAULT_YOLO_WEIGHT,
     Predictor,
     describe,
     make_predictor,
@@ -247,13 +248,7 @@ def main() -> None:
         metavar="名字=路径:速度",
         help="可重复;速度用于 TTC 归一化(脚本另用 GT 距离自证接近速度)",
     )
-    ap.add_argument(
-        "--weight",
-        default=(
-            "/root/autodl-tmp/Documents/Projects/AutoLabel/auto2dlabel/weights/"
-            "kitti_finetune/yolo11s_kitti/weights/best.pt"
-        ),
-    )
+    ap.add_argument("--weight", default=DEFAULT_YOLO_WEIGHT)
     ap.add_argument(
         "--backend",
         choices=BACKENDS,

@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG
 from autodrivedata.calib.core import CameraIntrinsics, world_to_img
+from autodrivedata.gt.props import is_prop
 from autodrivedata.gt.traffic_light import (
     TrafficLightFrame,
     TrafficLightState,
@@ -60,6 +61,32 @@ SENSOR_MOUNTS: dict[str, tuple[float, float, float]] = {
 def rad(rot: carla.Rotation) -> tuple[float, float, float]:
     """carla.Rotation(度)→ (pitch, yaw, roll) 弧度。"""
     return tuple(np.radians(a) for a in (rot.pitch, rot.yaw, rot.roll))
+
+
+def clear_generated_actors(world: carla.World) -> int:
+    """清掉本仓采集器自己会生成的 actor(车 / 行人 / 控制器 + **全部** `static.prop.*`)。
+
+    返回清掉几个。**清场与收尾共用这一个谓词** —— 两处不同源就是"清一半"这类不可见失败,
+    本项目已经踩满三次:残留车阻塞 pt0(致 fallback 反向出生点)、残留雷达阻塞后续 spawn、
+    残留**遮挡物/道具**让下一轮 A 侧带着上一轮 B 侧的东西采完 —— **最后这条最阴:数据照出**,
+    只是 A/B 的差凭空小一截。
+
+    ⚠️ `static.prop.*` **不在** `vehicle/walker/controller` 三类里,所以要单独带上
+    `props.is_prop`(**覆盖全部 `static.prop.*`,不写死我们自己摆的那几个**)。
+    谓词**宽于 GT 过滤器**:controller 与道具都不进 GT,混用一个谓词会把道具写进 `label_2`。
+    ⚠️ **先 `world.tick()` 再扫** —— `get_actors()` 是陈旧快照,不 tick 会**静默漏清**
+    (同 `sync_mode` 那条:"spawn 完立刻读"拿到的是不含新 actor 的旧快照)。
+    ⚠️ **只扫一遍**(本函数就是那一遍)。先显式 destroy 再让本函数重扫,会给已经不存在的
+    actor 各报一条 `failed to destroy ... not found` —— 数据没错,但"收尾一堆红字"正是
+    `tools/carla_server.sh` 头注记的「崩溃掩盖成功」同款误导。
+    """
+    world.tick()
+    n = 0
+    for a in world.get_actors():
+        if a.type_id.startswith(("vehicle", "walker", "controller")) or is_prop(a.type_id):
+            a.destroy()
+            n += 1
+    return n
 
 
 def ground_z_at(world: carla.World, x: float, y: float, fallback: float) -> float:

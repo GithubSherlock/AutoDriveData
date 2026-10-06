@@ -185,3 +185,76 @@ class TestDimsMatch:
         ln, th, h = OCCLUDER_DIMS["partial"]
         assert dims_match(self._bb(ln + 5e-4, th, h), (ln, th, h))
         assert not dims_match(self._bb(ln + 0.01, th, h), (ln, th, h))
+
+
+class _BP:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.attrs: dict = {}
+
+    def set_attribute(self, k: str, v: object) -> None:
+        self.attrs[k] = v
+
+
+class _Lib:
+    """假的 `carla.BlueprintLibrary`:只记"谁被建了、设了哪些属性"。"""
+
+    def __init__(self) -> None:
+        self.made: list[_BP] = []
+
+    def find(self, name: str) -> _BP:
+        b = _BP(name)
+        self.made.append(b)
+        return b
+
+
+class TestDepthChannel:
+    """`--depth`(2026-10-06 加):「真值深度 + `label_2` 同源」的唯一来源。
+
+    它坏掉的症状**不是报错**,而是"GT 框与画面配不上" —— 而那与"标定错了"长得一样。
+    ⇒ 两条必须机械钉住:**默认关**(否则与归档不可比)、**属性与 RGB 逐字相同**。
+    """
+
+    def test_default_is_off(self):
+        """★ 默认关 ⇒ 关着时产物与归档**逐字节一致**。
+        默认一旦翻了,所有历史 P1 数据集与开关后的口径不再可比(同 `--occluders` 那条)。"""
+        calls = _add_argument_calls("--depth")
+        assert len(calls) == 1
+        a = _kw(calls[0], "action")
+        assert isinstance(a, ast.Constant) and a.value == "store_true", "`--depth` 应当是 store_true 开关"
+        assert _kw(calls[0], "default") is None, "store_true 本来就没有 default(即 False),别多写一个"
+
+    def test_depth_blueprint_takes_exactly_cam_attrs(self):
+        """★ 挂点与 fov 是「像素对齐」的**唯一落点**:三项逐字取 `CAM_ATTRS`(RGB 那路同一份常量)。"""
+        from autodrivedata.sim import collect_ab_route as M
+        from autodrivedata.sim.carla_common import CAM_ATTRS
+
+        bp = M.make_depth_blueprint(_Lib())
+        assert bp.name == "sensor.camera.depth"
+        assert bp.attrs == dict(CAM_ATTRS)
+        assert set(bp.attrs) == {"image_size_x", "image_size_y", "fov"}, "多了/少了属性都算改了口径"
+
+    def test_depth_uses_the_same_mount_offset_as_rgb(self):
+        """挂点也必须是**同一份常量**。源码级判据:spawn 那一行不许出现别的 transform。"""
+        assert "world.spawn_actor(make_depth_blueprint(bp_lib), SENSOR_OFFSET, attach_to=ego)" in _SRC, (
+            "深度相机必须与 RGB 用同一个 SENSOR_OFFSET;另写一个 transform 就失去像素对齐"
+        )
+
+    def test_every_queue_is_drained_each_tick(self):
+        """★ 红线「每 tick 每队列都要抽干」的第 5 个可能现形点:深度队列。
+
+        漏 `get` ⇒ 那一路**整体滞后 N 帧**;漏 `assert_synced` ⇒ 没人发现。
+        而两者的症状都是"帧号一张张对得上、图一张张出得来" —— 这正是这条最毒的地方。
+        """
+        assert "dep_q.get(timeout=10)" in _SRC, "深度队列没有被抽干"
+        assert 'assert_synced([("RGB", image), ("深度", dep_img)])' in _SRC, "两路没有同 tick 自证"
+
+    def test_depth_is_written_next_to_image_2(self):
+        """落点必须是 `training/depth/{fid:06d}.npy`,解码走 `depth_codec`(**唯一口径**)。"""
+        assert 'out / "training" / "depth"' in _SRC
+        assert "decode_depth(dep_img.raw_data" in _SRC, "解码必须走 calib.depth_codec,不许另写一份"
+
+    def test_destroy_includes_the_optional_sensor(self):
+        """收尾必须带上深度那路 —— 留着同名 sensor actor 会在下一轮"清场"里被漏掉,
+        与"5 个 radar 忘收"是同一条(见主循环 `finally` 的头注)。"""
+        assert "(camera, lidar, dep, *radars.values())" in _SRC

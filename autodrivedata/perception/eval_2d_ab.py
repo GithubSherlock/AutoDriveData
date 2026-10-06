@@ -25,6 +25,20 @@ IoU 贪心匹配(conf 降序,每 GT 一次)→ 逐类 PR 梯形积分 AP;类名�
 ★ **读数有三列是给"AP 不动"那种情况准备的**:`命中`(操作点上的 TP)/ `召回` / `检出/GT`
 (过检率)。换到 SAM3 后 AP 在 P1 上对退化不敏感(过检把 recall 撑住了),而这三列照样动
 —— 见 `report` 的 docstring 与 Plan4 §P-V23/§P-V24。
+
+## ★★ AP 是**台阶函数** —— 单条检测翻面最多可换 `1/11 ≈ 0.091`(2026-10-06 实测)
+
+11 点插值的 recall 格点是 `j/10`,格点 `j` **可达** ⟺ `n_tp ≥ ceil(j/10·n_gt)`。
+于是每有一个 `n_tp` 跨过这条线,那一格的 precision 就**从 0 跳成正值**,AP 跳 `p_j/11`。
+
+实测(35 帧 / 单类 Car / `n_gt = 119`):把 `blur` 从 `k=6` 换到 `k=7`,**只多了 1 条
+TP**(`conf 0.360`、`bestIoU 0.540`,压在 0.5 上),`tp 107 → 108` 使 `108/119 = 0.908 ≥ 0.9`
+⇒ 第 10 个格点亮起 ⇒ **ΔAP 从 −0.026 翻成 +0.055**。同一批检测换 **101 点插值**,
+台阶**完全消失**(−0.026 → −0.014,单调)。
+
+⇒ 两条纪律:
+① **ΔAP 必须与 `n_tp/n_gt` 一起读**。`report` 现在会自己喊出"距格点还剩几个 TP";
+② `noise_curve` 这类**要插值/投影**的用途,台阶会直接毁掉拟合 —— 每个点都记下悬崖余量。
 """
 
 from __future__ import annotations
@@ -37,6 +51,7 @@ from PIL import Image
 
 from autodrivedata.perception.attribution import box_iou2d
 from autodrivedata.perception.backends import (
+    DEFAULT_YOLO_WEIGHT,
     GT_CLASSES,
     Predictor,
     describe,
@@ -79,13 +94,20 @@ def detect(root: Path, predict: Predictor, limit: int | None):
     return out, sky_vs
 
 
-def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int, int]:
-    """conf 降序贪心 IoU 匹配 → 11 点插值 AP(与 3D 侧 compare.ap11 同口径)。
+def ap_for(gt_boxes, preds, iou_thr: float, *, n_points: int = 11) -> tuple[float, int, int, int]:
+    """conf 降序贪心 IoU 匹配 → 插值 AP(默认 **11 点**,与 3D 侧 `compare.ap11` 同口径)。
 
     AP 尾部纪律:recall 未达 1 的部分无预测 → precision=0(低 recall 不注水)。
     2026-09-09 教训:旧实现尾行 `ap += (1-prev_r)*prev_p` 把未达 recall 段仍按
     最后 precision 计入——最后一个是 TP 时低 recall 数据被严重吹高
     (雨夜检出 0.48 却报 AP 0.976,触发修复)。
+
+    ## ⚠️ `n_points` 不是调参旋钮,是**分辨率**
+
+    默认 11 是**归档口径**(全仓历史数字都是它,改了不可比)。但 `n_gt` 只有一两百时,
+    11 点会在 max-recall 跨格处跳 `p/11 ≤ 0.091`(见模块头注与 `grid_cliff`)。
+    ⇒ **凡是要"插值/投影/拟合曲线"的用途,必须用细格**(`edit/calibrate` 用 101),
+    否则曲线自己就是台阶状的,拟合出来的东西没有意义。
     """
     preds = sorted(preds, key=lambda t: -t[0])
     matched = [False] * len(gt_boxes)
@@ -112,42 +134,127 @@ def ap_for(gt_boxes, preds, iou_thr: float) -> tuple[float, int, int, int]:
     recalls = cum_tp / n_gt
     precisions = cum_tp / np.arange(1, n_pred + 1)
     ap = 0.0
-    for rq in np.linspace(0.0, 1.0, 11):
+    for rq in np.linspace(0.0, 1.0, n_points):
         hit = recalls >= rq
         p = float(precisions[hit].max()) if hit.any() else 0.0
-        ap += p / 11.0
+        ap += p / n_points
     return ap, n_gt, n_pred, n_tp
 
 
-def report(root: Path, predict: Predictor, conf: float, iou: float, limit: int | None):
-    """逐类报 **AP + 操作点上的命中/召回/过检**。
+#: 11 点插值的格点数。**台阶的量级由它钉死** —— 单格 `p/11 ≤ 1/11`。见模块头注。
+AP_GRID_N = 11
 
-    ## ★ 为什么要加后面那三列(2026-10-03)
+#: 单条检测翻面在 11 点插值下**最多**能换掉的 AP。**这是分辨率,不是误差**。
+AP_GRID_STEP = 1.0 / AP_GRID_N
+
+
+def grid_cliff(n_gt: int, n_tp: int) -> tuple[int, int | None]:
+    """11 点插值的 **recall 可达性悬崖**:返回 `(最高可达格点, 距上一格还差几个 TP)`。
+
+    格点 `j ∈ {1..10}` 的阈值是 `T_j = ceil(j/10 · n_gt)`;`n_tp ≥ T_j` 时该格才"亮起"。
+    `top == 10`(满格)时第二个值是 `None`;`n_gt == 0` 时返回 `(-1, None)`(**不可判**)。
+
+    ⚠️ **这不是数据噪声,是尺子的台阶**。与"AP 复现性下限 2e-3"(边界实例跨过
+    `--score-thr`)是**两个量**:那个是阈值抖动,这个的量级 = `1/11`,比它大 **45 倍**。
+    判据侧的含义:高分辨率下 ΔAP 才可比,`n_gt` 只有一两百时**必须**看这个余量。
+    """
+    if n_gt <= 0:
+        return -1, None
+    for j in range(1, AP_GRID_N):
+        need = -(-j * n_gt // 10)  # ceil(j·n_gt/10),整数算术避开浮点
+        if n_tp < need:
+            return j - 1, int(need - n_tp)
+    return AP_GRID_N - 1, None
+
+
+def fragile_classes(ev: dict, *, tol: int = 2) -> list[tuple[str, int]]:
+    """离悬崖 ≤ `tol` 个 TP 的类(`类名, 还差几个 TP`)。**这些类的 AP 一句话就能翻脸。**"""
+    return [
+        (c, r["cliff_up"])
+        for c, r in ev["classes"].items()
+        if r["n_gt"] and r["cliff_up"] is not None and r["cliff_up"] <= tol
+    ]
+
+
+def evaluate(
+    root: Path,
+    predict: Predictor,
+    conf: float,
+    iou: float,
+    limit: int | None,
+    *,
+    n_points: int = 11,
+    verbose: bool = True,
+) -> dict:
+    """跑一次评测,**返回全部明细**(`report` 只是它的一个壳)。
+
+    ## ★ 为什么要拆出这一层
+
+    `noise_curve` 要拿每个点的 `n_tp/n_gt` 去判"这个点离悬崖多远" —— 只有返回明细
+    才拿得到。**没有它,标定曲线会把插值台阶当成退化效应**(2026-10-06 实测:
+    β=0.04 那一点的 ΔAP `+0.0763` 里有 `+0.066` 是台阶)。
+
+    ## 逐类报 **AP + 操作点上的命中/召回/过检**(2026-10-03 加的)
 
     换到 SAM3 后 P1 的四个 Δ 全落进 ±0.02(而 yolo 口径是 −0.578 / −0.487 / …),
     一度被读成"SAM3 抗退化"。查下去不是:浓雾下**检出数 431→268(−38%)**,退化是真的,
     只是**过检 2.36×GT 把 recall 撑在 1 附近**,AP 的尾部纪律(未达 recall 段
     precision=0)于是无从发力 —— **AP 在 recall 饱和时对退化不敏感**。
 
-    ⇒ 读数补上操作点上的量:`命中`(TP,贪心匹配)/ **召回** / `检出/GT`(**过检率**)。
-    这三个数在"AP 不动"时**照样会动**,是那类退化的落点。
-
     ⚠️ 口径:**都在同一个 conf 操作点上、同一次贪心匹配里出的** —— 不是为了好看另算一套。
     """
     det, sky = detect(root, predict, limit)
     gt_all = load_gt(root, limit)
-    print(f"\n=== {root.name} (conf={conf} IoU@{iou}) 天空带亮度均值 {np.mean(sky):.0f} ± {np.std(sky):.0f}")
-    print(f"  {'类':<11}{'AP':>7}{'GT':>6}{'检出':>6}{'命中':>6}{'召回':>7}{'检出/GT':>9}")
+    rows: dict[str, dict] = {}
     aps: list[float] = []
     for c in GT_CLASSES:
-        ap, n_gt, n_pred, n_tp = ap_for(gt_all[c], det[c], iou)
+        ap, n_gt, n_pred, n_tp = ap_for(gt_all[c], det[c], iou, n_points=n_points)
         if n_gt > 0:  # 无 GT 的类不稀释 mAP(本项目行人 GT 稀疏,见 collect_drive 局限)
             aps.append(ap)
-        recall = n_tp / n_gt if n_gt else float("nan")
-        print(f"  {c:<11}{ap:>7.3f}{n_gt:>6}{n_pred:>6}{n_tp:>6}{recall:>7.3f}{n_pred / max(n_gt, 1):>9.2f}")
-    m = float(np.mean(aps)) if aps else float("nan")
-    print(f"  mAP(有GT的 {len(aps)} 类)={m:.3f}")
-    return m
+        top, up = grid_cliff(n_gt, n_tp)
+        rows[c] = {
+            "ap": ap,
+            "n_gt": n_gt,
+            "n_pred": n_pred,
+            "n_tp": n_tp,
+            "recall": (n_tp / n_gt) if n_gt else float("nan"),
+            "over": n_pred / max(n_gt, 1),
+            "cliff_top": top,
+            "cliff_up": up,
+        }
+    ev = {
+        "root": str(root),
+        "name": root.name,
+        "mAP": float(np.mean(aps)) if aps else float("nan"),
+        "n_classes": len(aps),  # 参与 mAP 的类数(不是 `len(GT_CLASSES)`)
+        "n_points": n_points,  # ★ 口径必须随读数走 —— "11 点"与"101 点"是两把尺子
+        "conf": conf,
+        "iou": iou,
+        "sky_mean": float(np.mean(sky)) if len(sky) else float("nan"),
+        "sky_std": float(np.std(sky)) if len(sky) else float("nan"),
+        "classes": rows,
+    }
+    if verbose:
+        print(
+            f"\n=== {root.name} (conf={conf} IoU@{iou}) 天空带亮度均值 {ev['sky_mean']:.0f} ± {ev['sky_std']:.0f}"
+        )
+        print(f"  {'类':<11}{'AP':>7}{'GT':>6}{'检出':>6}{'命中':>6}{'召回':>7}{'检出/GT':>9}")
+        for c, r in rows.items():
+            print(
+                f"  {c:<11}{r['ap']:>7.3f}{r['n_gt']:>6}{r['n_pred']:>6}{r['n_tp']:>6}"
+                f"{r['recall']:>7.3f}{r['over']:>9.2f}"
+            )
+        print(f"  mAP(有GT的 {len(aps)} 类)={ev['mAP']:.3f}")
+        frag = fragile_classes(ev)
+        if frag:
+            detail = "、".join(f"{c} 距上格 {u} TP" for c, u in frag)
+            print(f"  ⚠ AP 是台阶函数(11 点 recall 格):{detail} ⇒ 单条检测翻面即可换 ±{AP_GRID_STEP:.3f} AP")
+    return ev
+
+
+def report(root: Path, predict: Predictor, conf: float, iou: float, limit: int | None) -> float:
+    """`evaluate` 的薄壳 —— 打印明细,只回 mAP(**老签名,勿改:多处调用方靠它**)。"""
+    return evaluate(root, predict, conf, iou, limit)["mAP"]
 
 
 def main() -> None:
@@ -156,10 +263,7 @@ def main() -> None:
     ap.add_argument("--root-b", default="outputs/kitti_ab_sunset_glare")
     ap.add_argument(
         "--weight",
-        default=(
-            "/root/autodl-tmp/Documents/Projects/AutoLabel/auto2dlabel/weights/"
-            "kitti_finetune/yolo11s_kitti/weights/best.pt"
-        ),
+        default=DEFAULT_YOLO_WEIGHT,
     )
     ap.add_argument(
         "--backend",

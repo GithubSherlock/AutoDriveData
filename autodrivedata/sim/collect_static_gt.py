@@ -279,6 +279,60 @@ def settle(world: _Ticker, queues: list[queue.Queue]) -> list[int]:
     return [q.qsize() for q in queues]
 
 
+#: `shoot_synced` 的追赶上限(管线延迟实测 2 帧,留 4× 余量)。
+MAX_CATCHUP_TICKS = 8
+
+
+def shoot_synced(world: _Ticker, queues: list[queue.Queue]) -> list:
+    """**推进到"当次位姿那一帧"真的落地**,返回各队列的那一帧。位姿须在调用**之前**设好。
+
+    ## ★ 为什么 `settle` 不够(2026-10-04 实测,`collect_3dgs` 的环形采集)
+
+    CARLA 的传感器投递比 `world.tick()` **晚定额 2 个仿真帧** —— 直读验证:
+
+    ```
+    i=0 world_frame=19069 img.frame=19067 差=2
+    i=1 world_frame=19070 img.frame=19068 差=2      # 恒定,不累积
+    ```
+
+    于是"每 tick 取一帧(FIFO 取最旧)"这条口径**恒定滞后 2 帧**,而**帧号一张张对得上**、
+    `assert_synced` 也不会红(几路一起滞后)。`settle` 保证的是"队列不积压",
+    **保证不了这一条**。症状是**整段序列**拍的都不是它自己那个位姿 ——
+    `collect_3dgs` 每帧转 4°,2 帧 = 8° 的系统性错位,而第 0 帧直接变成"归位 spectator 那一帧"
+    (就是 §1.5 那个 22.6% 的读数)。
+
+    ## 处置
+
+    设好位姿 → `tick()` → 记下 `target = snapshot.frame` → 反复"排空 + 取 ≥ target 的最新帧"，
+    直到每路都拿到;还没到就再 tick(位姿没变,所以后面几帧**同样是这个位姿**拍的,可以安全丢弃)。
+    **旧帧一律不取**(它们属于更早的位姿),因此不需要预先 `settle`。
+
+    ⚠️ 代价是每帧多 tick 两次(实测延迟 2 帧)。对 3DGS 环形采集这是必须的:
+    它每帧转 4°,滞后一帧就是 4° 的位姿误差。
+    ⚠️ **其它采集器未实测滞后量** —— 定速直行时这个错位几乎沿光轴,横向看不出(`static_eval`
+    的 ±1 px 带照样全绿)。**不要据此推断它们的滞后量。**
+    """
+    world.tick()
+    target = int(world.get_snapshot().frame)
+    latest: list = [None] * len(queues)
+    for _ in range(MAX_CATCHUP_TICKS):
+        for i, q in enumerate(queues):
+            while True:
+                try:
+                    im = q.get_nowait()
+                except queue.Empty:
+                    break
+                if int(im.frame) >= target:
+                    latest[i] = im
+        if all(x is not None for x in latest):
+            return latest
+        world.tick()
+    raise SystemExit(
+        f"位姿帧 {target} 在 {MAX_CATCHUP_TICKS} 次 tick 内没落地(各路现状:"
+        f"{[None if x is None else int(x.frame) for x in latest]})—— 管线延迟变了,停"
+    )
+
+
 def assert_synced(images: list[tuple[str, _Framed | None]]) -> str:
     """★ **同 tick 自证**:几路相机这一轮的 `frame` 号必须相等。返回一行人读的摘要。
 

@@ -77,3 +77,11 @@ jd_xpeng.md
 # 代价：assets/ 里若放大文件不会被自动拦截，靠提交时人工把关。
 !assets/
 !assets/**
+# ★ 2026-10-06 修:上面两条**含斜杠 ⇒ 被锚定在仓库根**,只放行顶层 `assets/`。
+#   而本仓的证据图全在 `docs/assets/`(计划里那句「证据图进仓」的落点)⇒ **20 张图
+#   从来没进过版本库**,`git add` 直接跳过、不报错。判据 = `git log -- docs/assets` 为空。
+!docs/assets/
+!docs/assets/**
+# 例外里的例外:上面那个 `**` 会把 notebook 检查点一起放行,这里再挡一次。
+# (顺序要紧 —— 挡的这条必须排在放行之后。)
+docs/assets/**/.ipynb_checkpoints/

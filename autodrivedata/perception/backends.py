@@ -100,6 +100,16 @@ def make_predictor(backend: str, weight: str, conf: float) -> Predictor:
     return YoloPredictor(weight, conf)
 
 
+#: **KITTI 微调的 yolo11s-seg/检测权重**的默认路径。★ **唯一落点** ——
+#: 2026-10-06 实测踩到:这个路径原本只写在一个 CLI 的 `add_argument` 里,
+#: 而新写的两个入口把 `--weight` 默认成 `""` ⇒ `--backend yolo` **根本跑不起来**
+#: (`TypeError: model='' is not a supported model format`),而报错在 ultralytics 深处,
+#: **指不到"你没给权重"**。凡是要走 yolo 的入口,默认值**一律取这个常量**。
+DEFAULT_YOLO_WEIGHT = (
+    "/root/autodl-tmp/Documents/Projects/AutoLabel/auto2dlabel/weights/"
+    "kitti_finetune/yolo11s_kitti/weights/best.pt"
+)
+
 #: 各后端的**默认置信度阈值**。**两个数不是一回事,不能互相套用**:
 #: `0.25` 是 YOLO 那边校准过的默认;SAM3 的 score 尺度不同,套 0.25 会放进一大堆
 #: 低分幻觉(实测 `person` 这一条提示单帧就 53 个落在建筑/杆/Static 上的假人)。

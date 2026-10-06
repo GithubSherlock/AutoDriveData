@@ -85,6 +85,20 @@ def camera_rotation_world_to_cam(cam_rotation: tuple[float, float, float]) -> np
     return CARLA_TO_CAM @ r_wc.T
 
 
+def carla_cam2world(cam_rotation: tuple[float, float, float]) -> np.ndarray:
+    """相机 CARLA 位姿 (pitch, yaw, roll)[弧度] → **相机→世界**的旋转:`R = R_carla @ CARLA_TO_CAM.T`。
+
+    与 [`camera_rotation_world_to_cam`] 互为转置(`R_wc = R_cw.T`)。
+
+    为什么单独立一个:3DGS 训练要知道"相机的 +z(光轴)、+x(右)、+y(下)在世界里指哪",
+    而 `world_to_cam` 只给反方向。**这里是本仓唯一一处把 CARLA 位姿翻成「相机→世界」的地方** ——
+    历史上 `train_3dgs_mini` 自己拼过一份(`rw = Rz(yaw) @ Rx(pitch)`),那一份**不是 CARLA 的相机系**
+    (光学轴落到 CARLA 相机的 up 轴上):实测把城市街道沿竖直方向拉开 69.7 m、水平只剩 16.2 m,
+    而按本函数是水平的 68.6 m。见该模块 `_load_poses_and_cams` 头注。
+    """
+    return carla_rotation_matrix(cam_rotation) @ CARLA_TO_CAM.T
+
+
 def world_to_cam(
     points: np.ndarray,
     cam_location: tuple[float, float, float],

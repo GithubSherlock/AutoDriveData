@@ -46,6 +46,11 @@ LAYER_RULES: dict[str, frozenset[str]] = {
     "perception": _TORCH_OK,
     "traj": _TORCH_OK,
     "gs": _TORCH_OK,
+    # 图像/场景**编辑**:生成模型(StyleGAN3 / ControlNet)的后端与条件源。
+    # 要 torch(权重是 torch checkpoint;`cldm`/`ldm` 是纯 Python + torch),
+    # **不要 carla** —— 条件源吃的是盘上已采好的数据(真值深度 / 语义 tag / RGB),
+    # 采集是 `sim/` 的事。用户 2026-10-05 裁决"成项目模块,代码放 `edit/`"。
+    "edit": _TORCH_OK,
     "map/maptr": _TORCH_OK,
     "map": _ANY,  # 含 maptr/(torch) 与 probe_mapvec_oracle(carla)
     "sim": _ANY,  # 含 live_common(carla+torch)
