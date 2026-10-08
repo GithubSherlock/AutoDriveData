@@ -65,12 +65,13 @@ import carla
 import numpy as np
 
 from autodrivedata.calib.camera_rig import NUS_CAMERA_RIG, NUS_CAMERA_YAW
+from autodrivedata.calib.depth_codec import decode_depth
 from autodrivedata.calib.probe_calib import decode_instance
 from autodrivedata.gt.export.nuscenes import NUS_CAMERA_FOV, NUS_CAMERA_HEIGHT, NUS_CAMERA_WIDTH
 from autodrivedata.map.mapviz import calib_from_fov
 from autodrivedata.perception.inst_tags import encode_instance_png
 from autodrivedata.perception.sem_tags import encode_tag_png
-from autodrivedata.sim.carla_common import load_world, loc, spawn_ego, spawn_ego_at, sync_mode
+from autodrivedata.sim.carla_common import assert_synced, load_world, loc, spawn_ego, spawn_ego_at, sync_mode
 from autodrivedata.sim.collect_drive import spawn_route_walkers, spawn_traffic
 from autodrivedata.sim.scenarios import SCENES, merged_weather
 from autodrivedata.utils.paths import project_path
@@ -122,6 +123,16 @@ def main() -> None:
         "落 `inst_<cam>/{fid}.png` = 16 位灰度、**像素值 = CARLA actor id**。"
         "R 通道同时带 `CityObjectLabel` 语义类 ⇒ **一台相机同时给「有几个」与「各是什么」**,"
         "正是实例分割 GT(mask AP / PQ 要的就是这两样)。默认关(对既有管线零改动)",
+    )
+    ap.add_argument(
+        "--depth",
+        action="store_true",
+        help="**逐相机**多挂一路 `sensor.camera.depth`(同挂点同 fov),落 "
+        "`depth_<cam>/{fid:06d}.npy` = **uint16 毫米**。默认关(对既有管线零改动)。"
+        "★ **为什么必须有它**:判据侧(`perception/sem_bev`)对**所有类**一律拿射线与"
+        "**地平面**求交 —— 那对路面是对的,对**离地 1–2 m 的物体**会把射线送过物体头顶,"
+        "落到中位 **120 m** 外(实测 ±30 m 窗口内 **0.0%**)⇒ BEV 障碍物通道**结构性恒空**。"
+        "修法就是这一路深度(`mask_to_bev_depth`)。",
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2000)
@@ -245,6 +256,12 @@ def main() -> None:
     inst_qs: dict[str, queue.Queue] = {}
     if args.inst:
         inst_cams, inst_qs = _spawn_kind("instance_segmentation")
+    # ★ 深度:与 RGB/sem/inst **同一份** `_spawn_kind`(同挂点、同 fov、同画幅)
+    #   ⇒ 深度与 RGB 逐像素对齐。⚠️ 任一处不一致症状只是"BEV 偏低",看不出根因。
+    depth_cams: dict[str, carla.Sensor] = {}
+    depth_qs: dict[str, queue.Queue] = {}
+    if args.depth:
+        depth_cams, depth_qs = _spawn_kind("depth")
 
     fovs = " ".join(f"{n.replace('CAM_', '')}={NUS_CAMERA_FOV[n]:.2f}°" for n in SURROUND_CAMS)
     print(f"[cams] {len(cams)} 环视相机挂载(nuScenes 官方 6DoF 挂点,逐通道 fov):{fovs}")
@@ -261,7 +278,7 @@ def main() -> None:
     #   不看那个数,这条只会在下游表现为"PQ 的语义项莫名其妙偏低"。
     for _ in range(5):  # 预热
         world.tick()
-        for q in (*qs.values(), *sem_qs.values(), *inst_qs.values()):
+        for q in (*qs.values(), *sem_qs.values(), *inst_qs.values(), *depth_qs.values()):
             q.get(timeout=10)
 
     w, h = NUS_CAMERA_WIDTH, NUS_CAMERA_HEIGHT
@@ -284,6 +301,8 @@ def main() -> None:
             (out / f"sem_{name.lower()}").mkdir(parents=True, exist_ok=True)
         if args.inst:
             (out / f"inst_{name.lower()}").mkdir(parents=True, exist_ok=True)
+        if args.depth:
+            (out / f"depth_{name.lower()}").mkdir(parents=True, exist_ok=True)
     # 数据溯源(照 `"map"` 键的既有做法):旧产物无这些键 = 1242×375/六路共用 90°/stride 1
     calib["map"] = default_map  # 该采集来自哪张图(旧产物无此键 = Town10HD_Opt)
     calib["spawn_index"] = args.spawn_index  # None = spawn_ego 首空位
@@ -294,6 +313,8 @@ def main() -> None:
     calib["semantic"] = "carla.CityObjectLabel/R-channel" if args.sem else None
     # 实例 GT 的溯源。口径见 `perception/inst_tags.py`:id = G + 256·B,R 通道 = CityObjectLabel。
     calib["instance"] = "carla.actor-id(G+256*B)/R-channel-class" if args.inst else None
+    # 深度的溯源。**单位必须写死在这里** —— 读的人不会去翻采集器源码。
+    calib["depth"] = "uint16 millimetres (.npy, optical-axis z)" if args.depth else None
     with open(out / "calib.json", "w", encoding="utf-8") as f:
         json.dump(calib, f, indent=1)
 
@@ -306,11 +327,25 @@ def main() -> None:
             drained: dict[str, carla.Image] = {}
             sem_drained: dict[str, carla.Image] = {}
             inst_drained: dict[str, carla.Image] = {}
+            depth_drained: dict[str, carla.Image] = {}
             for _ in range(args.stride):
                 world.tick()
                 drained = {name: qs[name].get(timeout=10) for name in SURROUND_CAMS}
                 sem_drained = {n: sem_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.sem else {}
                 inst_drained = {n: inst_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.inst else {}
+                depth_drained = {n: depth_qs[n].get(timeout=10) for n in SURROUND_CAMS} if args.depth else {}
+            # ★ **同 tick 自证**(只查不行为):几路相机的 `frame` 号必须相等。
+            #   ⚠️ 它抓的是"几路彼此**不同步**",抓不到"几路一起恒定滞后" ——
+            #   后者要靠判据侧那条**跨方法一致**的对照(见 `sem_bev.mask_to_bev_depth` 头注)。
+            #   返回的一行人读摘要只在**第一帧**打一次(每帧打会把日志刷满)。
+            sync_note = assert_synced(
+                [(n, drained[n]) for n in SURROUND_CAMS]
+                + [(f"sem/{n}", sem_drained[n]) for n in sem_drained]
+                + [(f"inst/{n}", inst_drained[n]) for n in inst_drained]
+                + [(f"depth/{n}", depth_drained[n]) for n in depth_drained]
+            )
+            if i == 0 and sync_note:
+                print(f"[sync] {sync_note}")
             for name, image in drained.items():
                 tmp = out / f".tmp_{i}_{name}.png"
                 image.save_to_disk(str(tmp))
@@ -320,6 +355,16 @@ def main() -> None:
                 # 而我们要的是"tag 即像素值"的 8 位灰度。见 `tag_from_semantic_image`。
                 (out / f"sem_{name.lower()}" / f"{i:06d}.png").write_bytes(
                     encode_tag_png(tag_from_semantic_image(image))
+                )
+            for name, image in depth_drained.items():
+                # ⚠️ **不能 `save_to_disk`** —— 那存的是 CARLA 上色后的 PNG(好看不是米)。
+                # 解码口径的唯一裁决在 `calib/depth_codec`(纯值)。
+                # **落 uint16 毫米**:盘只剩 23 GB,float32 米在 200 帧×6 路下约 7 GB。
+                (out / f"depth_{name.lower()}" / f"{i:06d}.npy").write_bytes(
+                    (decode_depth(image.raw_data, image.height, image.width) * 1000.0)
+                    .clip(0, 65535)
+                    .astype(np.uint16)
+                    .tobytes()
                 )
             for name, image in inst_drained.items():
                 # **走 PIL 不走 `save_to_disk`**:实例相机的默认转换器同样是上色预览,

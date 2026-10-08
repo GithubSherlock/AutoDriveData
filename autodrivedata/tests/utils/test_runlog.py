@@ -326,3 +326,51 @@ class TestSwitches:
             print("仍然能跑")
             rl.metric(1, loss=0.5)
         assert rl.log_path is None
+
+
+class TestEnvChain:
+    """★ **会改变读数、却原本完全不进指纹的环境变量**(2026-10-07,§5 #7)。
+
+    每一条都有实测后果:`CUDA_HOME` 不设 ⇒ torch 扩展缓存 hash 不命中 ⇒ **重编并静默覆盖
+    规范 `.so`**(≈1 h);`PYTHONPATH` 被 `.bashrc` 塞进 ~90 条 ROS2 路径 ⇒
+    **提交前闸门 `python -m pytest -q` 直接崩**,只好 `env -u PYTHONPATH` 绕。
+    ⇒ 同一份代码在不同 shell 里**行为不同**,这个差必须留痕,否则"这数哪来的"重新变成不可判。
+    """
+
+    def test_every_listed_var_is_recorded(self, monkeypatch):
+        from autodrivedata.utils import runlog
+
+        monkeypatch.setenv("CUDA_HOME", "/usr/local/cuda-11.8")
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        chain = runlog._env_chain()
+        assert set(chain) == set(runlog.FINGERPRINT_ENV_VARS)
+        # 设了的记结构,没设的记 None —— **"没设"与"设成空"必须可分**
+        assert chain["CUDA_HOME"]["value"] == "/usr/local/cuda-11.8"
+        assert chain["PYTHONPATH"] is None
+
+    def test_it_records_the_entry_count_not_just_the_string(self, monkeypatch):
+        """★ `PYTHONPATH` 的**病根是条目数**(~90 条 ROS2 路径),不是它的字面值。"""
+        from autodrivedata.utils import runlog
+
+        monkeypatch.setenv("PYTHONPATH", "/a:/b::/c")
+        chain = runlog._env_chain()
+        assert chain["PYTHONPATH"]["n_entries"] == 3, "空段不算条目"
+
+    def test_long_values_are_truncated_but_still_identifiable(self, monkeypatch):
+        """长路径串只留摘要 + 前 200 字符 —— 指纹不该把日志撑成几 MB。"""
+        from autodrivedata.utils import runlog
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/x" * 5000)
+        e = runlog._env_chain()["LD_LIBRARY_PATH"]
+        assert len(e["value"]) <= 200 and len(e["sha1_12"]) == 12
+
+    def test_the_two_vars_with_measured_consequences_are_listed(self):
+        """耦合钉:`CUDA_HOME` 与 `PYTHONPATH` **必须**在表里 —— 这两条是本仓实测过的。"""
+        from autodrivedata.utils import runlog
+
+        assert {"CUDA_HOME", "PYTHONPATH"} <= set(runlog.FINGERPRINT_ENV_VARS)
+
+    def test_chain_lands_in_the_summary(self, log_dir: Path):
+        with runlog.run("autodrivedata.m.chain", out_dir=log_dir) as rl:
+            pass
+        assert "chain" in _read_json(rl)["env"]

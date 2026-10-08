@@ -70,14 +70,16 @@ from autodrivedata.perception.inst_tags import encode_instance_png
 from autodrivedata.perception.sem_tags import encode_tag_png
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
+    assert_synced,
     clear_generated_actors,
     ground_z_at,
     measure_actor_size_yaw0,
     sync_mode,
 )
-from autodrivedata.sim.collect_rig import ring_cam_pose
-from autodrivedata.sim.collect_static_gt import assert_synced, present_prop_models, shoot_synced
+from autodrivedata.sim.collect_rig import ring_cam_pose, to_parent_frame
+from autodrivedata.sim.collect_static_gt import present_prop_models, shoot_synced
 from autodrivedata.sim.collect_surround import tag_from_semantic_image
+from autodrivedata.sim.scenarios import SCENES, WEATHER_KEYS, merged_weather
 from autodrivedata.utils.paths import project_path
 
 #: 蓝图后缀 → 落盘时的目检名(`assert_synced` 的报错用它定位是哪一路掉队)。
@@ -110,6 +112,24 @@ def apply_pose(sensors: list, tf) -> None:
     """把**同一个** transform 施加到所有传感器(路径必须逐字相同,见 `make_kind_blueprints`)。"""
     for s in sensors:
         s.set_transform(tf)
+
+
+def _assert_cam_pose(cam: carla.Sensor, x: float, y: float, z: float) -> None:
+    """相机**实际**落在哪 —— 读回自证(世界坐标)。
+
+    ⚠️ **调用方必须先 tick**(`shoot_synced` 已经做过):不 tick 读到的是陈旧快照。
+    这条判的是 2026-10-07 修的那个缺陷 —— 换算漏了的话,读回值会**整条平移** spectator
+    的世界位姿(实测 79.132 m),报错信息里把那件事直接点出来。
+    """
+    back = cam.get_transform().location
+    err = max(abs(back.x - x), abs(back.y - y), abs(back.z - z))
+    if err > PLACE_TOL_M:
+        raise SystemExit(
+            f"相机位姿自证失败:请求世界 ({x:.3f},{y:.3f},{z:.3f}) "
+            f"读回 ({back.x:.3f},{back.y:.3f},{back.z:.3f}),差 {err:.3f} m。\n"
+            "  若差值 ≈ spectator 的世界位置 ⇒ attach 的 `set_transform` 被按相对解释了"
+            "(见 collect_rig.to_parent_frame 头注 / docs/edit-3dgs-plan.md §C.0.4 ③)"
+        )
 
 
 def _depth_img_to_meter(dep: carla.Image) -> np.ndarray:
@@ -177,6 +197,17 @@ def main() -> None:
     ap.add_argument("--n-cams", type=int, default=90, help="环绕相机数(步进 = 360/n)")
     ap.add_argument("--frames", type=int, default=90, help="每俯仰采集帧数(=相机数)")
     ap.add_argument(
+        "--scene",
+        default="day_clear",
+        choices=sorted(SCENES),
+        help="★ **把天气钉死**(corner case 场景档,与其余采集器同源:`scenarios.merged_weather`)。"
+        "**默认 `day_clear`,而且无条件生效** —— 采 A/B 时两面都不必再显式给,也不可能给出不一样的。"
+        "⚠️ 这一条是 2026-10-07 实测补的:本采集器原先**从不 `set_weather`、也一个字节都不记**,"
+        "于是 A/B 两次采集之间天气被别的进程改掉时**全程静默** —— 一对本该「只差有没有道具」的"
+        "capture 实际差的是天气(整帧均值 A=58.2 vs B=128.6),而位姿 JSON 逐位相同、看不出来。"
+        "⇒ 现在**没有「沿用服务器当前天气」这条路**(那正是缺陷本身),要别的天气就显式选一个档。",
+    )
+    ap.add_argument(
         "--sem",
         action="store_true",
         help="多挂一路语义相机(同挂点同 fov)→ `sem/p{p}/{i:05d}.png`(8 位灰度,tag 即像素值)。"
@@ -215,6 +246,26 @@ def main() -> None:
     client.set_timeout(30.0)
     world = client.get_world()
     sync_mode(world)
+
+    # ★★ **天气无条件钉死**(2026-10-07 补;同日改成默认 `day_clear` 且**不留分支**)。
+    #   本采集器原先**从不 `set_weather`** ⇒ 天气是 `world` 的**全局残留状态**
+    #   (上一个跑过的脚本留下什么就是什么),A/B 两次采集之间被改掉时**全程静默**。
+    #   ⚠️ **不留 `if` 分支是刻意的**:留一个"没给就沿用"的口子,就等于留了一条
+    #   「两次采集可能拿到不一样的天气」的静默路径 —— 而那正是这次的缺陷本身。
+    #   ⇒ 要别的天气就**显式选一个档**,没有"什么都不说"这个状态。
+    scene = SCENES[args.scene]
+    world.set_weather(carla.WeatherParameters(**merged_weather(scene)))
+    print(f"[scene] {scene.name} [{scene.group}] — 覆写 {sorted(scene.weather)}")
+    # ⚠️ **读回前必须 tick**(本仓红线:「快照陈旧不止 `get_actors` —— 任何'实挂 vs 规格'的判据
+    #   都必须先 tick」)。2026-10-07 实测:`set_weather(day_clear)` 之后**立刻** `get_weather()`
+    #   读到的是**上一轮的天气**(记成了 60/15/100,即 wet_road),而**渲染用的是新天气**
+    #   —— 于是 `weather.json` 里的数和图**对不上**,比不记还坏。
+    #   ⚠️ 这一 tick 只影响帧号,`ring_cam_pose` 是纯函数、`shoot_synced` 按目标帧号等,
+    #   采集产物不受影响。
+    world.tick()
+    eff = world.get_weather()
+    effective = {k: getattr(eff, k) for k in sorted(WEATHER_KEYS)}
+    print(f"[weather] 实际生效 {effective}")
 
     pts = world.get_map().get_spawn_points()
     center = pts[args.center_index % len(pts)].location
@@ -262,6 +313,19 @@ def main() -> None:
     spec = world.get_spectator()
     spec.set_transform(carla.Transform(center + carla.Location(0, 0, 1.5), carla.Rotation(0.0, 0.0, 0.0)))
     world.tick()
+    # ★★ **相机位姿的「世界 → 相对」换算**(2026-10-07 修,见 §C.0.4 ③)
+    #   相机 attach 在 spectator 上 ⇒ `set_transform` 按**父系**解释,而 `ring_cam_pose`
+    #   给的是**世界**坐标。不换算 ⇒ 相机落在 `请求 + spectator 的世界位置`,
+    #   整条环绕链被平移 **79.132 m**,摆在环心的道具因此**进不了画面**。
+    #   ⚠️ 纯平移换算只在父**旋转为单位**时成立 ⇒ 这里读回自证(不 tick 读到的是陈旧快照)。
+    spec_tf = spec.get_transform()
+    spec_world = (spec_tf.location.x, spec_tf.location.y, spec_tf.location.z)
+    if max(abs(spec_tf.rotation.pitch), abs(spec_tf.rotation.yaw), abs(spec_tf.rotation.roll)) > 1e-3:
+        raise SystemExit(
+            f"spectator 的 rotation 不是单位({spec_tf.rotation})—— '世界→相对' 的纯平移换算"
+            "只在父旋转为单位时成立,不成立就别继续(见 collect_rig.to_parent_frame 头注)"
+        )
+    print(f"[pose] spectator 世界位姿 {tuple(round(v, 3) for v in spec_world)}(rotation 已自证为单位)")
     cam = cast(carla.Sensor, world.spawn_actor(cam_bp, carla.Transform(), attach_to=spec))
     dep = cast(carla.Sensor, world.spawn_actor(depth_bp, carla.Transform(), attach_to=spec))
     q: queue.Queue = queue.Queue()
@@ -284,6 +348,18 @@ def main() -> None:
         if args.inst:
             (out / "inst" / f"p{int(p)}").mkdir(parents=True, exist_ok=True)
     (out / "pitches.json").write_text(json.dumps(pitches, indent=1), encoding="utf-8")
+    # ★ 天气**必须随 capture 落盘**(2026-10-07):不清的话,A/B 的"只差一个变量"是一条
+    #   **无法事后复核**的断言 —— 归档里 `3dgs_ab2` 就是这么变成一对双变量变更的。记的是
+    #   **读回值**(声明 ≠ 渲染),外加 `--scene`(None 表示"没钉,沿用服务器状态")。
+    (out / "weather.json").write_text(
+        json.dumps(
+            {"scene": args.scene, "effective": effective, "map": world.get_map().name},
+            indent=1,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[weather] 记录 → {out / 'weather.json'}")
     if prop_box is not None:
         assert prop_actor is not None
         # ★ 归属的钥匙:编辑链路靠 `instance_id` 认出"哪些高斯属于这个道具"。
@@ -309,11 +385,16 @@ def main() -> None:
             x, y, z, yaw_cam = ring_cam_pose(
                 center.x, center.y, center.z, args.radius, i, args.n_cams, height=1.5
             )
-            tf = carla.Transform(carla.Location(x, y, z), carla.Rotation(pitch=p, yaw=yaw_cam, roll=0.0))
+            # ★ `(x,y,z)` 是**世界**坐标;喂给 attach 子 actor 的必须是**相对 spectator** 的
+            rel = to_parent_frame(x, y, z, parent=spec_world)
+            tf = carla.Transform(carla.Location(*rel), carla.Rotation(pitch=p, yaw=yaw_cam, roll=0.0))
             # 四路**同一个 tf** ⇒ 像素级同画幅(挂点与 fov 也逐字相同,见上面的挂载段)
             apply_pose([cam, dep, *(s for s, _qq in extra.values())], tf)
             # ★ 位姿设好之后再推进,直到**当次位姿那一帧**落地(见 `shoot_synced`)
             frames = shoot_synced(world, qs)
+            # ★★ **相机到底落在哪 —— 读回自证**(tick 已由 `shoot_synced` 做过)。
+            #   摆偏**不会抛异常**,只会让后面每条判据都偏低,而那与"重建不行"长得一样。
+            _assert_cam_pose(cam, x, y, z)
             img: carla.Image = frames[0]
             depth: carla.Image = frames[1]
             got_extra = {k: frames[2 + j] for j, k in enumerate(extra_names)}

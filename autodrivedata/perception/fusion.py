@@ -118,7 +118,7 @@ class FusedObject:
 # ---------------------------------------------------------------- 几何
 
 
-def cluster_to_box7(cl: Cluster, velo_to_cam: np.ndarray) -> Box7:
+def cluster_to_box7(cl: Cluster, velo_to_cam: np.ndarray, *, prior: dict | None = None) -> Box7:
     """velodyne 系的轴对齐簇 → **相机系** `Box7`(KITTI 口径,`ry = −π/2`)。
 
     `velo_to_cam` 是 4×4(`R0_rect @ Tr_velo_to_cam`,由调用方从 calib 组装 —— 与
@@ -126,10 +126,30 @@ def cluster_to_box7(cl: Cluster, velo_to_cam: np.ndarray) -> Box7:
 
     ⚠️ 见模块头注「三个口径」:`ry` 恒 **−π/2**、`l` 取 velo 的 **x** 跨度、`y` 取**底部**。
     """
+    # ★ **按类尺寸先验补全长**(2026-10-07,默认关)。`prior` 是 `size_prior.fit_from_root`
+    #   的产物(`{"dims": {"Car": [l,w,h]}, ...}`)。给了就先**锚在可见面上**再出框 ——
+    #   LiDAR 只看得见车的近面,而 GT 是整车(实测 350 个簇只有 10 个 IoU>0.5)。
+    #   ⚠️ 默认 `None` ⇒ 归档产物**逐字节复现**(与 `--occluders`/`--depth` 同一条纪律)。
+    if prior is not None:
+        dims = prior["dims"].get(cl_label_fallback(prior))
+        if dims is not None:
+            from autodrivedata.perception.size_prior import anchor_cluster
+
+            cl = anchor_cluster(cl, (float(dims[0]), float(dims[1]), float(dims[2])))
     l, w, h = cl.extent
     bottom_velo = np.array([cl.center[0], cl.center[1], cl.center[2] - cl.half[2], 1.0])
     x, y_bottom, z = (velo_to_cam @ bottom_velo)[:3]
     return Box7(label="Car", h=h, w=w, l=l, x=float(x), y=float(y_bottom), z=float(z), ry=RY_ALONG_AXIS)
+
+
+def cl_label_fallback(prior: dict) -> str:
+    """这个先验唯一的那个类(本项目 LiDAR 档只有一类几何)。
+
+    ⚠️ 真写成"猜类"就错了 —— LiDAR 分不出类(`Cyclist` 完全是相机给的,见 §P-V18)。
+    所以先验在这里只有**一个**条目,它的名字只是台账。
+    """
+    keys = sorted(prior["dims"])
+    return keys[0] if len(keys) == 1 else "Car"
 
 
 def strict_gate(cl: Cluster) -> bool:
@@ -247,6 +267,7 @@ def fuse(
     mode: str = "lidar+cam",
     drop_unconfirmed: bool = True,
     gate: Callable[[Cluster], bool] = size_plausible,
+    prior: dict | None = None,
 ) -> list[FusedObject]:
     """按 `mode` 出融合表。
 
@@ -260,7 +281,7 @@ def fuse(
     if mode not in ("lidar", "lidar+cam"):
         raise ValueError(f"未知 mode {mode!r}(合法值:lidar / lidar+cam)")
     keep = [c for c in clusters if gate(c)]
-    boxes = [cluster_to_box7(c, velo_to_cam) for c in keep]
+    boxes = [cluster_to_box7(c, velo_to_cam, prior=prior) for c in keep]
     proj = [project_box7_to_image(b, p2) for b in boxes]
 
     out: list[FusedObject] = []

@@ -30,6 +30,7 @@ from autodrivedata.perception.cluster import cluster_boxes, dbscan
 from autodrivedata.perception.compare import evaluate_frames, load_gt_labels, report_text
 from autodrivedata.perception.fusion import CameraDet, Cluster, fuse, size_plausible, strict_gate
 from autodrivedata.perception.ground import ransac_plane
+from autodrivedata.perception.size_prior import load_prior
 from autodrivedata.utils import runlog
 from autodrivedata.utils.paths import project_path
 
@@ -167,12 +168,33 @@ def main() -> None:
         help="尺寸门的档:loose(默认,宽)/ strict(第一版,严)。**逐档全跑** —— "
         "「严门单独一档」是「相机到底有没有独立贡献」的对照,见 Plan4 §P-V18 三",
     )
+    ap.add_argument(
+        "--class-prior",
+        default="",
+        help="按类尺寸先验(JSON,`perception.size_prior.fit_from_root` 的产物)。"
+        "**默认空 = 关** ⇒ 归档产物逐字节复现。"
+        "⚠️ **先验必须来自别的 root** —— 在评测的同一个 root 上量真值尺寸再评 = 把答案抄进模型;"
+        "来源与 `--root` 相同会**响亮报警**。",
+    )
     ap.add_argument("--out", default="outputs/fusion", help="逐帧融合表落盘目录;'' = 不落")
     args = ap.parse_args()
 
     with runlog.run("autodrivedata.perception.eval_fusion") as rl:
         root = project_path(args.root)
         rl.input(str(root), "root")
+        # ★★ **防 train/test 泄漏的那把锁**:先验若与评测同源,就是把答案抄进了模型。
+        prior = None
+        if args.class_prior:
+            prior = load_prior(project_path(args.class_prior))
+            src = str(prior.get("source_root", ""))
+            rl.highlight("class_prior_source", src)
+            if Path(src).resolve() == root.resolve():
+                raise SystemExit(
+                    f"先验来源 `{src}` **就是**评测 root ⇒ **train/test 泄漏**:"
+                    "尺寸先验要从**别的 root**上量。换一个 `--prior-from` 的 root 再来"
+                )
+            print(f"[prior] {src} → {prior['dims']}")
+            rl.highlight("class_prior_dims", prior["dims"])
         frames = _parse_frames(args.frames)
         predict = None
         if not args.no_camera:
@@ -199,7 +221,7 @@ def main() -> None:
             n_dets += len(dets)
             for g in want:
                 for m in modes:
-                    objs = fuse(cl, dets, v2c, p2, mode=m, gate=gates[g])
+                    objs = fuse(cl, dets, v2c, p2, mode=m, gate=gates[g], prior=prior)
                     per_mode[f"{g}/{m}"][f"{fid:06d}"] = (gt, [o.box for o in objs])
 
         if n_clusters == 0:

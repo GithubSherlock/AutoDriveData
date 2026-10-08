@@ -51,7 +51,7 @@ import sys
 import time
 import traceback
 from datetime import datetime
-from hashlib import sha256
+from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -113,6 +113,34 @@ def _env_name(prefix: str, base_prefix: str | None = None) -> str:
     return "base" if prefix == base else (Path(prefix).name or "unknown")
 
 
+#: ★ **会改变读数、却又完全不进指纹的三条环境变量**(2026-10-07 补,§5 #7 收口)。
+#: 每一条都有**本仓实测**的后果:
+#:   - `CUDA_HOME` / `LD_LIBRARY_PATH` —— 不设时 torch 的扩展缓存 hash 不命中 ⇒
+#:     **重编并静默覆盖规范 `.so`**(实测代价 ≈1 h;见 `gs/cuda_env` 头注)。
+#:     这条原先只在 `train_3dgs_mini` 里单独补过,**其余 21 个入口都在裸奔**。
+#:   - `PYTHONPATH` —— 本机 `.bashrc` 无条件 `source ros2_humble/install/setup.bash`,
+#:     往每个新 shell 里塞 ~90 条路径;而 `env -u PYTHONPATH` 跑 pytest 才不崩
+#:     (见 §5 #7)。⇒ **同一份代码在不同 shell 里行为不同**,这个差必须留痕。
+#: 记**摘要**不记全文:路径串可能很长,而归属只需要"是哪一条链"。
+FINGERPRINT_ENV_VARS = ("CUDA_HOME", "CUDA_PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "TORCH_CUDA_ARCH_LIST")
+
+
+def _env_chain() -> dict[str, Any]:
+    """上表那几条变量的**值 + 条目数 + 摘要**(软失败:取不到就记 `None`,不影响运行)。"""
+    out: dict[str, Any] = {}
+    for k in FINGERPRINT_ENV_VARS:
+        v = os.environ.get(k)
+        if v is None:
+            out[k] = None
+            continue
+        entry: dict[str, Any] = {"n_entries": len([p for p in v.split(os.pathsep) if p])}
+        entry["sha1_12"] = sha1(v.encode()).hexdigest()[:12]
+        # 短的直接记全文(便于一眼认出);长的只记条目数 + 摘要
+        entry["value"] = v if len(v) <= 200 else v[:197] + "..."
+        out[k] = entry
+    return out
+
+
 def _env_info() -> dict[str, Any]:
     """python 版本 + conda env 名 —— 3D 检测必须在 `autolabel` env 下跑,
     记下来能一眼看出跑错环境。
@@ -126,6 +154,8 @@ def _env_info() -> dict[str, Any]:
         "env_activated": os.environ.get("CONDA_DEFAULT_ENV"),
         "prefix": sys.prefix,
         "executable": sys.executable,
+        # ★ 见 `FINGERPRINT_ENV_VARS` 的注释 —— 这四条会静默改变读数
+        "chain": _env_chain(),
     }
 
 

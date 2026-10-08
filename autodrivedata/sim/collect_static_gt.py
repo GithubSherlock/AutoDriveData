@@ -63,6 +63,8 @@ from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     SENSOR_OFFSET,
     Vec3,
+    assert_synced,
+    drain,
     ground_z_at,
     loc,
     measure_actor_size_yaw0,
@@ -200,23 +202,6 @@ def collect_static_frame(
     return frame, sigs, segs
 
 
-def drain(q: queue.Queue) -> int:
-    """丢弃队列里**已积压**的帧,返回丢掉几帧。
-
-    同步模式下每 tick 每队列恰一帧,所以"队列里有多少帧"= "相机挂上之后又 tick 了几次"。
-    道具通道在开跑前要 tick 好几次(量尺寸 2 次 + 摆位读回 1 次)⇒ **不 drain 的话主循环
-    读到的是"道具还没摆好"的那一帧**,而症状是"前几帧 GT 有框、图里没东西" ——
-    被眼熟地误读成"模型没检出来"。丢掉的帧数打出来,别静默。
-    """
-    n = 0
-    while True:
-        try:
-            q.get_nowait()
-            n += 1
-        except queue.Empty:
-            return n
-
-
 #: `settle` 的收敛尝试上限。
 SETTLE_TRIES = 12
 
@@ -226,12 +211,6 @@ class _Ticker(Protocol):
     "这条到底依赖什么"因此写在签名上,而不是靠读实现推。"""
 
     def tick(self) -> None: ...
-
-
-class _Framed(Protocol):
-    """`assert_synced` 需要相机帧做的**唯一**一件事:自报帧号。"""
-
-    frame: int
 
 
 def settle(world: _Ticker, queues: list[queue.Queue]) -> list[int]:
@@ -331,27 +310,6 @@ def shoot_synced(world: _Ticker, queues: list[queue.Queue]) -> list:
         f"位姿帧 {target} 在 {MAX_CATCHUP_TICKS} 次 tick 内没落地(各路现状:"
         f"{[None if x is None else int(x.frame) for x in latest]})—— 管线延迟变了,停"
     )
-
-
-def assert_synced(images: list[tuple[str, _Framed | None]]) -> str:
-    """★ **同 tick 自证**:几路相机这一轮的 `frame` 号必须相等。返回一行人读的摘要。
-
-    这是红线那条「**两路本应逐像素相同的东西比一比**」在这里的形态 —— 比的是帧号。
-    只在**全都拿到**时判:某一路本轮没有(没开那个开关)就不管它。
-    `frame` 属性是 CARLA 的仿真帧号,**帧号对不上**不报错的症状是"图看着正常、框整体偏",
-    而那与"标定错了"长得一样。
-    """
-    got = [(n, int(im.frame)) for n, im in images if im is not None]
-    if len(got) < 2:
-        return ""
-    frames = {f for _, f in got}
-    if len(frames) != 1:
-        raise SystemExit(
-            "相机不同帧 —— " + ", ".join(f"{n}={f}" for n, f in got) + "。"
-            "「每 tick 每队列恰一帧」这条前提没成立,继续采会得到**恒定滞后**的序列"
-            "(实测过 1 帧),而帧号一张张对得上、图一张张出得来。"
-        )
-    return f"frame={got[0][1]}(" + "/".join(n for n, _ in got) + ")"
 
 
 def present_prop_models(bp_lib: carla.BlueprintLibrary) -> list[str]:

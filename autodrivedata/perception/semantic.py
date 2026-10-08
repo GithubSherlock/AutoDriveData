@@ -66,3 +66,27 @@ def semantic_to_velodyne_bin(sem_points: np.ndarray, seed: int | None = None) ->
     out[:, 2] = pts[:, 2]
     out[:, 3] = semantic_intensity(pts[:, 5], pts[:, 3], seed=seed)
     return out
+
+
+def semantic_to_velodyne_tags(sem_points: np.ndarray) -> np.ndarray:
+    """语义 LiDAR 原始点 (N,6)(x,y,z,cos_angle,obj_idx,tag)→ **标签版** velodyne bin (N,4)。
+
+    格式与 `semantic_to_velodyne_bin` **逐列对齐**(x / y 翻转过 / z 三列完全相同,
+    **逐行是同一个点**),只把第 4 列从"合成强度"换成 **CARLA 的 `CityObjectLabel` tag**。
+
+    ## 为什么要有这一路
+
+    `semantic_to_velodyne_bin` **把 tag 合成强度之后就丢掉了** —— 于是盘上**没有任何一份**
+    "每点的语义类"可读 ⇒ 按语义类编辑 LiDAR(L2)无从下手。
+    `docs/edit-pointcloud-plan.md` §4 的重评条件 #3 要的正是这个文件。
+
+    ⚠️ **不进 `velodyne/`**(那条口径是 KITTI 强度语义,动了会破既有对照);
+    落在 `training/semantic_velodyne/{fid}.bin`,**额外一路**,既有产物逐字节不变。
+    """
+    pts = np.asarray(sem_points, dtype=np.float32).reshape(-1, 6)
+    out = np.empty((len(pts), 4), dtype=np.float32)
+    out[:, 0] = pts[:, 0]
+    out[:, 1] = -pts[:, 1]  # 与强度版同一条 y 翻转
+    out[:, 2] = pts[:, 2]
+    out[:, 3] = pts[:, 5]
+    return out

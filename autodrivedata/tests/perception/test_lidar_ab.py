@@ -216,3 +216,57 @@ class TestCli:
         d = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
         assert d["n_frames"] == 2
         assert capsys.readouterr().out.count("[L0") >= 1
+
+
+class TestPoseSeriesReport:
+    """★ 重评条件 #1「位姿逐位可复现」的**诊断器** —— 光知道"差 0.06 m"没法修。
+
+    2026-10-07 实测把原来的判读**改了**:`edit-pointcloud-plan` §1 读成「亚帧相位差」,
+    实测是「**启动瞬态 + 0.24% 的恒定速度差沿航向累积**」(见 `pose_series_report` 头注)。
+    本组把两种形状**分开钉住**:真无限价对照的话,"拆开"这件事本身就没被验过。
+    """
+
+    @staticmethod
+    def _root(tmp_path, name, ts):
+        d = tmp_path / name / "training" / "pose"
+        d.mkdir(parents=True)
+        for i, t in enumerate(ts):
+            m = np.eye(3, 4)
+            m[:, 3] = [t[0], t[1], t[2]]
+            np.savetxt(d / f"{i:06d}.txt", m.reshape(1, -1))
+        return tmp_path / name
+
+    def test_identical_trajectories_have_zero_offset(self, tmp_path):
+        ts = [(i * 0.8, 0.0, 0.0) for i in range(20)]
+        r = L.pose_series_report(self._root(tmp_path, "A", ts), self._root(tmp_path, "B", ts))
+        assert r["d_max"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_constant_phase_lag_is_not_flat_but_is_along_heading(self, tmp_path):
+        """纯滞后:位置差**恒定**、步长**完全相同** ⇒ 这才是"相位差"。"""
+        ts = [(i * 0.8, 0.0, 0.0) for i in range(20)]
+        lag = [(t[0] - 0.05, 0.0, 0.0) for t in ts]
+        r = L.pose_series_report(self._root(tmp_path, "A", ts), self._root(tmp_path, "B", lag))
+        assert r["d_first"] == pytest.approx(r["d_last"], abs=1e-6), "纯滞后 ⇒ 位置差是常量"
+        assert r["step_gap_median"] == pytest.approx(0.0, abs=1e-9), "纯滞后 ⇒ 步长完全相同"
+
+    def test_speed_difference_grows_monotonically(self, tmp_path):
+        """★ 速度差:位置差**单调增长**、步长**持续不等** —— 实测那对是这个形状。"""
+        ta = [(i * 0.8, 0.0, 0.0) for i in range(20)]
+        tb = [(i * 0.8009, 0.0, 0.0) for i in range(20)]  # 快 0.11%
+        r = L.pose_series_report(self._root(tmp_path, "A", ta), self._root(tmp_path, "B", tb))
+        assert r["d_last"] > r["d_first"] * 10
+        assert r["step_gap_median"] > 0, "速度差 ⇒ 步长必然不等(这正是它和滞后的分界)"
+        assert r["step_gap_rel"] < 0.01
+
+    def test_lateral_offset_is_flagged_as_not_along_heading(self, tmp_path):
+        """横移 ≠ 沿航向 —— 判据必须分得开,否则"沿航向"这句话没有判别力。"""
+        ta = [(i * 0.8, 0.0, 0.0) for i in range(20)]
+        tb = [(i * 0.8, 0.05, 0.0) for i in range(20)]
+        r = L.pose_series_report(self._root(tmp_path, "A", ta), self._root(tmp_path, "B", tb))
+        assert not r["is_mostly_along_heading"]
+
+    def test_frame_mismatch_raises(self, tmp_path):
+        with pytest.raises(SystemExit, match="不齐"):
+            L.pose_series_report(
+                self._root(tmp_path, "A", [(0.0, 0, 0)] * 3), self._root(tmp_path, "B", [(0.0, 0, 0)] * 2)
+            )

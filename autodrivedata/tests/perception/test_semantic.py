@@ -8,6 +8,7 @@ from autodrivedata.perception.semantic import (
     CARLA_SEMANTIC_ALBEDO,
     semantic_intensity,
     semantic_to_velodyne_bin,
+    semantic_to_velodyne_tags,
 )
 
 
@@ -47,3 +48,38 @@ class TestSemanticToBin:
         assert out.shape == (1, 4)
         assert out[0, 0] == 1.0 and out[0, 1] == -2.0 and out[0, 2] == 3.0
         assert 0.0 < out[0, 3] < 1.0
+
+
+class TestSemanticToTags:
+    """★ **标签版**(2026-10-07):`semantic_to_velodyne_bin` 把 tag 合成强度之后就丢掉了
+    ⇒ 盘上没有任何"每点的语义类"可读,而按语义类编辑 LiDAR 正需要它
+    (`docs/edit-pointcloud-plan.md` §4 重评条件 #3)。
+    """
+
+    def test_tag_lands_in_the_fourth_column(self):
+        pts = np.array([[1.0, 2.0, 3.0, 0.8, 5.0, 10.0]], dtype=np.float32)
+        out = semantic_to_velodyne_tags(pts)
+        assert out.shape == (1, 4)
+        assert out[0, 3] == 10.0, "第 4 列必须是**原始 tag**,不是合成强度"
+
+    def test_row_aligned_with_the_intensity_version(self):
+        """★★ 两个文件**逐行是同一个点**:前三列必须逐位相同。
+
+        ⚠️ 这条是**契约**:读的人会按行号把 `velodyne/{fid}.bin` 与
+        `semantic_velodyne/{fid}.bin` 对起来用;错位了不会报错,只会静默给错标签。
+        """
+        rng = np.random.default_rng(0)
+        pts = rng.normal(size=(50, 6)).astype(np.float32)
+        a = semantic_to_velodyne_bin(pts, seed=0)
+        b = semantic_to_velodyne_tags(pts)
+        np.testing.assert_array_equal(a[:, :3], b[:, :3])
+
+    def test_y_is_flipped_like_the_intensity_version(self):
+        pts = np.array([[0.0, 2.0, 0.0, 1.0, 0.0, 7.0]], dtype=np.float32)
+        assert semantic_to_velodyne_tags(pts)[0, 1] == -2.0
+
+    def test_tag_is_not_averaged_or_filtered(self):
+        """逐点独立,不去重、不合并 —— 同一类在不同点必须各自保留。"""
+        pts = np.zeros((4, 6), dtype=np.float32)
+        pts[:, 5] = [1.0, 7.0, 7.0, 10.0]
+        np.testing.assert_array_equal(semantic_to_velodyne_tags(pts)[:, 3], [1.0, 7.0, 7.0, 10.0])

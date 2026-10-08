@@ -10,10 +10,13 @@
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pytest
 
 from autodrivedata.edit import downstream_eval as D
+from autodrivedata.perception import eval_2d_ab as AB
 
 
 class TestBuildArm:
@@ -270,3 +273,42 @@ class TestFlatGenFilenames:
         n = D.build_arm(dst, image_files=files, label_src=labels, frames=keep)
         assert n == 3
         assert len(list((dst / "training/image_2").glob("*.png"))) == 3
+
+
+class TestGridPointsIsWired:
+    """★★ **`--grid-points` 必须真的传到 `evaluate`**(2026-10-07 补)。
+
+    为什么不加这条不行:`report` 的默认是 **11 点**(归档口径),
+    而 §1.10 量过 11 点下 AP 是**台阶函数** —— 同一批检测、同一批图,
+    `gt-depth` 那一格实测从 **+0.0032(11 点)翻成 −0.0617(101 点)**,**符号都翻了**。
+    ⇒ 参数没接上时**不报错、照样出数**,只是结论可能反号。
+    """
+
+    def test_report_forwards_n_points(self, monkeypatch, tmp_path):
+        called = {}
+
+        def fake_evaluate(root, predict, conf, iou, limit, *, n_points=11, verbose=True):
+            called["n_points"] = n_points
+            return {"mAP": 0.0}
+
+        monkeypatch.setattr(AB, "evaluate", fake_evaluate)
+        AB.report(tmp_path, object(), 0.25, 0.5, None, n_points=101)
+        assert called["n_points"] == 101
+
+    def test_report_defaults_to_the_archive_grid(self, monkeypatch, tmp_path):
+        """默认必须是 11 —— 改了会让已引用的 §1.6 四臂数**不可比**。"""
+        called = {}
+
+        def fake_evaluate(root, predict, conf, iou, limit, *, n_points=11, verbose=True):
+            called["n_points"] = n_points
+            return {"mAP": 0.0}
+
+        monkeypatch.setattr(AB, "evaluate", fake_evaluate)
+        AB.report(tmp_path, object(), 0.25, 0.5, None)
+        assert called["n_points"] == 11
+
+    def test_main_passes_the_cli_value_through(self):
+        """结构钉:调用点必须写 `n_points=args.grid_points`(漏了只会静默按 11 点跑)。"""
+        src = inspect.getsource(D.main)
+        assert "--grid-points" in src
+        assert "n_points=args.grid_points" in src

@@ -18,9 +18,9 @@ CARLA 0.9.16 → AutoLabel 自动驾驶数据输出流水线:自定义地图/场
 | **P2** 静态 GT | 信号/标志是 landmark、车道线是 lane_marking;**semantic LiDAR 打不到** ⇒ 只能走地图查询 API | Plan.md §5.7c |
 | **P2 判据** | **已补**(§P-V21):`collect_static_gt --sem` 出语义 oracle,`perception/static_eval` 判据(离线)。★ **形状是量出来的**:想当然的"锚点像素是不是 TrafficLight" **40/40 全红** —— landmark 是**地面**锚点,灯头在它上方 5 m;车道线单像素只有 21.7%/27.8%(线只有 ~2 px 宽)。改成「锚定 + 邻域」后首跑:**信号 1.000**(横移 0.103 / 随机 0.017)、**车道线 0.930 / 0.997**(横移 **0.000**)。⚠️ 邻域是**定标**的(4 px / 6 m),放宽到 8 m **判别力反而塌**(横移对照爬到 0.30)。⚠️ 裁决必须有第二条 `real ≥ 5×对照`,否则"这场景到处都是标线"会被读成"xodr 对得上"。⚠️ `n=0` 的组是**未判**(第三种裁决),不是通过也不是不通过 | Plan4 §P-V21 |
 | **P2-B** 静态道具 GT | **能出,而且不难**。道具走**独立通道**(`collect_static_gt --props`)—— **绝不许塞进 `label_2`**,进去会破 P1 A/B 帧级配对硬门槛。尺寸**只认 yaw=0 探针**(转过之后 `bounding_box` 给的是**被剪切**的值:锥桶 yaw=30° 读 `0.1246×0.4704` vs 真值 `0.3441×0.3441`,3.4% 的物体像素落到投影框外)。判据 `perception/prop_eval.py` **离线**跑(投影框 vs **渲染轮廓**):可判 84 条 coverage **逐条 1.0000**、类别命中 1.0000。**地图自带**的道具出不了实例(关卡网格,`get_actors()` 里 0 个),只能出类掩膜 `sem_tags.PROP_TAGS` | Plan4 §P-V14 |
-| **P2-A** 像素级分割 GT | 已通:`collect_surround --sem` 落 CARLA 语义 tag(**8 位灰度,tag 即像素值**;tag 编在 **R 通道**、编号 = `CityObjectLabel` —— ⚠️ **不是旧版的 `6=RoadLine/7=Road`**),`perception/sem_eval.py` 出**图像 mIoU 0.557 / BEV 0.512** 双口径。判据首跑即抓到链上真缺陷:**BEV 障碍物通道结构性为空**(物体像素的射线落到**中位 99.4 m** 外,0% 进 ±30 m 窗口) | Plan4 §P-V13 |
+| **P2-A** 像素级分割 GT | 已通:`collect_surround --sem` 落 CARLA 语义 tag(**8 位灰度,tag 即像素值**;tag 编在 **R 通道**、编号 = `CityObjectLabel`),`perception/sem_eval.py` 出**图像 mIoU 0.514 / BEV 0.572** 双口径。★ **BEV 障碍物通道的「结构性恒空」已修**(§P-V26):旧路径对**所有类**一律与**地平面**求交,对**离地 1–2 m** 的物体把射线送过头顶(落点中位 **120 m**、±30 m 内 **0.0%**)。修法 = `collect_surround --depth`(uint16 毫米)+ `sem_bev.mask_to_bev_depth` **只给 obstacle 走**;障碍物 BEV IoU **0.688**(三类里最高)。★ 三条对照全过:接地类两条路 IoU 0.574 / 换错深度后 0.000(**真的在用**)/ 障碍物离地 **1.28 m**(地平面假设会给 0) | Plan4 §P-V13 / **§P-V26** |
 | **实例分割** | 已通:`collect_surround --inst` 落 **16 位灰度实例 id 图**(像素值 = CARLA actor id;R 通道同时带语义类 ⇒ 一台相机给「有几个」+「各是什么」),`perception/inst_eval.py` 出 **PQ 0.6257 / SQ 0.8447 / RQ 0.7407** + mask AP@0.5 0.6341。⚠️ 两条实测口径:CARLA 给**每个关卡网格**都发 id(`Roads` 113 个 vs `Car` 13 个)⇒ 实例评测**只取可数物体**;⚠️ **PQ 与 mask AP 的差别不是「多一个语义项」**(两个都要求类匹配)——AP 对掩膜质量不敏感,而 PQ 里 IoU 1.00 与 0.55 差得很远。⚠️ **那组读数的模型是「借来的」** —— `inst_eval.load_instance_predictor` 跑的是现成的 `weights/yolo11s-seg.pt`(**通用 COCO 权重,不是本项目训练的**)。通的是「实例 GT + 判据」这条**评测链**,不是一个训练好的分割模型;引用 PQ 时必须写明这一点 | Plan4 §P-V15 |
-| **三传感器融合** | **后融合,结论是「有条件的」**(§P-V18/.19):**在 P1 静置车数据上它没赢** —— 严门单独 AP `0.0462` > 宽门+相机 `0.0202`(**一个更严的尺寸门就能替代相机**)。补上缺的两点(**多类 + 近距**,`collect_ab_route --layout close`,**默认关**)之后**翻过来**:`0.0758 → 0.1742`,FP `65→12`(宽门那档 `1476→39`);`Cyclist` 的类**完全是相机给的**(LiDAR 分不出自行车)。⇒ **价值有前提:目标多类、且在 LiDAR 打得动的距离(≲25 m)**。⚠️ **雷达不进消融表**(§P-V17 六之二):可复现实测 —— **可归因回波只出现在视轴上**(横向 0 槽位换什么蓝图都出:车 32318 / 行人 21019 / 挡板 6347),而 ±9.9°、±19.3° 的**一个点都不给**,而 P1 的目标正好在 ±3.5 m。**六个解释已排除**(离得近 / 射线预算 / FOV 实测 ±38.49° / 射线密度只低 35% / 假点云[65% 与 LiDAR 表面差 <0.3 m] / 简单复制[88/88 唯一]);**机制未知,不写成因**。⚠️ 两条边界:① 是「这套配置下、这批目标」的结论,不是「永远出不了目标」;② **例外存在** —— 目标摆在**视轴**上雷达就有回波。它另有一条**不需要目标**的判据(速度对表,**3/5 通道达标**,`radar_eval.py`)。⚠️ 未闭合:`Pedestrian` GT 框内 **0 个 LiDAR** 点(两个假设都证伪) | Plan4 §P-V18 / §P-V19 |
+| **三传感器融合** | **后融合,结论是「有条件的」**(§P-V18/.19):**在 P1 静置车数据上它没赢** —— 严门单独 AP `0.0462` > 宽门+相机 `0.0202`(**一个更严的尺寸门就能替代相机**)。补上缺的两点(**多类 + 近距**,`collect_ab_route --layout close`,**默认关**)之后**翻过来**:`0.0758 → 0.1742`,FP `65→12`(宽门那档 `1476→39`);`Cyclist` 的类**完全是相机给的**(LiDAR 分不出自行车)。⇒ **价值有前提:目标多类、且在 LiDAR 打得动的距离(≲25 m)**。⚠️ **雷达不进消融表**(§P-V17 六之二):可复现实测 —— **可归因回波只出现在视轴上**(横向 0 槽位换什么蓝图都出:车 32318 / 行人 21019 / 挡板 6347),而 ±9.9°、±19.3° 的**一个点都不给**,而 P1 的目标正好在 ±3.5 m。**六个解释已排除**(离得近 / 射线预算 / FOV 实测 ±38.49° / 射线密度只低 35% / 假点云[65% 与 LiDAR 表面差 <0.3 m] / 简单复制[88/88 唯一]);**机制未知,不写成因**。⚠️ 两条边界:① 是「这套配置下、这批目标」的结论,不是「永远出不了目标」;② **例外存在** —— 目标摆在**视轴**上雷达就有回波。它另有一条**不需要目标**的判据(速度对表,**3/5 通道达标**,`radar_eval.py`)。⚠️ 未闭合:`Pedestrian` GT 框内 **0 个 LiDAR** 点(两个假设都证伪) | Plan4 §P-V18 / §P-V19。★ **簇框的尺寸先验**(§P-V27):泄漏已修(先验取自**别的 root** + 同源当场 SystemExit)、错先验对照是活的(TP→0),**但先验没帮上忙** —— AP 0.014→0.028 而 **TP 10→2**,可读的是后者(AP 在 712 条预测 vs 20 条 GT 的池子上算,是排序抖动) | Plan4 §P-V18 / **§P-V27** |
 | 灯色动态 GT | 灯态 = **独立时序层**,Off/Unknown **不猜**;**不做视觉回归**(镜片 30m 处仅 ~4px) | Plan.md §5.9 |
 | 失效归因 | **尺度主导**(<32px 0.15–0.47 vs ≥32px 0.78–1.00,断崖 ≈21–24px);CARLA **无运动模糊**(退化只能人工注入);天气只**前移断崖** | Plan.md §5.10 |
 | MapTR 矢量管道 | 参考自实现打通。chamfer AP @`--score-thr 0.2`:**0.3043** 帧级留出 / **0.1114** 路线级留出 | [Plan2.md](Plan2.md) §P-M.12 |
@@ -104,6 +104,14 @@ python -m autodrivedata.sim.collect_ab_route --scene day_clear --occluders parti
 #   `--occluders {none,partial,full}` 只添 `static.prop.*` ⇒ 进不了 label_2、逐帧 GT 仍相等;
 #   ⚠️ `--occluder-cars all`(默认)会**饱和**(四堵墙同侧串联 ⇒ 与阳性对照不可分辨),要可分辨用 nearest
 #   A/B 硬门槛现在多一条:两侧 `training/pose/` 逐帧位置差(max|Δx| ≤ ~0.07 m;大了先查启动瞬态)
+
+# 3DGS 环绕采集(**天气无条件钉死**,默认 day_clear;A/B 只差"有没有道具";
+#   落 capture/weather.json 记读回值 —— 采集器原先不 set_weather、也不记,
+#   导致一对 A/B 实际差的是天气而全程静默,见 docs/edit-3dgs-plan.md §C1)
+# python -m autodrivedata.sim.collect_3dgs --scene day_clear --inst --props --out outputs/3dgs_ab3/A
+# python -m autodrivedata.sim.collect_3dgs --scene day_clear --inst          --out outputs/3dgs_ab3/B
+# 逐类编辑 LiDAR 的前置(点云线重评条件 #3):collect_ab_route 另落一路
+#   training/semantic_velodyne/{fid}.bin(float32 (N,4) = x,y,z,tag,逐行与 velodyne/ 对齐)
 
 # 静态 GT(landmark + 车道线,含 overlay 目检图)
 python -m autodrivedata.sim.collect_static_gt --frames 40
@@ -286,11 +294,17 @@ python -m autodrivedata.sim.collect_nus --rig wide --out outputs/nus_mini_wide -
 python -m autodrivedata.calib.verify_nus_calib --rig wide --offline --live   # → report_wide.json
 python -m autodrivedata.calib.viz_rig_check --rig wide --live     # → outputs/calib_check/{rig_layout_*,views_*,report_*}
 
-# 运行日志:**44 个**训练/推理/评估/判据入口**每次跑都落三件套**到 logs/(同 stem;
+# 运行日志:**60 个**训练/推理/评估/判据入口**每次跑都落三件套**到 logs/(同 stem;
 #   = 用户裁决的 16 + 2026-09-27 补入的 slam_odometry / slam_backend
 #     + 2026-09-30 补入的 runtime/tb_export
 #     + 2026-10-02 补入的 perception/static_eval
 #     + 2026-10-04 补入的 gs/frame_sync / gs/attribute_instances
+#     + 2026-10-07 补入的 sim/probe_3dgs_cam_pose / probe_prop_renders / probe_radar_camera_coaxial
+#                       与 edit/harmonize_data / edit/train_harmonize / **edit/harmonize_axis**
+#     + 2026-10-08 补入的 **perception/domain_gap / domain_adapt / probe_bev_depth / size_prior**
+#                       与 **gs/probe_hole_visibility / probe_hole_render**、**sim/probe_ego_teleport**
+#     + 2026-10-08 再补入的 **gt/export/coco2kitti**、**edit/augment**、
+#       **gs/insert_gs**、**gs/probe_edit_downstream**
 #     + 2026-10-06 补入的 edit/calibrate / edit/harmonize_target —— ⚠️ 计数用
 #       `grep -rl 'runlog.run(' autodrivedata/ --include=*.py` 复核,别手抄)
 #   <能力>_<模块>_<YYYYmmdd-HHMMSS>.log = tee 的全量 stdout(头块含 git/GPU/env/argv)
@@ -354,11 +368,24 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
                                  #   失败(缺 `lark`)⇒ **上面这条命令直接崩**。实测绕法:
                                  #   `env -u PYTHONPATH python -m pytest -q`。
                                  #   这是"不引入 ROS2"那个结论的**执行面漏洞**(Plan4 §P-V? / 待裁决)
-                                 # 基线:1980 passed + **9 跳过** + 0 失败(2026-10-06 实测,168 s;
-                                 #   上一版 1975 / 1924 / 1919 / 1909 / 1861 / 1812 / 1741 ——
-                                 #   本轮共 **+239**(+56:AP 台阶判据 15 + 标定产线 12
+                                 # 基线:2153 passed + **9 跳过** + 0 失败(2026-10-08 实测,175 s;
+                                 #   本轮 **+29**:COCO→KITTI 导出 20 + 注入配方 9
+                                 #    (另一批见下)
+                                 #   上一轮 **+73**:窟窿可见性 14 + 窟窿渲染 7 + ego 瞬移 8
+                                 #   + runlog 环境链 5 + 域自适应 12 + BEV 深度 14
+                                 #   + 尺寸先验 12 + (上一轮 +48 见下)
+                                 #   上上版 2051:3DGS 帧对齐钉 5 + A/B 光度门槛 6 + 天气门槛 4
+                                 #   + collect_3dgs 天气钉 4 + 下游 --grid-points 通路 3
+                                 #   + 和谐化收口判据 8 + semantic 标签版 4
+                                 #   + LiDAR 位姿诊断 5 + 域差矩阵 9
+                                 #   上一版 2003 / 1990 / 1988 / 1980 / 1975 / 1924 / 1919 / 1909 / 1861 / 1812 / 1741 ——
+                                 #   本轮共 **+262**(+64:AP 台阶判据 15 + 标定产线 12
                                  #   + 和谐化真值靶 14 + 掩膜版 harmonize 6 + 四臂 GT 冻结 2
-                                 #   + 文档守卫扩到 3 份 edit 计划 5)
+                                 #   + 文档守卫扩到 3 份 edit 计划 5
+                                 #   + 相机位姿口径 8(纯函数手算锚点 3 + 源码结构钉 5)
+                                 #   + 入口守卫扩到全包 +3、负缺口守卫 +2、取帧序号 +1
+                                 #     − 被取代的 edit 专属守卫 2 = +4
+                                 #   + 和谐化数据/训练 13)
                                  #   + 上一段 +183)
                                  #   (degrade 20 + video_edit 14 + harmonize 12 + 入口守卫 2)。
                                  #   **8 条跳过里有 2 条是显式的**:没给 `CUDA_HOME` 就跳过真调 gsplat
@@ -416,7 +443,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **质量档是渲染口径,不是性能旋钮**:`-quality-level=Low` 下 CARLA **不渲染雾**(旧「浓雾 Δ−0.013」量的是晴天),**湿路面材质也坏**(渲染成饱和异常色 —— 同键在静止探针出蓝、在 A/B 采集出品红 ⇒ 着色器问题,不是「路面湿了长这样」)。默认已改 `Epic`(实测 6.0 GB/48 GB、4.94× 实时;**当年选 Low 的 12 GB 显存约束已随机器更替消失**)。**跨档数据集不可混比** —— 旧 P1 矩阵 / `surround_v2` / `nus_mini` 全部是 Low 档,引用时必须写档位
 - **跨权重的比较有「选择下限」σ ≈ 0.025 —— 不是一个数,是分辨率**:同一份 48 帧留出、同一口径下,四个不同 checkpoint 的 mAP 实测 `0.0945 / 0.1173 / 0.1243 / 0.1557`(样本 σ = **0.0253**,极差 0.061)。**这与已记录的复现性下限 2e-3 差 12.6 倍,是两个量** —— 2e-3 说的是「同一份权重换进程能差多少」,0.025 说的是「**不同权重之间**数字本来就散多少」。⇒ **效应 < 0.03 一律不许报涨/跌**;报差必须写明评测集是什么(帧级/路线级、多少帧)并带出该比较的分辨率。实测代价:2026-09-30 一轮 15 h,交付权重最后是**按溯源一致选的、不是因为它更好**(两者差 0.007 = 0.28σ);早停判 `converged` 的依据也是 0.1557 vs 0.1243 的**单次比较**。⚠️ 全 240 帧与 48 帧留出曾给出**相反**方向 —— 因为全量里 80% 是训练帧,**奖励过拟合**
 - **自适应 batch 的峰值不过原点**:`_bs_from_budget` 必须减掉 **batch=1 的常驻足迹**(参数 + 优化器状态 + cudnn workspace + 一份激活)。实测(MapQR @3090-48G)12.98 / 25.39 / 37.77 / **OOM** GiB,旧公式 `1 + floor(空闲×0.95/增量)` 算出 4(需要 ≈50 GiB)—— **一跑就炸**。教训同族:探针测的是**差值**,预算里要填的是**峰值**。改这里跑 `tests/runtime/test_device.py::TestBatch1Footprint`(纯算术,不需要 GPU)
-- **★ 3DGS 的 `--seed` 不给逐位复现**(2026-10-04 实测,同 seed 重跑):`psnr_all` 极差 **0.08 dB**、`val45` 0.18 —— gsplat 的光栅化反向用 **`atomicAdd` 累加梯度**,浮点加法顺序随线程调度变,**seed 管不到 CUDA 原子序**。⇒ 报 3DGS 差异必须写明分辨力;`< 0.1 dB` 一律不许当「涨了/掉了」。⚠️ 与「AP 复现性下限 2e-3」**是两回事、量级也不同**(那个是阈值边界抖动),**两个数不许互相引用**。⚠️ 别拿「两个 seed 的极差」当分辨力:实测它比同 seed 重跑**还小**,会把任何 Δ 系统性放大(见 [docs/edit-3dgs-plan.md](docs/edit-3dgs-plan.md) §A.3.6)
+- **★ 3DGS 的 `--seed` 不给逐位复现**(2026-10-04 实测,同 seed 重跑):`psnr_all` 分辨力 = **σ(n=5) = 0.0335 dB**(2026-10-07 补齐:旧记的「极差 0.08」是 **n=2** 的,而本仓自己有条「n=2 的极差不是分辨力」—— 补跑 3 次后 mean 30.158、极差仍是 0.080(**巧合**)但 sd 只有 0.0335;`val45` 的 0.18 未补) —— gsplat 的光栅化反向用 **`atomicAdd` 累加梯度**,浮点加法顺序随线程调度变,**seed 管不到 CUDA 原子序**。⇒ 报 3DGS 差异必须写明分辨力;`< 0.1 dB` 一律不许当「涨了/掉了」。⚠️ 与「AP 复现性下限 2e-3」**是两回事、量级也不同**(那个是阈值边界抖动),**两个数不许互相引用**。⚠️ 别拿「两个 seed 的极差」当分辨力:实测它比同 seed 重跑**还小**,会把任何 Δ 系统性放大。★ **「<0.1 dB 不许当涨跌」= 3.0σ** —— 门槛数量级对得上,现在有实测 σ 撑着了(见 [docs/edit-3dgs-plan.md](docs/edit-3dgs-plan.md) §A.3.6)
 - **BEV 底图不是多模态融合**:MapTR/MapQR 是**纯相机**模型,LiDAR/Radar 一个点都没进网络;底图只把点云按位姿投进**矢量同款平面系**当上下文。带底图的产读成「融合结果」,就是把不存在的因果讲了出来。底图与矢量**必须同一个 `--pose` 源**(一边 GT 一边 SLAM = 两张各自都对、叠起来错位)
 - **★ AP 是台阶函数:11 点插值下,单条边界检测最多可换 `1/11 ≈ 0.091`**(2026-10-06 实测)。11 点的 recall 格点是 `j/10`,格点 `j` 可达 ⟺ `n_tp ≥ ceil(j/10·n_gt)` ⇒ **`n_tp` 每跨过一个门槛,那一格的 precision 从 0 跳成正值**。实测(`blur`、单类 Car、`n_gt=119`):`tp 107→108` 跨过 `108/119 = 0.908 ≥ 0.90`,**一条压在 `IoU = 0.540` 上的检测就让 ΔAP 从 −0.026 翻成 +0.055**;同一批检测换 **101 点**口径凸起整体消失。**放大倍数 = `n_gt/11`**(119 时 10.8×;有合成对照钉住)。★ 它**把结论改判过一次**:生成浓雾的 Δ 从 **+0.003(11 点)** 变 **−0.062(101 点)** ⇒「假退化」→「退化偏弱(~1/3)」。⇒ **`ΔAP` 必须与 `n_tp/n_gt` 一起读**(`eval_2d_ab` 会自己喊"距格点还剩几个 TP");**要插值/拟合/投影一律走 `--grid-points 101`**(`edit/calibrate` 的默认);归档口径仍是 11 点,**两者不可混比**。⚠️ 与下面那条"复现性下限 2e-3"是**两个量**(那个是阈值边界抖动,量级差 ~45 倍),**不许互相引用**。见 [docs/edit-image-plan.md](docs/edit-image-plan.md) §1.10
 - **★ 跨 root 比 GT / 比框坐标必须按「多重集」比,不能逐行 zip**(2026-10-06 实测)。两家 `label_2` 的**条数与帧号完全相等**、排序后 2D 差 **≤0.78 px**、3D 差 **≤0.06 m**(正是 A/B 硬门槛那一档),但**行序真的不同**(CARLA `get_actors()` 跨采集不稳定)⇒ 逐行 zip 读出 **215 px** 的假错位,差一点被读成"两个采集位置不一样"。★ 同一条也适用于"四臂 GT 必须冻结成一套":那 0.78 px 足以让一条压在 `IoU=0.5` 上的检测翻面,同一份预测换一套 GT 在 101 点口径下差 **0.009**(11 点口径下看不见)。判据 `harmonize_target.box_shift` / `downstream_eval.run_arms`
@@ -425,6 +452,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **★ 抽干≠抽干净:`drain` 一遍会留下"在途帧"**(第四次现形,**另一个变体**,2026-10-02):客户端投递是**异步**的,判"队列空"只代表*已经到的*取完了,**还在途的**会在之后补进来 ⇒ 每 tick 补一帧、取一帧,**陈旧量恒定**。实测 `collect_static_gt` 的 `image_2/{f}.png` 与**同一采集器**写出的 `prop_inst`/`prop_sem`/`static_prop_gt` **差 1 帧**,而帧号一张张对得上、图一张张出得来。**修法两条**:`settle()`(排空+tick 到"每队列恰好剩当 tick 那一帧")+ `assert_synced()`(每 tick 比三路 `Image.frame`,不等**当场停**)。⚠️ **受害者只有一半**:`prop_eval`/`static_eval` 只吃 `prop_inst`/`static_sem`,**不受影响**;错的是 `overlay/` 目检图与一切拿 `image_2` 配这套 GT 的下游。见 Plan4 §P-V22
 - **★ 查"两帧对没对上"时,仪器本身要先验**:同一次排查里我换了四种读法,**两种给出过干净但错误的答案** ——「橙色像素占比」同时命中黄色标线(锥桶在该光照下渲染偏灰,掩膜内真实橙占比只有 0.03);「同帧比车道线亮度」没有判别力(同帧恰好也高于基线,被我读成"对齐")。**只有「固定掩膜 + 跨帧 argmax + 与基线分得开」立得住**,它给出 +1 帧;修完给 0。⇒ 判据**必须先证明"错了会怎样"**(把已知对齐的一对比一比、或看基线与峰值的间距),否则读数再干净也不作数
 - **`refilter` 只动 `label_2`,旁路产物按谓词全链**:原实现写死 `("image_2","velodyne","calib","pose")`,**漏了 `samples/RADAR_*`**(它是 `training/` 的**兄弟**目录)⇒ 五份 `kitti_ab_epic_gtfix_*` 的雷达**静默消失**。名单是会过期的产物,"只动 label_2"是这条工具的定义 —— 定义写成 `is_rewritten()`。跨设备(`--out` 在别的盘)时 `os.link` 抛 `EXDEV`,`linked`/`copied` **分开计数**
+- **★ CARLA 里 attach 到父 actor 的子 actor,`set_transform` 按【父系】解释**(2026-10-07 实测)。`collect_3dgs` 把相机 attach 在 spectator 上,却把 `ring_cam_pose` 给的**世界**坐标直接喂进去 ⇒ 相机落在 `请求 + spectator 的世界位置`,整条环绕链被**平移 79.132 m**。症状**全静默**:重建仍自洽(相对几何没变,与 §A/§B 的 27 dB 不矛盾)、不报错,只有**按世界坐标摆的东西进不了画面** —— 长得像「道具资产不渲染」。⇒ 换算走 `collect_rig.to_parent_frame`(纯平移,**只在父旋转为单位时成立**,故采集器先读回自证 spectator 的 rotation),每帧再读回自证相机落在哪;反向自证 `sim/probe_3dgs_cam_pose`:旧写法差 **78.034 m** / 新写法差 **0.000 m**。旧 capture 各带一份 `POSE_CONVENTION.txt`,**两代口径不可混比**
 - **carla pyi 桩坑**:`try_spawn_actor` 桩标返回 `Actor`(实为 `Actor|None`)→ 用 Vehicle 方法必须 `cast(carla.Vehicle, v)`;Vector3D 运算结果不能直接进 `carla.Transform`(显式 `carla.Location`);函数签名要 `tuple[float, float, float]` 定长时禁用 tuple 推导(变长 tuple)
 - **`Actor.bounding_box` 对转过 actor 给的是被「剪切」的值,不是两轴对调**:锥桶真值 `0.3441×0.3441`,yaw=30° 读回 **`0.1246×0.4704`**(≈ `s·|cosθ−sinθ|` 与 `s·(cosθ+sinθ)`)。拿渲染轮廓量:3.4% 的物体像素落到投影框**外**、IoU 0.897→0.708。**0° 与 90° 都读对** ⇒ 拿一个 yaw≈0 的样本验一次会得"没问题"。判据 = `carla_common.measure_actor_size_yaw0`(**四处共用:探针 / 采集器 / 遮挡摆位 / 尺寸对表**,别各写一份)
 - **2D 框口径是两句配套的,拆开任一句都会坏**(2026-10-02 定案,Plan4 §P-V20):① **框** = 全 front 角点 min/max **再钳到画幅**(KITTI 口径);② **退化剔除**看**未钳**的 `inside` 角点跨度(`MIN_BOX_SIDE_PX`)。**只①不做②** ⇒ 「擦过镜头」的角点投影发散,钳完是**接近满幅**的框 ⇒ 与任何预测都能配上 ⇒ **凭空造 TP**,比"框太小"更毒;只②不做① ⇒ 被边缘裁掉的框偏小(归档 **690/3922 = 17.6%** 有角点出画,其中 370 个差 >150 px、80% 在 0–8 m)。两条共用 `gt.core.box2d_from_projection`(出框侧与 `rebox_line` 重算侧**唯一实现**)。
@@ -455,6 +483,7 @@ python -m pytest -q              # testpaths 已钉在 pyproject;**别裸敲 pyt
 - **停训练必须连 DataLoader worker 一起收**:worker 在 CUDA 初始化**之后** fork、**继承 CUDA 上下文**,父进程被杀后变 PPID=1 孤儿**继续占显存**。**判据:`nvidia-smi` 归零才算停干净,不是"父进程没了"**
 - **纯 Python 主循环里别指望 worker 线程**:主线程每 tick 的 overlay / `compose_grid` / HUD 全是**字节码**,持 GIL 不放 ⇒ 同一对点云 ICP 在 worker 线程 eff **0.04–0.24** vs 主线程同步 **0.90–1.00**。**判据看 `time.thread_time()/wall`(eff),不是 wall 单值**;同理**有界队列有界的是深度不是"状态间隙"** —— ICP 成本随间隙超线性,丢帧会变成正反馈,**必须按帧号差止损**(`SlamWorker.max_gap`)
 - **★ `.gitignore` 的否定规则**含斜杠 ⇒ 被**锚定在仓库根**(2026-10-06 实测):`!assets/**` 只放行**顶层** `assets/`,放行不到 `docs/assets/` ⇒ **20 张证据图从来没进过版本库**(`git add` 不报错、直接跳过;判据 = `git log -- docs/assets` 为空、`git check-ignore -q` 退出码 0)。已补 `!docs/assets/` + `!docs/assets/**`,并在其后**再挡一次** `docs/assets/**/.ipynb_checkpoints/`(**顺序要紧** —— 那个 `**` 会把检查点一起放行)。⇒ **判据是 `git add -n <路径>` 真的打印 `add '...'`,不是「我加了规则」**。同族:上面那条 `ruff format` 会走进未跟踪目录
+- **★ 子进程/CLI 入口缺 `__main__` 守卫 ⇒ `python -m` 进去什么都不做、退出码 0**(2026-10-06 首现、**2026-10-07 第二次现形**)。比崩溃恶劣:批处理里会被当成"跑过了",而产物目录是空的。★ 第二次的教训是**判据的覆盖范围**:当时已经有一条 `test_edit_entrypoints.py`(理由写的正是这条),但它**只扫 `autodrivedata/edit/`** ⇒ `gs/eval_edit.py` 从来没被扫过。现已扩成全包(`tests/test_entrypoints.py`,88 个带 `main()` 的模块,带"扫到 0 个就恒绿"的自证)。★ 这是「**判据的覆盖范围本身也是判据的一部分**」的**第三次**现形(前两次:只扫 3 个 `.md` 漏了包内 docstring 链接;只扫 3 份文档漏了 edit 计划)
 - 提交:Conventional Commits;**提交信息不附 AI 署名**(不加 `Co-Authored-By: Claude` 等 trailer);改动后 `ruff check && ruff format` + 相关单测;决策与执行记录同步进 **Plan4.md**(教程能力线另同步 docs/milestone2.md);**Plan.md 与 Plan2.md 均已冻结**
 - **MapQR 变体有两处「不报错的错」,改这块先跑 `tests/map/test_{deform_attn,bevenc}.py`**:
   ① 官方整套数学吃**归一化 `[0,1]`**,本项目坐标是**米** —— 米直接进 `sine_pos_embed` **不抛异常**,

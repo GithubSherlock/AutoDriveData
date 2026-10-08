@@ -46,6 +46,27 @@ def ring_cam_pose(
     return x, y, z, yaw_cam
 
 
+def to_parent_frame(
+    x: float, y: float, z: float, *, parent: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    """世界位姿 → **相对挂载父 actor** 的位姿(attach 子 actor 的 `set_transform` 口径)。
+
+    ## 为什么必须有这条
+
+    CARLA 里 **attach 到父 actor 的子 actor,其 `set_transform` 按父系解释**。
+    采集器把相机 attach 到静态 spectator,而 `ring_cam_pose` 给的是**世界**坐标 ⇒
+    直接喂进去,相机落在 `请求 + spectator 的世界位姿` —— 整条环绕链被**整体平移**
+    实测 **79.132 m**(差值的三个分量恰好等于 spectator 的世界位置)。
+    重建因此仍然自洽(相对几何没变),但**任何按世界坐标摆的东西都进不了画面** ——
+    道具就是这么"不渲染"的。见 [docs/edit-3dgs-plan.md](../../docs/edit-3dgs-plan.md) §C.0.4 ③。
+
+    ⚠️ **只在父的旋转为单位时是纯平移减法。** 采集器把 spectator 的 `rotation` 显式设成
+    `Rotation(0,0,0)` **并读回自证**,就是为了让这条成立。父带旋转时本函数**不适用**
+    (那要 `R_pᵀ·(p − t_p)`)—— 这里不假装支持,免得读的人以为它通用。
+    """
+    return (x - parent[0], y - parent[1], z - parent[2])
+
+
 def stereo_rig_offsets(baseline: float) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """双目基线 → 左右相机相对 ego 的挂点偏移 (x, y, z)[米]。
 

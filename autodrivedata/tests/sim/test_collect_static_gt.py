@@ -19,7 +19,8 @@ import queue
 
 import pytest
 
-from autodrivedata.sim.collect_static_gt import SETTLE_TRIES, assert_synced, drain, settle
+from autodrivedata.sim.carla_common import assert_synced, drain
+from autodrivedata.sim.collect_static_gt import SETTLE_TRIES, settle
 
 
 class _Img:

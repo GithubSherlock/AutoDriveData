@@ -42,11 +42,12 @@ from autodrivedata.gt.core import ActorBox, box_to_gt_line
 from autodrivedata.gt.export.kitti import write_frame
 from autodrivedata.gt.export.nuscenes import NUS_RADAR_CHANNELS, NUS_RADAR_MOUNTS_CARLA
 from autodrivedata.perception.radar import detections_to_nus18, mask_radar_points, nus18_to_pcd
-from autodrivedata.perception.semantic import semantic_to_velodyne_bin
+from autodrivedata.perception.semantic import semantic_to_velodyne_bin, semantic_to_velodyne_tags
 from autodrivedata.sim.carla_common import (
     CAM_ATTRS,
     LIDAR_ATTRS,
     SENSOR_OFFSET,
+    assert_synced,
     ground_z_at,
     loc,
     rad,
@@ -55,7 +56,6 @@ from autodrivedata.sim.carla_common import (
 )
 from autodrivedata.sim.collect_nus import RADAR_ATTRS, RADAR_YAW_OFFSET, _latest
 from autodrivedata.sim.collect_slam import ego_pose_matrix
-from autodrivedata.sim.collect_static_gt import assert_synced
 from autodrivedata.sim.occlusion import (
     CAM_FWD,
     OCCLUDER_COVER,
@@ -573,8 +573,15 @@ def main() -> None:
                 dpath = out / "training" / "depth" / f"{i:06d}.npy"
                 dpath.parent.mkdir(parents=True, exist_ok=True)
                 np.save(dpath, decode_depth(dep_img.raw_data, dep_img.height, dep_img.width))
-            raw = np.frombuffer(pts.raw_data, dtype=np.float32)
-            velo = semantic_to_velodyne_bin(raw.reshape(-1, 6), seed=args.frames * 100 + i)
+            raw = np.frombuffer(pts.raw_data, dtype=np.float32).reshape(-1, 6)
+            velo = semantic_to_velodyne_bin(raw, seed=args.frames * 100 + i)
+            # ★ **标签版**另落一路(2026-10-07):`semantic_to_velodyne_bin` 把 tag 合成强度
+            #   之后就丢掉了 ⇒ 盘上没有任何"每点的语义类"可读,按语义类编辑 LiDAR 无从下手
+            #   (`docs/edit-pointcloud-plan.md` §4 重评条件 #3)。**额外文件,不动 `velodyne/`**。
+            tag_bin = semantic_to_velodyne_tags(raw)
+            tpath = out / "training" / "semantic_velodyne" / f"{i:06d}.bin"
+            tpath.parent.mkdir(parents=True, exist_ok=True)
+            tpath.write_bytes(tag_bin.astype(np.float32).tobytes())
             write_frame(
                 out,
                 str(i),

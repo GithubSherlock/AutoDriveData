@@ -89,21 +89,42 @@ def write_frame(
     frame_id: str,
     *,
     image_png: bytes,
-    velodyne: np.ndarray,
-    calib: KittiCalibOut,
     labels: list[str],
+    velodyne: np.ndarray | None = None,
+    calib: KittiCalibOut | None = None,
     pose: np.ndarray | None = None,
 ) -> FramePaths:
-    """单帧四件套落盘(velodyne 必须已是 KITTI velodyne 约定,见 geometry.carla_lidar_to_velodyne)。
+    """单帧落盘(velodyne 必须已是 KITTI velodyne 约定,见 geometry.carla_lidar_to_velodyne)。
+
+    ## ★ `velodyne` / `calib` 自 2026-10-08 起**可选**(为了能产 2D-only root)
+
+    域自适应的交接要一个**只有图 + 2D 框**的 KITTI root(兄弟仓 `auto2dlabel` 的
+    2D 训练/评测只读 `training/{image_2,label_2}`)。而本函数原先**强制**要两者,
+    ⇒ 要么放宽这里,要么在别处**再写一个 2D 写入器** —— 后者违反"布局由唯一写入器拥有"
+    (本仓反复踩过"两处各写一份迟早漂")。所以放宽这里,而不是绕开。
+
+    ⚠️ **两者必须要么都给、要么都不给**:只给一半会产出一个**既不是 3D root 也不是 2D root**
+    的目录,而它在两边**都不报错**(3D 读者读不到 calib、2D 读者根本不看它)⇒ 半给**当场抛**。
+    ⚠️ 不给时**不建** `velodyne/` `calib/` 目录 —— 空目录会让下游的 glob 以为"这一路存在"。
 
     `pose` 非 None 时额外写 `training/pose/{id}.txt`(ego 真值位姿,SLAM 评估用)。
     """
+    if (velodyne is None) != (calib is None):
+        raise SystemExit(
+            "`write_frame`:velodyne 与 calib 必须**要么都给、要么都不给** —— "
+            "只给一半会产出既不是 3D root 也不是 2D root 的目录,而两边都不报错"
+        )
     paths = frame_paths(root, frame_id)
-    for p in (paths.image, paths.velodyne, paths.calib, paths.label):
+    wanted = [paths.image, paths.label]
+    if velodyne is not None:
+        wanted += [paths.velodyne, paths.calib]
+    for p in wanted:
         p.parent.mkdir(parents=True, exist_ok=True)
     paths.image.write_bytes(image_png)
-    np.asarray(velodyne, dtype=np.float32).reshape(-1, 4).tofile(paths.velodyne)
-    calib.write(paths.calib)
+    if velodyne is not None:
+        assert calib is not None  # 上面成对校验过了
+        np.asarray(velodyne, dtype=np.float32).reshape(-1, 4).tofile(paths.velodyne)
+        calib.write(paths.calib)
     paths.label.write_text("\n".join(labels) + ("\n" if labels else ""), encoding="utf-8")
     if pose is not None:
         write_pose(root, frame_id, pose)

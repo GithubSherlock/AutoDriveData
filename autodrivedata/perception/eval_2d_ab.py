@@ -252,9 +252,22 @@ def evaluate(
     return ev
 
 
-def report(root: Path, predict: Predictor, conf: float, iou: float, limit: int | None) -> float:
-    """`evaluate` 的薄壳 —— 打印明细,只回 mAP(**老签名,勿改:多处调用方靠它**)。"""
-    return evaluate(root, predict, conf, iou, limit)["mAP"]
+def report(
+    root: Path,
+    predict: Predictor,
+    conf: float,
+    iou: float,
+    limit: int | None,
+    *,
+    n_points: int = 11,
+) -> float:
+    """`evaluate` 的薄壳 —— 打印明细,只回 mAP(**老签名,勿改:多处调用方靠它**)。
+
+    ⚠️ `n_points` 是**只加不改**的关键字参数,默认 11 = 归档口径。
+    要插值/拟合/投影的场合(§1.10)必须传 **101** —— 11 点下单条边界检测就能换
+    `n_gt/11` 倍的 ΔAP,台阶会把结论顶翻。
+    """
+    return evaluate(root, predict, conf, iou, limit, n_points=n_points)["mAP"]
 
 
 def main() -> None:

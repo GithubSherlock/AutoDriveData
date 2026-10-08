@@ -197,6 +197,14 @@ def main() -> None:
     ap.add_argument("--conf", type=float, default=None, help="不传则按后端取默认")
     ap.add_argument("--weight", default=DEFAULT_YOLO_WEIGHT)
     ap.add_argument("--iou", type=float, default=0.5)
+    ap.add_argument(
+        "--grid-points",
+        type=int,
+        default=11,
+        help="AP 插值格点数。**默认 11 = 归档口径**(与已引用的 §1.6 四臂数可比)。"
+        "要判 ΔAP 的**符号与量级是否可靠**(尤其小 Δ)必须给 **101** —— 见 §1.10:"
+        "11 点下 AP 是**台阶函数**,单条边界检测能换 `n_gt/11` 倍,台阶会把符号顶翻。",
+    )
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-runlog", action="store_true")
     args = ap.parse_args()
@@ -219,7 +227,7 @@ def main() -> None:
 
         aps: dict[str, float] = {}
         for name in arms:
-            aps[name] = report(work / name, predict, conf, args.iou, args.limit)
+            aps[name] = report(work / name, predict, conf, args.iou, args.limit, n_points=args.grid_points)
             rl.highlight(f"mAP_{name}", round(aps[name], 4))
 
         d_truth = aps["B_truth_fog"] - aps["A_clear"]

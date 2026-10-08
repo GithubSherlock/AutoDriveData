@@ -445,3 +445,74 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def mask_to_bev_depth(
+    mask: np.ndarray,
+    depth_mm: np.ndarray,
+    world_cam: tuple[tuple[float, float, float], tuple[float, float, float]],
+    intrinsics: CameraIntrinsics,
+    ego: list[float],
+    shape: tuple[int, int],
+    *,
+    max_pixels: int | None = MAX_PROJECT_PIXELS,
+) -> tuple[np.ndarray, dict]:
+    """掩膜像素 → **按真值深度反投影** → BEV 二值图 `(h, w)` bool。返回 `(bev, stats)`。
+
+    ## ★★ 它修的是哪一条(2026-10-07 实测并在归档数据上复现)
+
+    `mask_to_bev` 对**所有类**一律拿射线与**地平面**求交。对路面/车道线是对的
+    —— 那些像素对应的场景点确实贴地;但**车/人**对应的点在**离地 1–2 m** 处,
+    射线会**越过物体头顶**,落到它身后很远的"地面"上:
+
+    | 读数(`surround_sem_demo` 帧 0,CAM_FRONT,obstacle 4412 px) | 值 |
+    |---|---|
+    | 射线打中地平面的比例 | 99.0%(**所以不是"打不到"**) |
+    | 落点距 ego 中位 | **120.0 m** |
+    | **落在 ±30 m 窗口内** | **0.0%** |
+
+    ⇒ 障碍物通道**结构性恒空**(GT 与预测都空 ⇒ BEV IoU 是 nan、被 mIoU 跳过)。
+    相机离地约 2.0 m,一条指向 20 m 外、离地 1.5 m 车顶的射线几乎水平
+    (`dz≈-0.005`),地面交点自然是几百米。
+
+    ## 判据的诚实性:无效深度**单独计数**
+
+    ⚠️ `z<=0`(天空/无效)与"真的在 0 米"**必须分得开** —— 静默丢掉会把
+    "没采到深度"读成"这里没有东西"。`stats["n_invalid"]` 就是给这条用的。
+    """
+    out = np.zeros(shape, dtype=bool)
+    ys, xs = np.where(mask > 0)
+    stats: dict = {"n_px": int(len(xs)), "n_invalid": 0, "n_out_of_window": 0, "n_hit": 0}
+    if len(xs) == 0:
+        return out, stats
+    if max_pixels is not None and len(xs) > max_pixels:
+        idx = np.random.default_rng(0).choice(len(xs), max_pixels, replace=False)
+        xs, ys = xs[idx], ys[idx]
+
+    loc, rot = world_cam
+    fx, fy, cx, cy = intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy
+    z = depth_mm[ys, xs].astype(np.float64) / 1000.0  # 盘上是 uint16 毫米
+    ok = np.isfinite(z) & (z > 0)
+    stats["n_invalid"] = int((~ok).sum())
+    if not ok.any():
+        return out, stats
+    xs, ys, z = xs[ok], ys[ok], z[ok]
+
+    # 相机系 → 世界系:`p_cam = R_wc·(p_world − loc)` ⇒ `p_world = p_cam @ R_wc + loc`
+    #   (`p_cam @ R_wc` 就是 `R_wc.T @ p_cam`,与 `mask_to_bev` 的 `dir_cam @ R_wc` 同一条链)
+    p_cam = np.stack([(xs - cx) * z / fx, (ys - cy) * z / fy, z], axis=1)
+    p = p_cam @ camera_rotation_world_to_cam(rot) + np.asarray(loc, dtype=np.float64)[None, :]
+
+    a = math.radians(ego[3])
+    c, s = math.cos(a), math.sin(a)
+    dx, dy = p[:, 0] - ego[0], p[:, 1] - ego[1]
+    lx, ly = c * dx + s * dy, -s * dx + c * dy  # 世界 → ego 局部系
+    w, h = shape[1], shape[0]
+    # ⚠️ 这 8 行**照抄** `mask_to_bev` 的末尾 —— 两处各写一份迟早漂(本仓"唯一落点"纪律)。
+    bx = ((lx - BEV_X[0]) / (BEV_X[1] - BEV_X[0]) * w).astype(np.int64)
+    by = ((BEV_Y[1] - ly) / (BEV_Y[1] - BEV_Y[0]) * h).astype(np.int64)
+    inb = (bx >= 0) & (bx < w) & (by >= 0) & (by < h)
+    stats["n_out_of_window"] = int((~inb).sum())
+    stats["n_hit"] = int(inb.sum())
+    out[by[inb], bx[inb]] = True
+    return out, stats

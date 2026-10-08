@@ -51,6 +51,7 @@ from autodrivedata.perception.sem_bev import (
     init_camera,
     instance_backend,
     mask_to_bev,
+    mask_to_bev_depth,
     predict_masks,
 )
 from autodrivedata.perception.sem_tags import (
@@ -256,6 +257,7 @@ def main() -> None:
             ground_z = ego[2] - GROUND_Z_OFF
             gt_bev = {c: np.zeros(bshape, dtype=bool) for c in GT_CLASSES}
             pr_bev = {c: np.zeros(bshape, dtype=bool) for c in GT_CLASSES}
+            depth_stats: list[dict] = []  # ★ 无效深度/出窗的像素数 —— **必须单独报**
             for cam in cams:
                 # 目录名 = `发"cam"/"sem"_` + 小写相机名(即 `cam_front` / `sem_cam_front`)。
                 # ⚠️ 别写成 `f"cam_{cam.lower()}"` —— `cam` 本身已是 `CAM_FRONT`,
@@ -291,14 +293,41 @@ def main() -> None:
                                 f"(tp={probe.counts[c].tp}) —— 空掩膜或键名对不上"
                             )
                     probe_done = True
+                # ★★ **按类分派**(2026-10-07):`obstacle` 走**深度反投影**,
+                #    `drivable`/`lane` 保留地平面 IPM —— 后两者本就贴地,IPM 等价且没有深度空洞。
+                #    ⚠️ 写反了的症状是"BEV 障碍物通道**结构性恒空**"(实测落点中位 120 m、
+                #    ±30 m 窗口内 0.0%),而它**不报错**、只是 IoU 变 nan 然后被 mIoU 跳过。
+                depth_mm = None
+                if "obstacle" in GT_CLASSES:
+                    depth_p = root / f"depth_{cam.lower()}" / f"{token}.npy"
+                    if not depth_p.is_file():
+                        # ⚠️ **绝不静默回退到地平面路径** —— 那会原地复现那个 bug 且不报错。
+                        raise SystemExit(
+                            f"{depth_p} 不存在 —— 这份 root 是老的/没带 `--depth`。"
+                            "BEV 障碍物通道需要真值深度;**回退到地平面会把本 bug 原样复现**"
+                        )
+                    depth_mm = np.frombuffer(depth_p.read_bytes(), dtype=np.uint16).reshape(tag.shape)
+
+                #   ⚠️ 别把它包成一个闭包再循环调用:`ruff` 的 B023 会红(闭包没绑定循环变量),
+                #   而这里**确实**该显式写开 —— 一眼能看出两类走的是两条不同的链。
                 for c in GT_CLASSES:
                     img_sb.counts[c].add(gt[c], pred[c])
-                    gt_bev[c] |= mask_to_bev(
-                        gt[c], world_cam, intrinsics, ground_z, ego, bshape, max_pixels=None
-                    )
-                    pr_bev[c] |= mask_to_bev(
-                        pred[c], world_cam, intrinsics, ground_z, ego, bshape, max_pixels=None
-                    )
+                    if c == "obstacle":
+                        assert depth_mm is not None  # 上面缺文件已经 SystemExit 过了
+                        g, st_g = mask_to_bev_depth(
+                            gt[c], depth_mm, world_cam, intrinsics, ego, bshape, max_pixels=None
+                        )
+                        p_, st_p = mask_to_bev_depth(
+                            pred[c], depth_mm, world_cam, intrinsics, ego, bshape, max_pixels=None
+                        )
+                        depth_stats.extend((st_g, st_p))
+                    else:
+                        g = mask_to_bev(gt[c], world_cam, intrinsics, ground_z, ego, bshape, max_pixels=None)
+                        p_ = mask_to_bev(
+                            pred[c], world_cam, intrinsics, ground_z, ego, bshape, max_pixels=None
+                        )
+                    gt_bev[c] |= g
+                    pr_bev[c] |= p_
                 for k, v in excluded_share(tag).items():
                     shares[k].append(v)
                 o = geometry_oracle(tag, world_cam, intrinsics, ground_z, seed=fid)

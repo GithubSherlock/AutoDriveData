@@ -88,8 +88,67 @@ def pose_delta(pa: np.ndarray, pb: np.ndarray) -> tuple[float, float]:
     return float(np.abs(pa[:, 3] - pb[:, 3]).max()), float(np.abs(pa[:, :3] - pb[:, :3]).max())
 
 
+def pose_series_report(root_a: Path, root_b: Path) -> dict:
+    """★ **A/B 的位姿差是什么形状** —— 相位滞后?速度差?横移?
+
+    这是重评条件 #1「位姿逐位可复现」的**诊断器**:光知道"差 0.06 m"没法修,
+    得知道它是**哪一类**差。
+
+    ## 为什么要拆开(2026-10-07 实测,把原判读**改了**)
+
+    `edit-pointcloud-plan.md` §1 原来把 0.03–0.06 m 读成「**持续的亚帧相位差**」
+    (理由:步长几乎相同 0.7935 vs 0.7934)。实测**不是**:
+
+    | 读数 | 实测(`kitti_ab_occl2_none_all` vs `..._partial_nearest`,70 帧) |
+    |---|---|
+    | 位置差随帧的形状 | 帧 0 **0.0345** → 帧 37 **0.0015**(最小)→ 帧 69 **0.0619**(最大) |
+    | 步长差 | 中位 **0.0019 m/帧**(A 0.8028 / B 0.8009)= **0.24%** |
+    | 拆成沿运动 / 垂直 | 沿 **0.0169**、垂直 **0.0015** ⇒ **几乎全在运动方向上** |
+
+    ⇒ 是**两件事**叠在一起:**①** 启动瞬态(帧 0–10 从 0.0345 衰减到 ~0.017);
+    **②** 一个**恒定的微小速度差(0.24%)沿航向缓慢累积**。
+    **不是**相位滞后(那样位置差会是常量、步长完全相同)。
+
+    ★ **对修法的含义**:速度差来自**物理驱动的车辆状态**(`set_target_velocity` 与制动残留),
+    靠调参数消不掉;要 `max|Δ| = 0` 只能**不用车开** ——
+    照 3DGS 那边的做法**逐帧把 ego 瞬移到纯函数算出的绝对位姿**(`ring_cam_pose`)。
+    """
+    fa = sorted(p.stem for p in (root_a / "training" / "pose").glob("*.txt"))
+    fb = sorted(p.stem for p in (root_b / "training" / "pose").glob("*.txt"))
+    if fa != fb or not fa:
+        raise SystemExit(f"两侧位姿帧号不齐或为空:{fa[:3]}… vs {fb[:3]}…")
+    ta = np.array([load_pose(root_a / "training" / "pose" / f"{f}.txt")[:3, 3] for f in fa])
+    tb = np.array([load_pose(root_b / "training" / "pose" / f"{f}.txt")[:3, 3] for f in fb])
+    diff = tb - ta
+    d = np.linalg.norm(diff, axis=1)
+    step_a = np.linalg.norm(np.diff(ta, axis=0), axis=1)
+    step_b = np.linalg.norm(np.diff(tb, axis=0), axis=1)
+    # 航向用 A 的位移方向近似(两边的差只有 0.06 m,不足以让航向分不开)
+    v = np.vstack([np.diff(ta, axis=0)[:1], np.diff(ta, axis=0)])
+    u = v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
+    along = np.einsum("ij,ij->i", diff, u)
+    perp = np.linalg.norm(diff - along[:, None] * u, axis=1)
+    med_step = float(np.median(step_a))
+    return {
+        "n": len(fa),
+        "d_first": float(d[0]),
+        "d_min": float(d.min()),
+        "d_min_at": int(d.argmin()),
+        "d_last": float(d[-1]),
+        "d_max": float(d.max()),
+        "step_a_median": med_step,
+        "step_b_median": float(np.median(step_b)),
+        "step_gap_median": float(np.median(np.abs(step_a - step_b))),
+        # ★ 0.24% 这一类数才是"能不能修"的关键:常量速度差 ⇒ 靠调参消不掉
+        "step_gap_rel": float(np.median(np.abs(step_a - step_b)) / med_step) if med_step else None,
+        "along_median": float(np.median(np.abs(along))),
+        "perp_median": float(np.median(perp)),
+        "is_mostly_along_heading": bool(np.median(np.abs(along)) > 3.0 * np.median(perp)),
+    }
+
+
 def to_world(pts: np.ndarray, pose: np.ndarray) -> np.ndarray:
-    """车形点 `(N,4)` → 世界系 `(N,3)`:`p_w = R @ p_l + t`。"""
+    """车形点 `(N,4)` → 世界系 `(N,3)`:p_w = R @ p_l + t。"""
     return pts[:, :3].astype(np.float64) @ pose[:, :3].T + pose[:, 3]
 
 
